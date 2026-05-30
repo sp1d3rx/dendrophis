@@ -854,10 +854,11 @@ class ToolResultMessage(Static):
                 yield Static(self._content, markup=False, classes="content")
         else:
             yield Static(f"[success]●[/success] {label}", classes="success")
-            if self._expanded:
-                if self._arguments:
+            if self._tool_name == "bash" or self._expanded:
+                if self._arguments and self._expanded:
                     yield Static(f"[bold]Arguments:[/bold]\n{escape(self._arguments)}", classes="content")
-                yield Static(self._content, markup=False, classes="content")
+                if self._content:
+                    yield Static(self._content, markup=False, classes="content")
 
 
 class RetryStatus(Static):
