@@ -890,14 +890,14 @@ class MainScreen(Screen):
                     chat.add_system_message(skill_message)
 
                     feedback = (
-                        f"[bold]✅[/bold] Skill [code]/{cmd_name}[/code] loaded. "
+                        f"[bold][green]✓[/green][/bold] Skill [code]/{cmd_name}[/code] loaded. "
                         f"The skill documentation has been added to your context. "
                         f"You can now use its capabilities."
                     )
                 else:
-                    feedback = f"[bold]❌[/bold] Unknown skill: [code]/{cmd_name}[/code]"
+                    feedback = f"[bold][red]✗[/red][/bold] Unknown skill: [code]/{cmd_name}[/code]"
             else:
-                feedback = f"[bold]⚠️[/bold] Skills not available yet. Command [code]/{cmd_name}[/code] queued."
+                feedback = f"[bold][yellow]⚠[/yellow][/bold] Skills not available yet. Command [code]/{cmd_name}[/code] queued."
 
         # Add feedback to chat
         chat = self.query_one(ChatView)

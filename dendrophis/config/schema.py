@@ -48,6 +48,11 @@ class LLMConfig(BaseModel):
     # For OpenRouter: force use of /chat/completions instead of /responses API
     # Useful when Responses API doesn't work well with certain models
     use_responses_api: bool | None = None
+    # Start mode for the streaming parser:
+    #   "text"     — start parsing as text
+    #   "thinking" — start parsing as thinking/reasoning
+    #   None       — auto-detect based on model name
+    thinking_start_mode: Literal["text", "thinking"] | None = None
 
 
 class HookEntry(BaseModel):

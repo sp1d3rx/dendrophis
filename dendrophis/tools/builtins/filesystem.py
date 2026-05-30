@@ -14,6 +14,7 @@ from dendrophis.tools.base import BaseTool
 # Shared guard
 # ---------------------------------------------------------------------------
 
+
 def _is_blocked_path(file_path: str) -> str | None:
     """Return error message if path is forbidden, else None."""
     if file_path.startswith("/"):
@@ -414,11 +415,19 @@ class BashTool(BaseTool):
                     "type": "integer",
                     "description": "Timeout in milliseconds (default 120000)",
                 },
+                "full_output": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional. True to retrieve full stdout/stderr without truncation (defaults to false)."
+                    ),
+                },
             },
             "required": ["command", "description"],
         }
 
-    async def execute(self, command: str, description: str, timeout: int = 120000) -> dict[str, Any]:
+    async def execute(
+        self, command: str, description: str, timeout: int = 120000, full_output: bool = False
+    ) -> dict[str, Any]:
         try:
             from dendrophis.tools.bash_sandbox import BashSandbox
 
@@ -435,11 +444,20 @@ class BashTool(BaseTool):
                 subprocess.run, command, shell=True, capture_output=True, text=True, timeout=timeout_sec
             )
 
+            stdout = result.stdout if result.stdout else ""
+            stderr = result.stderr if result.stderr else ""
+
+            if not full_output:
+                if len(stdout) > 2000:
+                    stdout = stdout[:2000] + "\n... [Output truncated. Set 'full_output': true to get complete output]"
+                if len(stderr) > 2000:
+                    stderr = stderr[:2000] + "\n... [Output truncated. Set 'full_output': true to get complete output]"
+
             return {
                 "success": result.returncode == 0,
                 "returncode": result.returncode,
-                "stdout": result.stdout[:2000] if result.stdout else "",
-                "stderr": result.stderr[:2000] if result.stderr else "",
+                "stdout": stdout,
+                "stderr": stderr,
                 "categories": [e.category.value for e in sim.effects if hasattr(e, "category")],
             }
         except subprocess.TimeoutExpired:

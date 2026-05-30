@@ -16,6 +16,7 @@ _TOOL_FAMILIES: tuple[str, ...] = (
     "deepseek-coder",
     "deepseek-r1",
     "deepseek-v3",
+    "dolphin",
     "fireworks/firefunction",
     "gemini-1.5",
     "gemini-2.0",
@@ -27,14 +28,11 @@ _TOOL_FAMILIES: tuple[str, ...] = (
     "llama-3.2",
     "llama-3.3",
     "ministral",
-    "mistral-large",
-    "mistral-medium",
-    "mistral-small",
+    "mistral",
     "codestral",
     "nova",
     "olmo",
-    "qwen2.5",
-    "qwen3",
+    "qwen",
 )
 
 _CACHING_SUPPORTED: tuple[str, ...] = (

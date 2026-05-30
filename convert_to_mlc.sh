@@ -54,14 +54,14 @@ fi
 echo "🏷  Detected Template: $TEMPLATE"
 
 # 1. Generate Config
-echo "⚙️ Generating MLC Config..."
+echo "⚙ Generating MLC Config..."
 python -m mlc_llm gen_config "$SOURCE_PATH" \
     --quantization q4f16_1 \
     --conv-template "$TEMPLATE" \
     --output "$OUTPUT_PATH"
 
 # 2. Convert Weights
-echo "⚖️ Converting Weights..."
+echo "⚖ Converting Weights..."
 python -m mlc_llm convert_weight "$SOURCE_PATH" \
     --quantization q4f16_1 \
     --source "$SOURCE_PATH" \

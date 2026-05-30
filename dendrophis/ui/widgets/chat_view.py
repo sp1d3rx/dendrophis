@@ -227,19 +227,26 @@ class ThoughtBubble(VerticalScroll):
         scrollbar-size-vertical: 1;
         display: none;
     }
+    #thought-header {
+        color: $accent;
+        width: 100%;
+        height: 1;
+    }
     #thought-text {
         color: $text-muted;
         width: 100%;
         height: auto;
+        margin-top: 1;
     }
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._parts: list[str] = []
-        self._has_label = False
+        self._collapsed = False
 
     def compose(self) -> ComposeResult:
+        yield Static("🧠 [bold]Thought[/bold]", id="thought-header", markup=True)
         yield Static("", id="thought-text")
 
     def append_text(self, text: str) -> None:
@@ -247,19 +254,50 @@ class ThoughtBubble(VerticalScroll):
         joined = "".join(self._parts)
         if not joined.strip():
             return
-        if not self._has_label:
-            self.query_one("#thought-text", Static).update(f"[bold]Thought:[/bold]\n{escape(joined)}")
-            self._has_label = True
-        else:
-            self.query_one("#thought-text", Static).update(escape(joined))
+
         self.styles.display = "block"
+        self._collapsed = False
+
+        self.query_one("#thought-header", Static).update("🧠 [bold]Thinking...[/bold]")
+        body = self.query_one("#thought-text", Static)
+        body.styles.display = "block"
+        body.update(escape(joined))
 
         # Force a height once we reach the limit to ensure the scrollbar activates
         # in the VerticalScroll container.
         if self.virtual_size.height > 6:
             self.styles.height = 6
+        else:
+            self.styles.height = "auto"
 
         self.scroll_end(animate=False)
+
+    def collapse(self) -> None:
+        """Collapse the thought bubble after thinking finishes."""
+        self._collapsed = True
+        self._update_display_state()
+
+    def on_click(self) -> None:
+        """Toggle collapsed/expanded state on click."""
+        self._collapsed = not self._collapsed
+        self._update_display_state()
+
+    def _update_display_state(self) -> None:
+        """Update display heights and text based on collapsed state."""
+        header = self.query_one("#thought-header", Static)
+        body = self.query_one("#thought-text", Static)
+
+        if self._collapsed:
+            body.styles.display = "none"
+            self.styles.height = 1
+            header.update("🧠 [bold]Thought[/bold] [dim](click to expand)[/dim]")
+        else:
+            body.styles.display = "block"
+            header.update("🧠 [bold]Thought[/bold] [dim](click to collapse)[/dim]")
+            if self.virtual_size.height > 6:
+                self.styles.height = 6
+            else:
+                self.styles.height = "auto"
 
 
 class CopyCodeButton(Static):
@@ -597,6 +635,8 @@ class AssistantMessage(Vertical):
         """Append text to the current visible markdown segment."""
         if not text:
             return
+        if self._has_reasoning and self._active_thought_bubble and not self._active_thought_bubble._collapsed:
+            self._active_thought_bubble.collapse()
         self._text_since_last_thought = True
         self._clean_parts.append(text)
         self._all_parts.append(text)
@@ -742,6 +782,10 @@ class AssistantMessage(Vertical):
                 self._route_text(self._pending_buf)
             self._pending_buf = ""
 
+        # Collapse the active thought bubble if thinking has finished
+        if self._active_thought_bubble and not self._active_thought_bubble._collapsed:
+            self._active_thought_bubble.collapse()
+
         if not self._all_parts and not self._has_reasoning:
             self.remove()
             return
@@ -780,7 +824,7 @@ class ErrorMessage(Static):
         self._text = text
 
     def compose(self) -> ComposeResult:
-        yield Static("⚠️ Error", classes="label")
+        yield Static("⚠ Error", classes="label")
         yield Static(self._text, markup=False)
 
 
@@ -798,10 +842,10 @@ class SystemMessage(Static):
     """
 
     def __init__(self, text: str) -> None:
-        super().__init__(f"⚙️ {text}")
+        super().__init__(f"⚙ {text}")
 
 
-class ToolResultMessage(Static):
+class ToolResultMessage(Vertical):
     """Displays tool call results with success/failure indicator."""
 
     DEFAULT_CSS = """
@@ -821,6 +865,11 @@ class ToolResultMessage(Static):
         background: $surface-darken-1;
         padding: 0 1;
         margin-top: 1;
+    }
+    ToolResultMessage .expansion-hint {
+        color: $text-muted;
+        background: $surface-darken-1;
+        padding: 0 1;
     }
     """
 
@@ -847,10 +896,55 @@ class ToolResultMessage(Static):
             except Exception:
                 pass
 
+        # Compute self._full_output_content
+        if self._tool_name == "bash":
+            stdout = self._parsed_bash.get("stdout", "").strip() if self._parsed_bash else ""
+            stderr = self._parsed_bash.get("stderr", "").strip() if self._parsed_bash else ""
+            combined = []
+            if stdout:
+                combined.append(stdout)
+            if stderr:
+                combined.append(stderr)
+            self._full_output_content = "\n".join(combined) if combined else (self._content or "")
+        else:
+            self._full_output_content = self._content or ""
+
+    def on_mount(self) -> None:
+        """Initialize widget states once mounted."""
+        self._update_display_state()
+
     def on_click(self) -> None:
         """Toggle expanded view on click."""
         self._expanded = not self._expanded
-        self.recompose()
+        self._update_display_state()
+
+    def _update_display_state(self) -> None:
+        """Update visibility and text of child widgets based on expansion state."""
+        lines_count = len(self._full_output_content.splitlines())
+        is_bash = self._tool_name == "bash"
+
+        # 1. Update content widget
+        if is_bash:
+            self._content_static.styles.display = "block" if self._full_output_content else "none"
+            if lines_count > 10 and not self._expanded:
+                truncated_content = "\n".join(self._full_output_content.splitlines()[:10])
+                self._content_static.update(truncated_content)
+            else:
+                self._content_static.update(self._full_output_content)
+        else:
+            show_content = self._expanded or (self._is_error and self._show_detail)
+            self._content_static.styles.display = "block" if (show_content and self._full_output_content) else "none"
+            self._content_static.update(self._full_output_content)
+
+        # 2. Update hint widget
+        if is_bash and lines_count > 10:
+            self._hint_static.styles.display = "block"
+            if self._expanded:
+                self._hint_static.update("(click to collapse)")
+            else:
+                self._hint_static.update(f"... ({lines_count - 10} more lines, click to expand)")
+        else:
+            self._hint_static.styles.display = "none"
 
     def compose(self) -> ComposeResult:
         """Render tool name with key arguments; show error detail only on repeated failures."""
@@ -861,43 +955,20 @@ class ToolResultMessage(Static):
             returncode = self._parsed_bash.get("returncode", 0)
             exit_str = " [green](exit: 0)[/green]" if returncode == 0 else f" [red](exit: {returncode})[/red]"
 
-        label = f"{self._tool_name}{display_args}{exit_str}"
-        if self._description:
-            label = f"{label} ({self._description})"
+        escaped_description = escape(self._description) if self._description else ""
 
-        if self._is_error:
-            yield Static(f"[error]●[/error] {label}", classes="error")
-            if self._show_detail or self._expanded:
-                if self._parsed_bash is not None:
-                    stdout = self._parsed_bash.get("stdout", "").strip()
-                    stderr = self._parsed_bash.get("stderr", "").strip()
-                    combined = []
-                    if stdout:
-                        combined.append(stdout)
-                    if stderr:
-                        combined.append(stderr)
-                    output_content = "\n".join(combined)
-                    if output_content:
-                        yield Static(output_content, markup=False, classes="content")
-                else:
-                    if self._content:
-                        yield Static(self._content, markup=False, classes="content")
-        else:
-            yield Static(f"[success]●[/success] {label}", classes="success")
-            if self._expanded and self._content:
-                if self._parsed_bash is not None:
-                    stdout = self._parsed_bash.get("stdout", "").strip()
-                    stderr = self._parsed_bash.get("stderr", "").strip()
-                    combined = []
-                    if stdout:
-                        combined.append(stdout)
-                    if stderr:
-                        combined.append(stderr)
-                    output_content = "\n".join(combined)
-                    if output_content:
-                        yield Static(output_content, markup=False, classes="content")
-                else:
-                    yield Static(self._content, markup=False, classes="content")
+        label = f"{self._tool_name}{display_args}{exit_str}"
+        if escaped_description:
+            label = f"{label} ({escaped_description})"
+
+        header_classes = "error" if self._is_error else "success"
+        yield Static(f"[{header_classes}]●[/{header_classes}] {label}", classes=header_classes)
+
+        self._content_static = Static("", markup=False, classes="content")
+        yield self._content_static
+
+        self._hint_static = Static("", markup=False, classes="expansion-hint")
+        yield self._hint_static
 
 
 class RetryStatus(Static):

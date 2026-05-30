@@ -210,6 +210,21 @@ class SettingsScreen(Screen):
                         classes="settings-row",
                     )
 
+                    thinking_start_opts = [
+                        ("Auto-detect", "None"),
+                        ("Text", "text"),
+                        ("Thinking", "thinking"),
+                    ]
+                    yield Horizontal(
+                        Label("Thinking Start Mode", classes="settings-label"),
+                        Select(
+                            thinking_start_opts,
+                            value=str(self._cfg.llm.thinking_start_mode),
+                            id="llm_thinking_start_mode",
+                        ),
+                        classes="settings-row",
+                    )
+
                 with TabPane("UI & Panels", id="tab-ui"), VerticalScroll():
                     yield self._make_input("ui.theme", "Theme", self._cfg.ui.theme)
                     yield Label("Sidebar Panels (Check to enable)", classes="settings-section")
@@ -397,6 +412,13 @@ class SettingsScreen(Screen):
 
             reasoning = self._get_val("llm_reasoning_effort")
             set_nested(raw, ["llm", "reasoning_effort"], None if reasoning == "None" else reasoning)
+
+            thinking_start_mode = self._get_val("llm_thinking_start_mode")
+            set_nested(
+                raw,
+                ["llm", "thinking_start_mode"],
+                None if thinking_start_mode == "None" else thinking_start_mode,
+            )
 
             set_nested(raw, ["ui", "theme"], self._get_val("ui_theme"))
 

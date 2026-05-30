@@ -69,6 +69,41 @@ def finalize(self) -> None:
 ### Layout Stability
 Use `scrollbar-gutter: stable` to prevent the UI from shifting horizontally when a vertical scrollbar appears or disappears.
 
+### Collapsible/Expandable Custom Widgets (Static DOM Pattern)
+Avoid calling `recompose()` to toggle the size or visibility of collapsible children. Destroying and recreating widgets dynamically can lead to scrollbar layout failures, clipping, and swallowed pointer click events on children.
+
+Instead, define all child widgets statically in `compose()`, keep references to them, and toggle their visibility via `.styles.display = "block" | "none"` and update contents via `.update()` inside a state-refreshing method triggered by `on_mount` and click/event handlers:
+
+```python
+class CollapsibleResult(Vertical):
+    def __init__(self, content: str) -> None:
+        super().__init__()
+        self._content = content
+        self._expanded = False
+
+    def on_mount(self) -> None:
+        self._update_display_state()
+
+    def on_click(self) -> None:
+        self._expanded = not self._expanded
+        self._update_display_state()
+
+    def _update_display_state(self) -> None:
+        # Toggle child display styles and update text
+        self._content_static.styles.display = "block" if self._expanded else "none"
+        self._hint_static.update("(click to collapse)" if self._expanded else "click to expand")
+
+    def compose(self) -> ComposeResult:
+        yield Static("● Header Label")
+        self._content_static = Static(self._content, markup=False)
+        yield self._content_static
+        self._hint_static = Static("", markup=False)
+        yield self._hint_static
+```
+
+### Safe Markup in Dynamic Labels
+When rendering labels containing dynamic content (e.g. tool arguments, filenames, descriptions) alongside Rich markup tags (e.g. `[success]●[/success]`), always use `escape` from `rich.markup` on the dynamic portions. Unescaped brackets `[` or `]` in user data or arguments will break the markup parser, causing hidden text, swallowed characters, or rendering crashes.
+
 ## 3. Custom Widget Creation
 
 There are two primary ways to define the content and behavior of a custom `Widget` subclass:

@@ -162,7 +162,7 @@ class ModelCapabilities:
             lines.append(f"  {status} {name}: {'supported' if supported else 'NOT supported'}")
 
         if self.rejected_params:
-            lines.append(f"  ⚠️  Rejected params: {', '.join(self.rejected_params)}")
+            lines.append(f"  ⚠  Rejected params: {', '.join(self.rejected_params)}")
 
         if self.test_errors:
             lines.append("  Test errors:")

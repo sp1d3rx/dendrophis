@@ -317,9 +317,13 @@ class LLMClient:
 
         url = base + ("/responses" if is_openrouter and use_responses_api else "/chat/completions")
 
-        # Qwen3.5 on MLC starts the assistant turn inside <think> tags
-        sse_start_mode = "thinking" if is_local and "qwen3.5" in self._config.model.lower() else "text"
-
+        if self._config.thinking_start_mode is not None:
+            sse_start_mode = self._config.thinking_start_mode
+        else:
+            # Fallback to auto-detect based on model name
+            model_name_lower = self._config.model.lower()
+            is_thinking_model = "thinking" in model_name_lower or "reasoning" in model_name_lower
+            sse_start_mode = "thinking" if is_thinking_model else "text"
         tool_mode = self._config.tool_mode
         use_xml_tools = tool_mode == "xml"
 

@@ -418,7 +418,11 @@ class Session:
         if active and active.context_window > 0:
             self.config.llm.context_limit = active.context_window
             self.context._config = self.config
-            self._emit(ModelSwitchedEvent(model_id=model_id, context_window=active.context_window))
+            context_window = active.context_window
+        else:
+            context_window = self.config.llm.context_limit
+
+        self._emit(ModelSwitchedEvent(model_id=model_id, context_window=context_window))
         # Update system prompt caching based on new model's support
         self.context.update_system_prompt_caching(self.is_caching_enabled())
 

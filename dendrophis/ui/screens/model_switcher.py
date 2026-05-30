@@ -36,6 +36,7 @@ class ModelSwitcherScreen(ModalScreen[tuple[str, bool]]):
         border: thick $accent;
         background: $panel;
         padding: 1;
+        overflow: hidden;
     }
     #model-list {
         height: 1fr;
@@ -145,7 +146,7 @@ class ModelSwitcherScreen(ModalScreen[tuple[str, bool]]):
                 price_str = f" • ${price_val:.2f}/1M" if price_val > 0 else " • free"
 
                 # Tool support indicator
-                tool_str = "[green]🛠️[/]" if model.supports_tools else "[red]🚫 tools[/]"
+                tool_str = "[green]✓ tools[/]" if model.supports_tools else "[red]✗ tools[/]"
 
                 table.add_row(model.id, f"{tool_str} [dim]{ctx_str} ctx{price_str}[/dim]")
                 option_list.add_option(Option(table, id=model.id))
