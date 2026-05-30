@@ -836,6 +836,17 @@ class ToolResultMessage(Static):
         self._show_detail = consecutive_failures >= 2
         self._expanded = False
 
+        self._parsed_bash = None
+        if self._tool_name == "bash" and self._content:
+            try:
+                self._parsed_bash = json.loads(self._content)
+                if isinstance(self._parsed_bash, dict):
+                    returncode = self._parsed_bash.get("returncode", 0)
+                    if returncode != 0:
+                        self._is_error = True
+            except Exception:
+                pass
+
     def on_click(self) -> None:
         """Toggle expanded view on click."""
         self._expanded = not self._expanded
@@ -844,18 +855,49 @@ class ToolResultMessage(Static):
     def compose(self) -> ComposeResult:
         """Render tool name with key arguments; show error detail only on repeated failures."""
         display_args = _format_tool_args(self._tool_name, self._arguments)
-        label = f"{self._tool_name}{display_args}"
+
+        exit_str = ""
+        if self._parsed_bash is not None:
+            returncode = self._parsed_bash.get("returncode", 0)
+            exit_str = " [green](exit: 0)[/green]" if returncode == 0 else f" [red](exit: {returncode})[/red]"
+
+        label = f"{self._tool_name}{display_args}{exit_str}"
         if self._description:
             label = f"{label} ({self._description})"
 
         if self._is_error:
             yield Static(f"[error]●[/error] {label}", classes="error")
-            if self._show_detail or self._expanded:
-                yield Static(self._content, markup=False, classes="content")
+            if self._show_detail or self._expanded or self._tool_name == "bash":
+                if self._parsed_bash is not None:
+                    stdout = self._parsed_bash.get("stdout", "").strip()
+                    stderr = self._parsed_bash.get("stderr", "").strip()
+                    combined = []
+                    if stdout:
+                        combined.append(stdout)
+                    if stderr:
+                        combined.append(stderr)
+                    output_content = "\n".join(combined)
+                    if output_content:
+                        yield Static(output_content, markup=False, classes="content")
+                else:
+                    if self._content:
+                        yield Static(self._content, markup=False, classes="content")
         else:
             yield Static(f"[success]●[/success] {label}", classes="success")
             if (self._tool_name == "bash" or self._expanded) and self._content:
-                yield Static(self._content, markup=False, classes="content")
+                if self._parsed_bash is not None:
+                    stdout = self._parsed_bash.get("stdout", "").strip()
+                    stderr = self._parsed_bash.get("stderr", "").strip()
+                    combined = []
+                    if stdout:
+                        combined.append(stdout)
+                    if stderr:
+                        combined.append(stderr)
+                    output_content = "\n".join(combined)
+                    if output_content:
+                        yield Static(output_content, markup=False, classes="content")
+                else:
+                    yield Static(self._content, markup=False, classes="content")
 
 
 class RetryStatus(Static):
