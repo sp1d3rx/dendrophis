@@ -321,7 +321,7 @@ class LLMClient:
         sse_start_mode = "thinking" if is_local and "qwen3.5" in self._config.model.lower() else "text"
 
         tool_mode = self._config.tool_mode
-        use_xml_tools = tool_mode == "xml" or (tool_mode == "auto" and is_local)
+        use_xml_tools = tool_mode == "xml"
 
         return _ProviderContext(
             is_local=is_local,
