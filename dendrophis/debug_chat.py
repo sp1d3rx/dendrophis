@@ -92,7 +92,7 @@ def _format_event(event: AnyEvent) -> str:
         delta = event.delta.replace("\n", "\\n") if event.delta else ""
         return f"[{ts}] TextDelta delta={delta!r}"
     if isinstance(event, ReasoningDeltaEvent):
-        delta = event.reasoning.replace("\n", "\\n") if event.reasoning else ""
+        delta = event.delta.replace("\n", "\\n") if event.delta else ""
         return f"[{ts}] ReasoningDelta delta={delta!r}"
     if isinstance(event, ToolCallStartEvent):
         return f"[{ts}] ToolCallStart index={event.index} id={event.id} name={event.name}"
@@ -704,7 +704,7 @@ Examples:
     # Set config path in environment if provided
     if args.config:
         os.environ["DENDROPHIS_CONFIG"] = args.config
-    
+
     # Enable tool logging if requested
     if args.log:
         os.environ["DENDROPHIS_TOOL_LOG"] = "1"
@@ -714,10 +714,9 @@ Examples:
     if args.no_parallel_tools:
         # We need to load the config to set this flag
         from dendrophis.config.loader import ConfigLoader
+
         config_path = (
-            args.config
-            if args.config
-            else os.environ.get("DENDROPHIS_CONFIG", "~/.config/dendrophis/config.yaml")
+            args.config if args.config else os.environ.get("DENDROPHIS_CONFIG", "~/.config/dendrophis/config.yaml")
         )
         loader = ConfigLoader.load(config_path=config_path)
         loader.config.tools.parallel_tools = False
