@@ -322,6 +322,8 @@ class AssistantMessage(Vertical):
         self._last_status_widget: InlineToolStatus | None = None
         # Maps tool call index → placeholder status widget, for updating once args arrive
         self._tool_status_by_index: dict[int, InlineToolStatus] = {}
+        # Maps tool call ID → placeholder status widget, for placing results inline under tool calls
+        self._tool_status_by_id: dict[str, InlineToolStatus] = {}
         self._finalized: bool = False
 
     def compose(self) -> ComposeResult:
@@ -590,13 +592,15 @@ class AssistantMessage(Vertical):
             self._markdown.update(current)
         self._clean_parts = []
 
-    def add_tool_placeholder(self, index: int, tool_name: str) -> None:
+    def add_tool_placeholder(self, index: int, tool_name: str, tool_call_id: str | None = None) -> None:
         """Mount a placeholder status line for a tool call that is still streaming arguments."""
         self.remove_loading()
         self._freeze_current_segment()
 
         status = InlineToolStatus(f"⚙ {tool_name} [dim]…[/dim]")
         self._tool_status_by_index[index] = status
+        if tool_call_id:
+            self._tool_status_by_id[tool_call_id] = status
         self._last_status_widget = status
 
         new_md = CustomMarkdown("")
@@ -605,8 +609,10 @@ class AssistantMessage(Vertical):
 
         self.mount(status, new_md)
 
-    def add_inline_status(self, tool_name: str, description: str, arguments: str, index: int = -1) -> None:
-        """Update an existing placeholder (by index) or mount a new status line."""
+    def add_inline_status(
+        self, tool_name: str, description: str, arguments: str, index: int = -1, tool_call_id: str | None = None
+    ) -> None:
+        """Update an existing placeholder (by index or ID) or mount a new status line."""
         self.remove_loading()
 
         display_args = _format_tool_args(tool_name, arguments)
@@ -615,15 +621,26 @@ class AssistantMessage(Vertical):
             label += f" — {description}"
 
         # Update the placeholder created by add_tool_placeholder if we have one
-        existing = self._tool_status_by_index.pop(index, None) if index >= 0 else None
+        existing = None
+        if index >= 0:
+            existing = self._tool_status_by_index.pop(index, None)
+        if existing is None and tool_call_id:
+            existing = self._tool_status_by_id.get(tool_call_id)
+
         if existing is not None:
             existing.update(label)
+            if tool_call_id:
+                self._tool_status_by_id[tool_call_id] = existing
             self._last_status_widget = existing
             return
 
         # No placeholder — create the widget now (e.g. execution started without prior streaming)
         self._freeze_current_segment()
         status = InlineToolStatus(label)
+        if index >= 0:
+            self._tool_status_by_index[index] = status
+        if tool_call_id:
+            self._tool_status_by_id[tool_call_id] = status
         self._last_status_widget = status
 
         new_md = CustomMarkdown("")
@@ -633,12 +650,23 @@ class AssistantMessage(Vertical):
         self.mount(status, new_md)
 
     def add_inline_result(
-        self, tool_name: str, content: str, description: str, arguments: str, consecutive_failures: int
+        self,
+        tool_name: str,
+        content: str,
+        description: str,
+        arguments: str,
+        consecutive_failures: int,
+        tool_call_id: str | None = None,
     ) -> None:
-        """Mount a tool-result widget before the current (post-tool) markdown segment."""
+        """Mount a tool-result widget inline directly below the corresponding tool call status if found."""
         self._last_status_widget = None  # Prevent further updates to the previous status
         msg = ToolResultMessage(tool_name, content, description, arguments, consecutive_failures)
-        self.mount(msg, before=self._markdown)
+
+        existing_status = self._tool_status_by_id.pop(tool_call_id, None) if tool_call_id else None
+        if existing_status is not None:
+            self.mount(msg, after=existing_status)
+        else:
+            self.mount(msg, before=self._markdown)
 
     # ── Finalise ──────────────────────────────────────────────────────────────
 
@@ -893,11 +921,19 @@ class ChatView(VerticalScroll):
         self.scroll_end(animate=False)
 
     def add_tool_result(
-        self, tool_name: str, content: str, description: str = "", arguments: str = "", consecutive_failures: int = 0
+        self,
+        tool_name: str,
+        content: str,
+        description: str = "",
+        arguments: str = "",
+        consecutive_failures: int = 0,
+        tool_call_id: str | None = None,
     ) -> None:
         """Add a tool result. If streaming, inject inline inside the active bubble."""
         if self._active_bubble:
-            self._active_bubble.add_inline_result(tool_name, content, description, arguments, consecutive_failures)
+            self._active_bubble.add_inline_result(
+                tool_name, content, description, arguments, consecutive_failures, tool_call_id
+            )
             self._throttled_scroll_end()
             return
         # Fallback: no active bubble — mount as a standalone sibling
@@ -907,16 +943,23 @@ class ChatView(VerticalScroll):
         self._message_widgets.append(msg)
         self.scroll_end(animate=False)
 
-    def add_tool_placeholder(self, index: int, tool_name: str) -> None:
+    def add_tool_placeholder(self, index: int, tool_name: str, tool_call_id: str | None = None) -> None:
         """Add a placeholder status line for a streaming tool call."""
         if self._active_bubble:
-            self._active_bubble.add_tool_placeholder(index, tool_name)
+            self._active_bubble.add_tool_placeholder(index, tool_name, tool_call_id)
             self._throttled_scroll_end()
 
-    def add_tool_status(self, tool_name: str, description: str = "", arguments: str = "", index: int = -1) -> None:
+    def add_tool_status(
+        self,
+        tool_name: str,
+        description: str = "",
+        arguments: str = "",
+        index: int = -1,
+        tool_call_id: str | None = None,
+    ) -> None:
         """Add or update a tool-status line. If streaming, inject inline inside the active bubble."""
         if self._active_bubble:
-            self._active_bubble.add_inline_status(tool_name, description, arguments, index)
+            self._active_bubble.add_inline_status(tool_name, description, arguments, index, tool_call_id)
             self._throttled_scroll_end()
             return
         # Fallback: no active bubble — mount as a standalone sibling

@@ -189,6 +189,7 @@ class MainScreen(Screen):
             event.description,
             event.arguments,
             event.consecutive_failures,
+            tool_call_id=event.tool_call_id,
         )
 
     def _on_streaming_started(self, event: StreamingStartedEvent) -> None:
@@ -223,7 +224,7 @@ class MainScreen(Screen):
         )
 
     def _on_tool_call_start(self, event: ToolCallStartEvent) -> None:
-        self.query_one(ChatView).add_tool_placeholder(event.index, event.name)
+        self.query_one(ChatView).add_tool_placeholder(event.index, event.name, tool_call_id=event.id)
 
     def _on_tool_call_delta(self, event: ToolCallDeltaEvent) -> None:
         """Handle tool call delta events (streaming)."""
@@ -321,7 +322,12 @@ class MainScreen(Screen):
                             del pending_tool_calls[tc_id]
 
                         chat.add_tool_result(
-                            tc_name, tc_content, description="", arguments=arguments, consecutive_failures=0
+                            tc_name,
+                            tc_content,
+                            description="",
+                            arguments=arguments,
+                            consecutive_failures=0,
+                            tool_call_id=tc_id,
                         )
                     elif role == "system":
                         chat.add_system_message(content)
