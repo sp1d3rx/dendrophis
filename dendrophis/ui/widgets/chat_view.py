@@ -74,7 +74,7 @@ def _format_tool_args(tool_name: str, arguments: str) -> str:
             tag = args.get("tag")
             tag_suffix = f" [dim]({tag})[/dim]" if tag else ""
             return f" [cyan]{escape(query)}[/cyan]{tag_suffix}"
-        if tool_name == "recall_memory":
+        if tool_name in ("recall_memory", "delete_memory"):
             memory_id = args.get("memory_id", "")
             return f" [cyan]{escape(memory_id)}[/cyan]"
         if tool_name == "save_memory":
@@ -82,8 +82,19 @@ def _format_tool_args(tool_name: str, arguments: str) -> str:
             if len(content) > 60:
                 content = content[:57] + "…"
             return f" [cyan]{escape(content)}[/cyan]"
+        if tool_name == "ask_multiple_choice":
+            question = args.get("question", "")
+            if len(question) > 60:
+                question = question[:57] + "…"
+            return f" [cyan]{escape(question)}[/cyan]"
+        if tool_name == "invoke_subagent":
+            agent = args.get("agent", "")
+            task = args.get("task", "")
+            if len(task) > 50:
+                task = task[:47] + "…"
+            return f" [cyan]{escape(agent)}[/cyan] [dim]{escape(task)}[/dim]"
 
-        if tool_name in ("read", "edit", "write"):
+        if tool_name in ("read", "edit", "write", "analyze_functions", "get_function", "replace_function"):
             path = args.get("file_path", "")
             try:
                 rel = str(Path(path).relative_to(Path.cwd()))
@@ -92,18 +103,41 @@ def _format_tool_args(tool_name: str, arguments: str) -> str:
             if len(rel) > 60:
                 rel = "…" + rel[-57:]
 
-            # For read tool, add line number range if specified
+            suffix = ""
             if tool_name == "read":
-                offset = args.get("offset", 1)
-                limit = args.get("limit", "all")
-                if limit == "all":
-                    line_range = "[all]"
-                else:
-                    end_line = offset + limit - 1
-                    line_range = f"[{offset}:{end_line}]"
-                return f" [cyan]{escape(rel)}[/cyan][dim] {line_range}[/dim]"
+                offset = args.get("offset")
+                limit = args.get("limit")
 
-            return f" [cyan]{escape(rel)}[/cyan]"
+                if offset is None:
+                    offset = 1
+                if limit is None:
+                    limit = 2000
+
+                try:
+                    offset_val = int(offset)
+                    if str(limit).lower() == "all":
+                        line_range = f"[{offset_val}:all]"
+                    else:
+                        limit_val = int(limit)
+                        end_line = offset_val + limit_val - 1
+                        line_range = f"[{offset_val}:{end_line}]"
+                except (ValueError, TypeError):
+                    line_range = f"[{offset}:{limit}]"
+                suffix = f"[dim] {line_range}[/dim]"
+            elif tool_name in ("get_function", "replace_function"):
+                func = args.get("function_name", "")
+                suffix = f" [dim]({func})[/dim]"
+
+            return f" [cyan]{escape(rel)}[/cyan]{suffix}"
+
+        # Fallback for any other tools: check common keys
+        for key in ("file_path", "path", "command", "pattern", "query", "memory_id", "agent", "question"):
+            val = args.get(key)
+            if val:
+                val_str = str(val)
+                if len(val_str) > 60:
+                    val_str = val_str[:57] + "…"
+                return f" [cyan]{escape(val_str)}[/cyan]"
     except Exception:
         pass
     return ""
