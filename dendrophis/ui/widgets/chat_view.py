@@ -67,6 +67,22 @@ def _format_tool_args(tool_name: str, arguments: str) -> str:
             return f" [cyan]{escape(cmd)}[/cyan]"
         if tool_name in ("glob", "ripgrep"):
             return f" [cyan]{escape(args.get('pattern', ''))}[/cyan]"
+        if tool_name == "search_memory":
+            query = args.get("query", "")
+            if len(query) > 60:
+                query = query[:57] + "…"
+            tag = args.get("tag")
+            tag_suffix = f" [dim]({tag})[/dim]" if tag else ""
+            return f" [cyan]{escape(query)}[/cyan]{tag_suffix}"
+        if tool_name == "recall_memory":
+            memory_id = args.get("memory_id", "")
+            return f" [cyan]{escape(memory_id)}[/cyan]"
+        if tool_name == "save_memory":
+            content = args.get("content", "")
+            if len(content) > 60:
+                content = content[:57] + "…"
+            return f" [cyan]{escape(content)}[/cyan]"
+
         if tool_name in ("read", "edit", "write"):
             path = args.get("file_path", "")
             try:
