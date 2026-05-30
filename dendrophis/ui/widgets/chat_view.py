@@ -867,7 +867,7 @@ class ToolResultMessage(Static):
 
         if self._is_error:
             yield Static(f"[error]●[/error] {label}", classes="error")
-            if self._show_detail or self._expanded or self._tool_name == "bash":
+            if self._show_detail or self._expanded:
                 if self._parsed_bash is not None:
                     stdout = self._parsed_bash.get("stdout", "").strip()
                     stderr = self._parsed_bash.get("stderr", "").strip()
@@ -884,7 +884,7 @@ class ToolResultMessage(Static):
                         yield Static(self._content, markup=False, classes="content")
         else:
             yield Static(f"[success]●[/success] {label}", classes="success")
-            if (self._tool_name == "bash" or self._expanded) and self._content:
+            if self._expanded and self._content:
                 if self._parsed_bash is not None:
                     stdout = self._parsed_bash.get("stdout", "").strip()
                     stderr = self._parsed_bash.get("stderr", "").strip()
