@@ -41,10 +41,10 @@ Step into the canopy. Let Dendrophis help you code with clarity, speed, and a to
 
 ## Install
 
-**One-liner** (requires `git`, installs `uv` if missing):
+**One-liner** (requires [uv](https://github.com/astral-sh/uv)):
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/sp1d3rx/dendrophis/main/projects/install.sh | bash
+uv tool install git+https://github.com/sp1d3rx/dendrophis
 ```
 
 **Manual** (with [uv](https://github.com/astral-sh/uv)):
