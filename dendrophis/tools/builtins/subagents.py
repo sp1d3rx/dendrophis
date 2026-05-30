@@ -1,0 +1,99 @@
+"""Tool for invoking subagents from the orchestrator."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from dendrophis.subagents import get_session_executor
+from dendrophis.tools.base import BaseTool
+
+
+class InvokeSubagentTool(BaseTool):
+    """Invoke a subagent to perform a task."""
+
+    def _get_executor(self):
+        """Get the session's subagent executor."""
+        return get_session_executor()
+
+    @property
+    def name(self) -> str:
+        return "invoke_subagent"
+
+    @property
+    def description(self) -> str:
+        return "Invoke a subagent (researcher, planner, etc.) to perform a task. Returns complete result."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "enum": ["researcher", "planner", "code-writer", "code-reviewer", "test-runner", "debugger"],
+                    "description": "Which subagent to invoke",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Description of what the subagent should do",
+                },
+                "context": {
+                    "type": "object",
+                    "description": "Additional context (file paths, memory tags, etc.)",
+                },
+            },
+            "required": ["agent", "task"],
+        }
+
+    async def execute(self, agent: str, task: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute subagent and return result."""
+        executor = self._get_executor()
+        if executor is None:
+            return {
+                "success": False,
+                "agent": agent,
+                "error": "Subagent executor not initialized",
+            }
+
+        # Map simple task to proper payload based on agent
+        payload = self._build_payload(agent, task, context or {})
+
+        result = await executor.execute(
+            agent=agent,
+            payload=payload,
+            context=context,
+        )
+
+        if result.success and result.response:
+            return {
+                "success": True,
+                "agent": agent,
+                "result": result.response.result,
+                "status": result.response.status,
+            }
+        # Extract error from response.result if available
+        response_error = None
+        if result.response and isinstance(result.response.result, dict):
+            response_error = result.response.result.get("error")
+        error_msg = (
+            result.error
+            or response_error
+            or (f"Handler returned failure: {result.response.status}" if result.response else "No response")
+        )
+        return {
+            "success": False,
+            "agent": agent,
+            "error": error_msg,
+        }
+
+    def _build_payload(self, agent: str, task: str, context: dict[str, Any]) -> dict[str, Any]:
+        """Build agent-specific payload."""
+        if agent == "researcher":
+            return {
+                "query": task,
+                "sources": context.get("sources", ["files", "memory", "codebase"]),
+                "depth": context.get("depth", "quick"),
+                "context": context,
+            }
+        # Default: pass task through
+        return {"task": task, **context}

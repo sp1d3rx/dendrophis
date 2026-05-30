@@ -1,0 +1,55 @@
+# Dendrophis configuration for Codestral (Mistral AI)
+# Usage: DENDROPHIS_CONFIG=dendrophis/codestral.yaml python -m dendrophis
+# Or copy to ~/.config/dendrophis/config.yaml
+
+llm:
+  base_url: "https://api.mistral.ai/v1"
+  api_key: ""  # Set via MISTRAL_API_KEY environment variable
+  model: "codestral-latest"
+  max_tokens: 4096
+  temperature: 0.2
+  context_limit: 32768
+  compaction_threshold: 0.85
+  timeout: 120.0
+  reasoning_effort: "high"  # Codestral supports reasoning
+
+ui:
+  theme: monokai
+  colors:
+    primary: "#3B82F6"
+    secondary: "#8B5CF6"
+    success: "#16A34A"
+    warning: "#D97706"
+    danger: "#DC2626"
+    surface: "#FFFFFF"
+    text: "#111827"
+    neutral: "#FFFFFF"
+  scrollback_limit: 100
+
+caching:
+  enabled: true
+  tier1_system_prompt: true
+  tier1_tool_definitions: true
+  tier2_file_blocks: true
+  tier2_file_blocks_stable_turns: 3
+  tier2_project_understanding: true
+  tier2_project_understanding_min_turns: 5
+  tier3_on_compaction: true
+
+tools:
+  extra_paths: []
+  max_calls: 3
+
+permissions:
+  require_confirmation:
+    - bash
+  denied_tools: []
+  allowed_tools: []
+  bash:
+    denied_categories:
+      - system_destructive
+    auto_approve_categories:
+      - filesystem_read
+    allowed_categories: []
+
+memory_db: "~/.config/dendrophis/memory.db"

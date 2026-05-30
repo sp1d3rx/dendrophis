@@ -1,0 +1,72 @@
+# Sample pre-commit configuration for py-style skill
+# This demonstrates how to integrate the py-style skill into a Git workflow
+# 
+# Usage:
+# 1. Install pre-commit: pip install pre-commit
+# 2. Add this file as .pre-commit-config.yaml to your project
+# 3. Run: pre-commit install
+# 4. The skill will run on every commit
+
+repos:
+  # py-style skill as a local hook
+  - repo: local
+    hooks:
+      - id: py-style
+        name: py-style (Raymond Hettinger principles)
+        entry: python -m dendrophis.skills.py_style_cli
+        language: python
+        language_version: python3.10
+        types: [python]
+        files: \.py$
+        # Only analyze, don't auto-fix (safe mode)
+        args: ["--check"]
+        
+      - id: py-style-fix
+        name: py-style (auto-fix safe cases)
+        entry: python -m dendrophis.skills.py_style_cli
+        language: python
+        language_version: python3.10
+        types: [python]
+        files: \.py$
+        # Auto-fix safe cases
+        args: ["--fix"]
+        stages: [manual]
+
+  # Complementary hooks that align with py-style principles
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        # Black's line length matches our style
+        args: [--line-length=88]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.4
+    hooks:
+      - id: ruff
+        args: [--fix, --line-length=88, --select=F401,E,W,C,I,B]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-requests, types-python-dateutil]
+        args: [--python-version=3.10, --strict, --ignore-missing-imports]
+
+# Alternative: Run py-style as a standalone script without Dendrophis
+# - repo: local
+#   hooks:
+#     - id: py-style-standalone
+#       name: py-style (standalone)
+#       entry: python path/to/py_style_checker.py
+#       language: script
+#       types: [python]
+#       files: \.py$
