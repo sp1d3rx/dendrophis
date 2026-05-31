@@ -2,6 +2,8 @@
 dendrophis.yaml
 openrouter.yaml
 omlx.yaml
+venice.yaml
+
 
 # logs
 *.log
