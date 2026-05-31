@@ -169,7 +169,31 @@ class ModelInfo:
         if model_type in ("text-generation", "chat", "text"):
             return True
 
-        well_known = ("gpt", "claude", "llama", "qwen", "mistral", "mixtral", "deepseek", "nova", "olmo")
+        well_known = (
+            "gpt",
+            "claude",
+            "llama",
+            "qwen",
+            "mistral",
+            "mixtral",
+            "deepseek",
+            "nova",
+            "olmo",
+            "gemma",
+            "phi",
+            "lfm",
+            "devstral",
+            "dolphin",
+            "command",
+            "grok",
+            "nemotron",
+            "smollm",
+            "granite",
+            "yi",
+            "internlm",
+            "falcon",
+            "stablelm",
+        )
         return any(pattern in self.id.lower() for pattern in well_known)
 
     @property
