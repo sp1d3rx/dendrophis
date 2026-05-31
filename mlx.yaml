@@ -1,12 +1,30 @@
 llm:
+  # --- Connection Settings ---
+  # Base URL of the OpenAI-compatible API endpoint
   base_url: http://127.0.0.1:8080/v1
+  # API key used for authentication (local servers accept any dummy string)
   api_key: mlx
-  model: Qwen3-4B-Thinking-2507-MLX-6bit
-  max_tokens: 16384
-  temperature: 0.1
-  context_limit: 65536
-  compaction_threshold: 0.85
+  # Maximum network request timeout in seconds
   timeout: 300.0
+
+  # --- Model Selection ---
+  # The primary LLM used for standard chat and agentic reasoning
+  model: Qwen3-4B-Thinking-2507-MLX-6bit
+  # The model dedicated to the code-writer subagent for executing code changes (null = fallback to default)
+  code_writer_model: null
+
+  # --- Context & Compaction ---
+  # Maximum context window limit in tokens
+  context_limit: 65536
+  # Compress history when token usage exceeds this fraction of the context limit (e.g., 0.85 = 85%)
+  compaction_threshold: 0.85
+
+  # --- Generation & Sampling ---
+  # Maximum tokens the model is allowed to generate per response
+  max_tokens: 16384
+  # Sampling temperature (lower is more deterministic, higher is more creative)
+  temperature: 0.1
+  # Custom stop sequences for the model
   stop:
   - <|im_end|>
   - <|im_start|>

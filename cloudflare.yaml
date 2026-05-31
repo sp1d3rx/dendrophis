@@ -6,22 +6,36 @@
 #   - API Token: https://dash.cloudflare.com/profile/api-tokens (use 'Cloudflare AI' template)
 
 llm:
-  # Cloudflare Workers AI OpenAI-compatible endpoint
+  # --- Connection Settings ---
+  # Base URL of the OpenAI-compatible API endpoint (Cloudflare Workers AI OpenAI-compatible endpoint)
   base_url: "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1"
-  api_key: ""           # Set via DENDROPHIS_API_KEY env var or paste token here
+  # API key used for authentication (Set via DENDROPHIS_API_KEY env var or paste token here)
+  api_key: ""
+  # Maximum network request timeout in seconds
+  timeout: 120.0
 
+  # --- Model Selection ---
+  # The primary LLM used for standard chat and agentic reasoning
   # Recommended models (prefix with @cf/ for Cloudflare-hosted models)
   # See full list: https://developers.cloudflare.com/workers-ai/models/
   model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   # model: "@cf/meta/llama-3.1-8b-instruct"
   # model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"
   # model: "@cf/mistral/mistral-7b-instruct-v0.1"
+  # The model dedicated to the code-writer subagent for executing code changes (null = fallback to default)
+  code_writer_model: null
 
-  max_tokens: 4096
-  temperature: 0.2
-  context_limit: 32768      # Workers AI context window (varies by model)
+  # --- Context & Compaction ---
+  # Maximum context window limit in tokens (Workers AI context window varies by model)
+  context_limit: 32768
+  # Compress history when token usage exceeds this fraction of the context limit (e.g., 0.85 = 85%)
   compaction_threshold: 0.85
-  timeout: 120.0
+
+  # --- Generation & Sampling ---
+  # Maximum tokens the model is allowed to generate per response
+  max_tokens: 4096
+  # Sampling temperature (lower is more deterministic, higher is more creative)
+  temperature: 0.2
 
 sidebar:
   position: right

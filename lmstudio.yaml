@@ -1,13 +1,34 @@
 llm:
+  # --- Connection Settings ---
+  # Base URL of the OpenAI-compatible API endpoint
   base_url: "http://127.0.0.1:1234/v1"
-  api_key: "lmstudio" # leave blank to be prompted on startup; or set DENDROPHIS_API_KEY
-  model: "qwen/qwen2.5-coder-14b"
-  max_tokens: 16384
-  temperature: 0.2
-  context_limit: 262144
-  compaction_threshold: 0.85
+  # API key used for authentication (leave blank to be prompted on startup; or set DENDROPHIS_API_KEY)
+  api_key: "lmstudio"
+  # Maximum network request timeout in seconds
   timeout: 240.0
+
+  # --- Model Selection ---
+  # The primary LLM used for standard chat and agentic reasoning
+  model: "qwen/qwen2.5-coder-14b"
+  # The model dedicated to the code-writer subagent for executing code changes (null = fallback to default)
+  code_writer_model: null
+
+  # --- Context & Compaction ---
+  # Maximum context window limit in tokens
+  context_limit: 262144
+  # Compress history when token usage exceeds this fraction of the context limit (e.g., 0.85 = 85%)
+  compaction_threshold: 0.85
+
+  # --- Generation & Sampling ---
+  # Maximum tokens the model is allowed to generate per response
+  max_tokens: 16384
+  # Sampling temperature (lower is more deterministic, higher is more creative)
+  temperature: 0.2
+  # Reasoning depth for thinking models (e.g., low, medium, high, or none to disable)
   reasoning_effort: low
+
+  # --- Tool Configuration ---
+  # Format to send tools: "auto" (XML for local, native otherwise), "native" (OpenAI API), or "xml"
   tool_mode: native
 ui:
   colors:
