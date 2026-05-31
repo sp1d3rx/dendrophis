@@ -119,10 +119,8 @@ class MemoryStore:
                 );
             """)
             # Migration: add summary column if it doesn't exist (legacy DBs)
-            try:
+            with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ALTER TABLE memories ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
-            except sqlite3.OperationalError:
-                pass  # Column already exists
 
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS tags (
@@ -423,9 +421,7 @@ class MemoryStore:
             rows = conn.execute("SELECT tag_name FROM tag_memories WHERE memory_id = ?", (memory_id,)).fetchall()
             return [row["tag_name"] for row in rows]
 
-    def _increment_tag_count(
-        self, tag: str, conn: sqlite3.Connection | None = None
-    ) -> None:
+    def _increment_tag_count(self, tag: str, conn: sqlite3.Connection | None = None) -> None:
         if conn:
             conn.execute(
                 """INSERT INTO tags (name, memory_count) VALUES (?, 1)
@@ -440,24 +436,14 @@ class MemoryStore:
                     (tag,),
                 )
 
-    def _decrement_tag_count(
-        self, tag: str, conn: sqlite3.Connection | None = None
-    ) -> None:
+    def _decrement_tag_count(self, tag: str, conn: sqlite3.Connection | None = None) -> None:
         if conn:
-            conn.execute(
-                "UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,)
-            )
-            conn.execute(
-                "DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,)
-            )
+            conn.execute("UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,))
+            conn.execute("DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,))
         else:
             with self._connect() as conn:
-                conn.execute(
-                    "UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,)
-                )
-                conn.execute(
-                    "DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,)
-                )
+                conn.execute("UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,))
+                conn.execute("DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,))
 
     def increment_score(self, memory_id: str, amount: float = 1.0) -> None:
         """Increment the usage score of a memory (boosts it in search results)."""
@@ -472,7 +458,7 @@ class MemoryStore:
         return MemoryEntry(
             id=row["id"],
             content=row["content"],
-            summary=row["summary"] if "summary" in row.keys() else "",
+            summary=row["summary"] if "summary" in row else "",  # noqa: SIM401
             tags=json.loads(row["tags"]),
             source=row["source"],
             project_id=row["project_id"] or "",

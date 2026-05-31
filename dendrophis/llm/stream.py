@@ -160,11 +160,152 @@ def _parse_function_xml(rawText: str) -> tuple[str, dict] | None:
     return functionName, toolArguments
 
 
+def _parse_python_literal(literal_string: str) -> Any:
+    literal_string = literal_string.strip()
+    if not literal_string:
+        return None
+    # Booleans and None
+    if literal_string == "True" or literal_string == "true":
+        return True
+    if literal_string == "False" or literal_string == "false":
+        return False
+    if literal_string == "None" or literal_string == "null":
+        return None
+
+    # Strings
+    if (literal_string.startswith('"') and literal_string.endswith('"')) or (
+        literal_string.startswith("'") and literal_string.endswith("'")
+    ):
+        # Strip quotes and handle escape characters
+        content_string = literal_string[1:-1]
+        # Unescape common sequences
+        return content_string.encode("utf-8").decode("unicode_escape")
+
+    # Numeric
+    try:
+        if "." in literal_string:
+            return float(literal_string)
+        return int(literal_string)
+    except ValueError:
+        pass
+
+    # Fallback to json parsing for lists/dicts if formatted as json
+    try:
+        return json.loads(literal_string)
+    except json.JSONDecodeError:
+        pass
+
+    return literal_string
+
+
+def _parse_lfm_args(arguments_string: str) -> dict[str, Any]:
+    arguments = {}
+    total_length = len(arguments_string)
+    current_index = 0
+
+    while current_index < total_length:
+        # Skip whitespace and commas
+        while current_index < total_length and (
+            arguments_string[current_index].isspace() or arguments_string[current_index] == ","
+        ):
+            current_index += 1
+        if current_index >= total_length:
+            break
+
+        # Parse key
+        key_start = current_index
+        while current_index < total_length and (
+            arguments_string[current_index].isalnum() or arguments_string[current_index] == "_"
+        ):
+            current_index += 1
+        key_name = arguments_string[key_start:current_index]
+
+        # Skip whitespace
+        while current_index < total_length and arguments_string[current_index].isspace():
+            current_index += 1
+
+        if current_index >= total_length or arguments_string[current_index] != "=":
+            # Malformed key-value or end of string
+            break
+        current_index += 1  # consume '='
+
+        # Skip whitespace
+        while current_index < total_length and arguments_string[current_index].isspace():
+            current_index += 1
+
+        # Parse value
+        value_start = current_index
+        in_double_quote = False
+        in_single_quote = False
+        bracket_stack = []
+        is_escaped = False
+
+        while current_index < total_length:
+            character = arguments_string[current_index]
+            if is_escaped:
+                is_escaped = False
+                current_index += 1
+                continue
+
+            if character == "\\":
+                is_escaped = True
+                current_index += 1
+                continue
+
+            if in_double_quote:
+                if character == '"':
+                    in_double_quote = False
+            elif in_single_quote:
+                if character == "'":
+                    in_single_quote = False
+            else:
+                if character == '"':
+                    in_double_quote = True
+                elif character == "'":
+                    in_single_quote = True
+                elif character in ("[", "{", "("):
+                    bracket_stack.append(character)
+                elif character in ("]", "}", ")"):
+                    if bracket_stack:
+                        bracket_stack.pop()
+                elif character == "," and not bracket_stack:
+                    break
+
+            current_index += 1
+
+        value_raw = arguments_string[value_start:current_index].strip()
+        value_parsed = _parse_python_literal(value_raw)
+        if key_name:
+            arguments[key_name] = value_parsed
+
+    return arguments
+
+
 def _emit_tool_call_events(callContent: str) -> list[StreamEvent]:
     """Parse tool call content (XML or JSON) and return the sequence of events."""
     events: list[StreamEvent] = []
     toolCallIndex = 999
     toolCallId = f"tc-{hash(callContent) % 10000}"
+
+    # Try LFM format: [name(args)]
+    stripped_content = callContent.strip()
+    if stripped_content.startswith("[") and stripped_content.endswith("]"):
+        inner_content = stripped_content[1:-1].strip()
+        lfm_match = re.match(r"^([a-zA-Z0-9_]+)\((.*)\)$", inner_content, re.DOTALL)
+        if lfm_match:
+            tool_name = lfm_match.group(1).strip()
+            tool_arguments = _parse_lfm_args(lfm_match.group(2))
+            serialized_arguments = json.dumps(tool_arguments)
+            events.append(ToolCallStartEvent(index=toolCallIndex, id=toolCallId, name=tool_name))
+            events.append(ToolCallDeltaEvent(index=toolCallIndex, arguments_delta=serialized_arguments))
+            events.append(
+                ToolCallDoneEvent(
+                    tool_call=ToolCall(
+                        index=toolCallIndex, id=toolCallId, name=tool_name, arguments=serialized_arguments
+                    )
+                )
+            )
+            return events
 
     # Try Sushi-Coder / Hermes XML format: <function=name><parameter=p>v</parameter></function>
     parsedFunction = _parse_function_xml(callContent)
@@ -312,15 +453,24 @@ def parse_sse_event(
                     # Look for start tags
                     thinkStart = remainingContent.find("<think>")
                     toolStart = remainingContent.find("<tool_call>")
+                    toolStartPipe = remainingContent.find("<tool_call|>")
+                    lfm_tool_start = remainingContent.find("<|tool_call_start|>")
+                    lfm_tool_start_short = remainingContent.find("<|tool_call>")
 
                     # Check for partial tags at the very end of the string
                     potentialTagIndex = remainingContent.rfind("<")
                     if potentialTagIndex != -1:
                         # Only buffer if it's AFTER any complete tag found in this chunk
-                        foundTagIndex = max(thinkStart, toolStart)
+                        foundTagIndex = max(thinkStart, toolStart, toolStartPipe, lfm_tool_start, lfm_tool_start_short)
                         if potentialTagIndex > foundTagIndex:
                             fragment = remainingContent[potentialTagIndex:]
-                            if "<think>".startswith(fragment) or "<tool_call>".startswith(fragment):
+                            if (
+                                "<think>".startswith(fragment)
+                                or "<tool_call>".startswith(fragment)
+                                or "<tool_call|>".startswith(fragment)
+                                or "<|tool_call_start|>".startswith(fragment)
+                                or "<|tool_call>".startswith(fragment)
+                            ):
                                 if potentialTagIndex > 0:
                                     events.append(TextDeltaEvent(delta=remainingContent[:potentialTagIndex]))
                                 parsingState["pending"] = fragment
@@ -332,6 +482,12 @@ def parse_sse_event(
                         modeIndices.append((thinkStart, "thinking", 7))
                     if toolStart != -1:
                         modeIndices.append((toolStart, "tool_calling", 11))
+                    if toolStartPipe != -1:
+                        modeIndices.append((toolStartPipe, "tool_calling", 12))
+                    if lfm_tool_start != -1:
+                        modeIndices.append((lfm_tool_start, "tool_calling", 19))
+                    if lfm_tool_start_short != -1:
+                        modeIndices.append((lfm_tool_start_short, "tool_calling", 12))
 
                     if not modeIndices:
                         # No complete tags, just emit text
@@ -352,6 +508,7 @@ def parse_sse_event(
 
                     # Robustness: look for new tags that might indicate an implicit end
                     nextToolStart = remainingContent.find("<tool_call>")
+                    next_lfm_tool_start = remainingContent.find("<|tool_call_start|>")
                     nextThinkStart = remainingContent.find("<think>")
 
                     interestingIndices = []
@@ -359,6 +516,8 @@ def parse_sse_event(
                         interestingIndices.append((thinkEnd, "end", 8))
                     if nextToolStart != -1:
                         interestingIndices.append((nextToolStart, "transition", 0))
+                    if next_lfm_tool_start != -1:
+                        interestingIndices.append((next_lfm_tool_start, "transition", 0))
                     if nextThinkStart != -1:
                         interestingIndices.append((nextThinkStart, "transition", 0))
 
@@ -376,7 +535,11 @@ def parse_sse_event(
                         potentialStartIndex = remainingContent.rfind("<")
                         if potentialStartIndex != -1:
                             fragment = remainingContent[potentialStartIndex:]
-                            if "<think>".startswith(fragment) or "<tool_call>".startswith(fragment):
+                            if (
+                                "<think>".startswith(fragment)
+                                or "<tool_call>".startswith(fragment)
+                                or "<|tool_call_start|>".startswith(fragment)
+                            ):
                                 if potentialStartIndex > 0:
                                     events.append(ReasoningDeltaEvent(delta=remainingContent[:potentialStartIndex]))
                                 parsingState["pending"] = fragment
@@ -399,16 +562,34 @@ def parse_sse_event(
 
                 elif parsingState["mode"] == "tool_calling":
                     toolEnd = remainingContent.find("</tool_call>")
+                    toolEndPipe = remainingContent.find("</tool_call|>")
+                    lfm_tool_end = remainingContent.find("<|tool_call_end|>")
+                    tool_end_pipe_only = remainingContent.find("<tool_call|>")
 
                     # Robustness: look for new tags that might indicate an implicit end
                     nextToolStart = remainingContent.find("<tool_call>")
+                    nextToolStartPipe = remainingContent.find("<tool_call|>")
+                    next_lfm_tool_start = remainingContent.find("<|tool_call_start|>")
+                    next_lfm_tool_start_short = remainingContent.find("<|tool_call>")
                     nextThinkStart = remainingContent.find("<think>")
 
                     interestingIndices = []
                     if toolEnd != -1:
                         interestingIndices.append((toolEnd, "end", 12))
+                    if toolEndPipe != -1:
+                        interestingIndices.append((toolEndPipe, "end", 13))
+                    if lfm_tool_end != -1:
+                        interestingIndices.append((lfm_tool_end, "end", 17))
+                    if tool_end_pipe_only != -1:
+                        interestingIndices.append((tool_end_pipe_only, "end", 12))
                     if nextToolStart != -1:
                         interestingIndices.append((nextToolStart, "transition", 0))
+                    if nextToolStartPipe != -1:
+                        interestingIndices.append((nextToolStartPipe, "transition", 0))
+                    if next_lfm_tool_start != -1:
+                        interestingIndices.append((next_lfm_tool_start, "transition", 0))
+                    if next_lfm_tool_start_short != -1:
+                        interestingIndices.append((next_lfm_tool_start_short, "transition", 0))
                     if nextThinkStart != -1:
                         interestingIndices.append((nextThinkStart, "transition", 0))
 
@@ -417,7 +598,7 @@ def parse_sse_event(
                         potentialEndIndex = remainingContent.rfind("</")
                         if potentialEndIndex != -1:
                             fragment = remainingContent[potentialEndIndex:]
-                            if "</tool_call>".startswith(fragment):
+                            if "</tool_call>".startswith(fragment) or "</tool_call|>".startswith(fragment):
                                 parsingState["buffer"] += remainingContent[:potentialEndIndex]
                                 parsingState["pending"] = fragment
                                 break
@@ -425,7 +606,14 @@ def parse_sse_event(
                         potentialStartIndex = remainingContent.rfind("<")
                         if potentialStartIndex != -1:
                             fragment = remainingContent[potentialStartIndex:]
-                            if "<tool_call>".startswith(fragment) or "<think>".startswith(fragment):
+                            if (
+                                "<tool_call>".startswith(fragment)
+                                or "<tool_call|>".startswith(fragment)
+                                or "<think>".startswith(fragment)
+                                or "<|tool_call_start|>".startswith(fragment)
+                                or "<|tool_call_end|>".startswith(fragment)
+                                or "<|tool_call>".startswith(fragment)
+                            ):
                                 parsingState["buffer"] += remainingContent[:potentialStartIndex]
                                 parsingState["pending"] = fragment
                                 break
@@ -521,40 +709,62 @@ def parse_text_tool_calls(rawText: str) -> list[ToolCall]:
     """
     results: list[ToolCall] = []
 
-    for regexMatch in re.finditer(r"<tool_call>(.*?)(?:</tool_call>|$)", rawText, re.DOTALL):
+    # First try LFM format: <|tool_call_start|>[name(args)]<|tool_call_end|>
+    for regexMatch in re.finditer(
+        r"<\|tool_call(?:_start)?\|?>(.*?)(?:<\|tool_call_end\|>|<tool_call\|?>|$)", rawText, re.DOTALL
+    ):
         matchedContent = regexMatch.group(1).strip()
-        rawToolCallId = f"call_{uuid.uuid4().hex[:8]}"
-
-        # Format 1: <function=name><parameter=p>v</parameter>...</function>
-        parsedFunction = _parse_function_xml(matchedContent)
-        if parsedFunction:
-            toolName, toolArguments = parsedFunction
-            results.append(
-                ToolCall(
-                    index=len(results),
-                    id=rawToolCallId,
-                    name=toolName,
-                    arguments=json.dumps(toolArguments),
+        if matchedContent.startswith("[") and matchedContent.endswith("]"):
+            inner_content = matchedContent[1:-1].strip()
+            lfm_match = re.match(r"^([a-zA-Z0-9_]+)\((.*)\)$", inner_content, re.DOTALL)
+            if lfm_match:
+                tool_name = lfm_match.group(1).strip()
+                tool_arguments = _parse_lfm_args(lfm_match.group(2))
+                rawToolCallId = f"call_{uuid.uuid4().hex[:8]}"
+                results.append(
+                    ToolCall(
+                        index=len(results),
+                        id=rawToolCallId,
+                        name=tool_name,
+                        arguments=json.dumps(tool_arguments),
+                    )
                 )
-            )
-            continue
 
-        # Format 2: JSON {"name": ..., "arguments": ...}
-        try:
-            decodedPayload = json.loads(matchedContent)
-            if isinstance(decodedPayload, dict) and "name" in decodedPayload and "arguments" in decodedPayload:
-                arguments = decodedPayload["arguments"]
-                toolName = decodedPayload.get("name", "unknown")
+    if not results:
+        for regexMatch in re.finditer(r"<tool_call\|?>(.*?)(?:</tool_call\|?>|$)", rawText, re.DOTALL):
+            matchedContent = regexMatch.group(1).strip()
+            rawToolCallId = f"call_{uuid.uuid4().hex[:8]}"
+
+            # Format 1: <function=name><parameter=p>v</parameter>...</function>
+            parsedFunction = _parse_function_xml(matchedContent)
+            if parsedFunction:
+                toolName, toolArguments = parsedFunction
                 results.append(
                     ToolCall(
                         index=len(results),
                         id=rawToolCallId,
                         name=toolName,
-                        arguments=json.dumps(arguments) if isinstance(arguments, dict) else str(arguments),
+                        arguments=json.dumps(toolArguments),
                     )
                 )
-        except (json.JSONDecodeError, KeyError):
-            pass
+                continue
+
+            # Format 2: JSON {"name": ..., "arguments": ...}
+            try:
+                decodedPayload = json.loads(matchedContent)
+                if isinstance(decodedPayload, dict) and "name" in decodedPayload and "arguments" in decodedPayload:
+                    arguments = decodedPayload["arguments"]
+                    toolName = decodedPayload.get("name", "unknown")
+                    results.append(
+                        ToolCall(
+                            index=len(results),
+                            id=rawToolCallId,
+                            name=toolName,
+                            arguments=json.dumps(arguments) if isinstance(arguments, dict) else str(arguments),
+                        )
+                    )
+            except (json.JSONDecodeError, KeyError):
+                pass
 
     if not results:
         for regexMatch in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", rawText, re.DOTALL):

@@ -475,7 +475,10 @@ class WriteTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Create a completely new file. Fails if file already exists. Provide the FULL file content."
+        return (
+            "Write content to a file, creating it if it doesn't exist, or overwriting it if it does. "
+            "Provide the FULL file content."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -512,9 +515,6 @@ class WriteTool(BaseTool):
             except Exception:
                 pass
 
-            if path.exists():
-                return {"error": f"File already exists: {file_path}", "hint": "Use 'edit' instead"}
-
             path.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(path.write_text, content, encoding="utf-8")
 
@@ -523,8 +523,8 @@ class WriteTool(BaseTool):
                 "file": str(path),
                 "written_bytes": len(content.encode("utf-8")),
             }
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as error:
+            return {"error": str(error)}
 
 
 def get_filesystem_tools() -> list[BaseTool]:

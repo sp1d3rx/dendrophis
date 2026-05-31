@@ -278,7 +278,8 @@ def main() -> None:
     # Set up tool logging if --log flag is provided
     if args.log:
         import os
-        os.environ['DENDROPHIS_TOOL_LOG'] = '1'
+
+        os.environ["DENDROPHIS_TOOL_LOG"] = "1"
         print("🔍 Tool execution logging enabled - check tool_log.txt")
 
     # Set parallel tools config based on --no-parallel-tools flag

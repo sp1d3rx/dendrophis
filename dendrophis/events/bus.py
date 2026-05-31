@@ -6,6 +6,7 @@ import asyncio
 import bisect
 import contextvars
 import heapq
+import inspect
 import logging
 import threading
 import time
@@ -91,7 +92,7 @@ class EventBus(IEventBus):
             priority: Lower values fire first. Default 0.
         """
         ctx = contextvars.copy_context()
-        is_async = asyncio.iscoroutinefunction(handler)
+        is_async = inspect.iscoroutinefunction(handler)
         with self._lock:
             # Insert in sorted order using bisect (O(n) insertion but maintains sorted list)
             # Tuple: (priority, insertion_counter, handler, context, is_async)

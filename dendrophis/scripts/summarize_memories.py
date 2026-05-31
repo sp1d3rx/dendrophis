@@ -21,38 +21,39 @@ async def summarize_memories(config_path: str | None = None):
     loader = ConfigLoader.load(config_path)
     config = loader.config
     store = MemoryStore(config.memory_db)
-    
+
     # Get all memories
     all_memories = store.list_memories(limit=10000)
-    
+
     # Filter to those without summaries
     to_summarize = [m for m in all_memories if not m.summary]
-    
+
     if not to_summarize:
         print("No memories need summarization.")
         return
-    
+
     print(f"Found {len(to_summarize)} memories without summaries.")
-    
+
     # Initialize LLM client for summarization
     from dendrophis.llm.client import LLMConfig
+
     llm_config = LLMConfig(
         api_key=config.llm.api_key,
         base_url=config.llm.base_url,
         model=config.llm.model,
     )
     llm = LLMClient(llm_config)
-    
+
     for i, memory in enumerate(to_summarize, 1):
         print(f"\n[{i}/{len(to_summarize)}] Summarizing memory {memory.id[:8]}...")
-        
+
         # Generate summary
         prompt = f"""Summarize this memory in one concise sentence:
 
 {memory.content[:500]}
 
 Summary:"""
-        
+
         try:
             response = await llm.complete(
                 messages=[{"role": "user", "content": prompt}],
@@ -60,17 +61,17 @@ Summary:"""
                 max_tokens=100,
             )
             summary = response.text.strip()
-            
+
             # Remove quotes if present
-            summary = summary.strip('"\'')
-            
+            summary = summary.strip("\"'")
+
             # Update the memory
             store.update_memory(memory.id, summary=summary)
             print(f"  → {summary}")
-            
+
         except Exception as e:
             print(f"  ✗ Failed: {e}")
-    
+
     print(f"\nDone! Summarized {len(to_summarize)} memories.")
 
 

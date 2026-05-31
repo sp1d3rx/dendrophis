@@ -20,12 +20,19 @@ class Sidebar(VerticalScroll):
 
     DEFAULT_CSS = """
     Sidebar {
-        width: 32;
-        dock: right;
         background: $surface-darken-2;
-        border-left: solid $primary 20%;
         padding: 1;
         scrollbar-size: 1 1;
+    }
+    Sidebar.dock-left {
+        dock: left;
+        border-right: solid $primary 20%;
+        border-left: none;
+    }
+    Sidebar.dock-right {
+        dock: right;
+        border-left: solid $primary 20%;
+        border-right: none;
     }
     """
 
@@ -33,6 +40,18 @@ class Sidebar(VerticalScroll):
         super().__init__()
         self._session = session
         self._event_bus = event_bus
+
+    def on_mount(self) -> None:
+        """Apply layout and styling parameters from configuration."""
+        sidebar_config = self._session.config.ui.sidebar
+        self.styles.width = sidebar_config.width
+
+        if sidebar_config.position == "left":
+            self.add_class("dock-left")
+            self.remove_class("dock-right")
+        else:
+            self.add_class("dock-right")
+            self.remove_class("dock-left")
 
     def compose(self) -> ComposeResult:
         """Compose sidebar panels based on config order."""

@@ -528,3 +528,25 @@ class TestHybridSearch:
         assert len(results) >= 1
         # Score should be between 0 and 1
         assert 0 <= results[0].score <= 1
+
+
+@pytest.mark.anyio
+async def test_search_memory_tool_query_optional(store):
+    from dendrophis.tools.builtins.memory import SearchMemoryTool
+
+    # Save some memories
+    store.save_memory(content="memory with python tag", tags=["python"])
+    store.save_memory(content="memory with rust tag", tags=["rust"])
+
+    tool = SearchMemoryTool(store)
+
+    # 1. Search with only tag (no query)
+    result = await tool.execute(query=None, tag="python")
+    assert result["success"] is True
+    assert len(result["results"]) == 1
+    assert "python" in result["results"][0]["tags"]
+
+    # 2. Search with neither query nor tag
+    all_results = await tool.execute(query=None)
+    assert all_results["success"] is True
+    assert len(all_results["results"]) == 2

@@ -20,6 +20,7 @@ from dendrophis.events import (
     ModelSwitchRequest,
     MultipleChoiceRequestEvent,
     PrimerLoadedEvent,
+    PrimerScreenRequest,
     ReasoningDeltaEvent,
     RetryEvent,
     SessionResetRequest,
@@ -131,7 +132,9 @@ class MainScreen(Screen):
             )
         else:
             # No primer — show welcome help so user knows what's available
-            self._show_help()
+            # Only show welcome help automatically if primer feature is enabled
+            if self._session.config.caching.pr_enabled:
+                self._show_help()
 
     def _setup_event_handlers(self) -> None:
         """Subscribe this screen to relevant events."""
@@ -154,6 +157,7 @@ class MainScreen(Screen):
             (ConfigReloadedEvent, self._on_config_reloaded),
             (EditProposalEvent, self._on_edit_proposal),
             (WriteProposalEvent, self._on_write_proposal),
+            (PrimerScreenRequest, self._on_primer_screen_request),
         ]
 
         for event_type, handler in self._handlers:
@@ -277,6 +281,16 @@ class MainScreen(Screen):
             self.app.push_screen(WriteConfirmationScreen(event, self._event_bus))
 
         self.call_later(show_write_confirmation)
+
+    def _on_primer_screen_request(self, event: PrimerScreenRequest) -> None:
+        """Handle request to open the project primer screen."""
+
+        def show_primer_screen() -> None:
+            from dendrophis.ui.screens.primer_screen import PrimerScreen
+
+            self.app.push_screen(PrimerScreen(self._session))
+
+        self.call_later(show_primer_screen)
 
     def _on_context_updated(self, event: ContextUpdatedEvent) -> None:
         """Handle context updated events."""
@@ -452,11 +466,13 @@ class MainScreen(Screen):
             # Emit event to update primer panel
             info = self._session.load_project_primer()
             if info:
-                self._event_bus.emit(
+                self._event_bus.publish(
                     PrimerLoadedEvent(
                         project_id=info["project_id"],
                         project_name=info["project_name"],
                         file_count=info["file_count"],
+                        turn_count=info.get("turn_count", 0),
+                        understanding=info.get("understanding", ""),
                     )
                 )
         else:
@@ -478,11 +494,13 @@ class MainScreen(Screen):
             chat.add_system_message(msg)
             self.notify(f"Primer loaded: {info['file_count']} files", severity="information")
             # Emit event to update primer panel
-            self._event_bus.emit(
+            self._event_bus.publish(
                 PrimerLoadedEvent(
                     project_id=info["project_id"],
                     project_name=info["project_name"],
                     file_count=info["file_count"],
+                    turn_count=info.get("turn_count", 0),
+                    understanding=info.get("understanding", ""),
                 )
             )
         else:
@@ -494,35 +512,68 @@ class MainScreen(Screen):
     def _show_help(self) -> None:
         """Show available slash commands in the chat as a single compact message."""
         chat = self.query_one(ChatView)
-        help_text = (
-            "[bold]Slash Commands[/bold]\n"
-            "  /hello       — Greeting from Dendrophis\n"
-            "  /help        — Show this help message\n"
-            "  /clear       — Clear chat and reset context (primer re-injected)\n"
-            "  /fresh       — Clear chat without primer (truly fresh start)\n"
-            "  /compact     — Manually compact context to reduce token usage\n"
-            "  /export      — Export conversation to markdown file\n"
-            "  /save-primer — Save project primer for future sessions\n"
-            "  /load-primer — Show current primer status\n"
-            "  /track       — Add a file to the project primer\n"
-            "  /untrack     — Remove a file from the project primer\n"
-            "  /set         — Override the last assistant response\n"
-            "\n"
-            "[bold]Key Bindings[/bold]\n"
-            "  Ctrl+L  — Clear chat (same as /clear)\n"
-            "  Ctrl+S  — Open settings\n"
-            "  Ctrl+E  — Export session (same as /export)\n"
-            "  Esc     — Interrupt streaming\n"
-            "  Ctrl+Q  — Quit\n"
-            "\n"
-            "[bold]Project Primer[/bold]\n"
-            "On a new session, any saved primer is loaded automatically — tracked\n"
-            "files are re-read from disk and injected into context so the LLM\n"
-            "already knows your project. Changed files are detected via content\n"
-            "hashing and re-read fresh. Use /save-primer after exploring a project\n"
-            "to capture it for next time. Use /fresh to start without the primer."
+        pr_enabled = self._session.config.caching.pr_enabled
+
+        commands = [
+            ("  /hello       ", "Greeting from Dendrophis"),
+            ("  /help        ", "Show this help message"),
+        ]
+
+        if pr_enabled:
+            commands.append(("  /clear       ", "Clear chat and reset context (primer re-injected)"))
+            commands.append(("  /fresh       ", "Clear chat without primer (truly fresh start)"))
+        else:
+            commands.append(("  /clear       ", "Clear chat and reset context"))
+
+        commands.extend(
+            [
+                ("  /compact     ", "Manually compact context to reduce token usage"),
+                ("  /export      ", "Export conversation to markdown file"),
+            ]
         )
-        chat.add_system_message(help_text)
+
+        if pr_enabled:
+            commands.extend(
+                [
+                    ("  /save-primer ", "Save project primer for future sessions"),
+                    ("  /load-primer ", "Load the project primer and inject it into context"),
+                    ("  /track       ", "Add a file to the project primer"),
+                    ("  /untrack     ", "Remove a file from the project primer"),
+                ]
+            )
+
+        commands.append(("  /set         ", "Override the last assistant response"))
+
+        parts = ["[bold]Slash Commands[/bold]"]
+        for cmd_name, cmd_desc in commands:
+            parts.append(f"{cmd_name}— {cmd_desc}")
+
+        parts.extend(
+            [
+                "",
+                "[bold]Key Bindings[/bold]",
+                "  Ctrl+L  — Clear chat (same as /clear)",
+                "  Ctrl+S  — Open settings",
+                "  Ctrl+E  — Export session (same as /export)",
+                "  Esc     — Interrupt streaming",
+                "  Ctrl+Q  — Quit",
+            ]
+        )
+
+        if pr_enabled:
+            parts.extend(
+                [
+                    "",
+                    "[bold]Project Primer[/bold]",
+                    "On a new session, any saved primer is loaded automatically — tracked\n"
+                    "files are re-read from disk and injected into context so the LLM\n"
+                    "already knows your project. Changed files are detected via content\n"
+                    "hashing and re-read fresh. Use /save-primer after exploring a project\n"
+                    "to capture it for next time. Use /fresh to start without the primer.",
+                ]
+            )
+
+        chat.add_system_message("\n".join(parts))
 
     def _process_input(self, event: InputBar.Submitted) -> None:
         """Handle user input from the chat bar."""
@@ -547,12 +598,29 @@ class MainScreen(Screen):
             chat.add_system_message("Hello! 👋 I'm Dendrophis, your coding assistant.")
             return
         if cmd == "/save-primer":
+            if not self._session.config.caching.pr_enabled:
+                chat = self.query_one(ChatView)
+                chat.add_system_message(
+                    "[warning]Project primer is disabled in config "
+                    "(caching.pr_enabled). Enable it in Settings.[/warning]"
+                )
+                return
             self._save_primer()
             return
         if cmd == "/load-primer":
+            if not self._session.config.caching.pr_enabled:
+                chat = self.query_one(ChatView)
+                chat.add_system_message(
+                    "[warning]Project primer is disabled in config "
+                    "(caching.pr_enabled). Enable it in Settings.[/warning]"
+                )
+                return
             self._load_primer()
             return
         if event.text.strip().startswith("/track "):
+            if not self._session.config.caching.pr_enabled:
+                self.notify("Primer feature is disabled in settings.", severity="warning")
+                return
             path = event.text.strip()[7:].strip()
             if self._session.track_file(path):
                 chat = self.query_one(ChatView)
@@ -562,6 +630,9 @@ class MainScreen(Screen):
                 self.notify(f"Failed to track: {path}", severity="error")
             return
         if event.text.strip().startswith("/untrack "):
+            if not self._session.config.caching.pr_enabled:
+                self.notify("Primer feature is disabled in settings.", severity="warning")
+                return
             path = event.text.strip()[9:].strip()
             if self._session.untrack_file(path):
                 chat = self.query_one(ChatView)
@@ -751,19 +822,36 @@ class MainScreen(Screen):
 
     def _complete_commands(self, auto: FileAutocomplete, prefix: str) -> None:
         """Filter available slash commands by prefix."""
+        pr_enabled = self._session.config.caching.pr_enabled
         commands = [
             ("/hello", "Greeting from Dendrophis"),
             ("/help", "Show this help message"),
-            ("/clear", "Clear chat and reset context (primer re-injected)"),
-            ("/fresh", "Clear chat without primer (truly fresh start)"),
-            ("/compact", "Manually compact context to reduce token usage"),
-            ("/export", "Export conversation to markdown file"),
-            ("/save-primer", "Save project primer for future sessions"),
-            ("/load-primer", "Show current primer status"),
-            ("/track", "Add a file to the project primer"),
-            ("/untrack", "Remove a file from the project primer"),
-            ("/set", "Override the last assistant response"),
         ]
+        if pr_enabled:
+            commands.append(("/clear", "Clear chat and reset context (primer re-injected)"))
+            commands.append(("/fresh", "Clear chat without primer (truly fresh start)"))
+        else:
+            commands.append(("/clear", "Clear chat and reset context"))
+
+        commands.extend(
+            [
+                ("/compact", "Manually compact context to reduce token usage"),
+                ("/export", "Export conversation to markdown file"),
+            ]
+        )
+
+        if pr_enabled:
+            commands.extend(
+                [
+                    ("/save-primer", "Save project primer for future sessions"),
+                    ("/load-primer", "Load the project primer and inject it into context"),
+                    ("/track", "Add a file to the project primer"),
+                    ("/untrack", "Remove a file from the project primer"),
+                ]
+            )
+
+        commands.append(("/set", "Override the last assistant response"))
+
         for name, skill in self._session._skill_manager._all_skills.items():
             short_desc = skill.description.splitlines()[0][:60]
             commands.append((f"/{name}", short_desc))
@@ -897,7 +985,10 @@ class MainScreen(Screen):
                 else:
                     feedback = f"[bold][red]✗[/red][/bold] Unknown skill: [code]/{cmd_name}[/code]"
             else:
-                feedback = f"[bold][yellow]⚠[/yellow][/bold] Skills not available yet. Command [code]/{cmd_name}[/code] queued."
+                feedback = (
+                    f"[bold][yellow]⚠[/yellow][/bold] Skills not available yet. "
+                    f"Command [code]/{cmd_name}[/code] queued."
+                )
 
         # Add feedback to chat
         chat = self.query_one(ChatView)

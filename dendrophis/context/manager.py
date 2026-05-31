@@ -90,9 +90,8 @@ class ContextManager:
     def append_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         # REJECT hashed IDs as tool names - they should never appear
         if len(name) == 9 and all(c in "0123456789abcdef" for c in name):
-            raise ValueError(f"Tool name cannot be hashed ID: {name}. "
-                           f"This indicates a bug in tool call processing.")
-        
+            raise ValueError(f"Tool name cannot be hashed ID: {name}. This indicates a bug in tool call processing.")
+
         msg = make_tool_result_message(tool_call_id, name, content)
         self.messages.append(msg)
         self.token_count += count_tokens(content) + 4
@@ -189,23 +188,25 @@ class ContextManager:
     def get_messages_for_api(self) -> list[dict[str, Any]]:
         # Log context messages when debugging
         import os
-        if os.environ.get('DENDROPHIS_TOOL_LOG') == '1':
+
+        if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
             from dendrophis.session.session import _tool_log
+
             _tool_log("=== CONTEXT MANAGER - GET MESSAGES FOR API ===")
             _tool_log(f"Total messages in context: {len(self.messages)}")
             for i, msg in enumerate(self.messages):
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
                 tool_calls = msg.get("tool_calls")
-                _tool_log(f"Message {i+1}: role={role}")
+                _tool_log(f"Message {i + 1}: role={role}")
                 if content:
                     _tool_log(f"  Content: {content[:50]}{'...' if len(content) > 50 else ''}")
                 if tool_calls:
                     _tool_log(f"  Tool calls: {len(tool_calls)}")
                     for j, tc in enumerate(tool_calls):
                         func = tc.get("function", {})
-                        _tool_log(f"    Tool {j+1}: {func.get('name')}")
-        
+                        _tool_log(f"    Tool {j + 1}: {func.get('name')}")
+
         return list(self.messages)
 
     def replace_last_assistant(self, content: str) -> bool:

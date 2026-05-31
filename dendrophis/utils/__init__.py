@@ -5,16 +5,6 @@ from __future__ import annotations
 import hashlib
 import re
 
-# def sanitize_tool_id(tool_id: str | None) -> str:
-#     """REMOVED - Tool call IDs are no longer hashed.
-#
-#     This function previously used SHA256 hashing to create 9-character IDs
-#     for provider compatibility, but this caused tool name corruption bugs.
-#
-#     Tool call IDs now use original provider IDs without modification.
-#     """
-#     raise NotImplementedError("Tool ID hashing has been removed")
-
 
 def sanitize_tool_name(name: str | None) -> str:
     """Sanitize a tool name to contain only valid characters.
@@ -44,6 +34,5 @@ def hash_content(content: str) -> str:
 
 
 # Backwards compatibility aliases (private names for internal use)
-# _sanitize_tool_id = sanitize_tool_id  # REMOVED - no tool ID hashing
 _sanitize_tool_name = sanitize_tool_name
 _hash_content = hash_content

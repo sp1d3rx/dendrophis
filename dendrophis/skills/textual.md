@@ -104,6 +104,25 @@ class CollapsibleResult(Vertical):
 ### Safe Markup in Dynamic Labels
 When rendering labels containing dynamic content (e.g. tool arguments, filenames, descriptions) alongside Rich markup tags (e.g. `[success]●[/success]`), always use `escape` from `rich.markup` on the dynamic portions. Unescaped brackets `[` or `]` in user data or arguments will break the markup parser, causing hidden text, swallowed characters, or rendering crashes.
 
+### Widget Layout and Size Configuration (No Constructor Keyword Arguments)
+Textual widgets (such as `TextArea`, `Input`, `Checkbox`, etc.) do **not** accept layout or styling attributes (like `height`, `width`, `margin`, or `padding`) as constructor keyword arguments. Doing so triggers a `TypeError` at runtime.
+
+Always configure the layout, dimensions, and visual properties of these widgets using:
+1. `DEFAULT_CSS` rules (e.g. `#system_prompt { height: 10; }`).
+2. Widget classes (e.g. CSS class matching `classes="..."`).
+3. Direct style mutations on mount (e.g. `self.styles.height = 10` inside `on_mount`).
+
+### Textual CSS Layout and Alignment Rules
+- **No `auto` Margins**: Textual CSS margins only accept integer values representing grid cells (e.g. `margin: 1;` or `margin: 1 2;`). Placing `margin: 0 auto;` in `DEFAULT_CSS` will crash stylesheet parsing on screen mount. To center a child widget horizontally, apply `align-horizontal: center;` to the **parent container**, and restrict the child's `max-width` or `width`.
+- **No `align-items` Flexbox Property**: Standard flexbox properties like `align-items: middle;` are not supported in Textual CSS. To align label/input elements side-by-side inside a Horizontal row, use the native Textual CSS `align` shorthand property (e.g. `align: left middle;` or `align: center middle;`).
+- **Simplify Layout Context Managers**: When nesting multiple Textual layout containers inside a screen's `compose()` method, avoid nesting multiple `with` statements if they can be written as a single `with` statement with multiple contexts. This satisfies Ruff `SIM117` style checks:
+  ```python
+  # Preferred:
+  with TabPane("Hooks", id="tab-hooks"), VerticalScroll(), Horizontal(classes="column-layout"):
+      yield ...
+  ```
+
+
 ## 3. Custom Widget Creation
 
 There are two primary ways to define the content and behavior of a custom `Widget` subclass:

@@ -96,7 +96,7 @@ class SearchMemoryTool(BaseTool):
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "REQUIRED. The search query (natural language or keywords).",
+                    "description": "Optional search query (natural language or keywords).",
                 },
                 "tag": {
                     "type": "string",
@@ -113,12 +113,11 @@ class SearchMemoryTool(BaseTool):
                     "maximum": 20,
                 },
             },
-            "required": ["query"],
         }
 
     async def execute(
         self,
-        query: str,
+        query: str | None = None,
         tag: str | None = None,
         project_id: str | None = None,
         limit: int = 5,
@@ -127,29 +126,54 @@ class SearchMemoryTool(BaseTool):
             from dendrophis.memory.search import MemorySearcher
 
             searcher = MemorySearcher(self._store)
-            results = searcher.search(
-                query=query,
-                limit=limit,
-                tag=tag,
-                project_id=project_id,
-            )
+            if not query:
+                if tag:
+                    results = searcher.search_by_tag(
+                        tag=tag,
+                        limit=limit,
+                        project_id=project_id,
+                    )
+                elif project_id:
+                    results = searcher.search_by_project(
+                        project_id=project_id,
+                        limit=limit,
+                    )
+                else:
+                    from dendrophis.memory.models import MemorySearchResult
+
+                    candidates = self._store.list_memories(limit=limit)
+                    results = [MemorySearchResult(memory=entry, score=1.0, method="list") for entry in candidates]
+            else:
+                results = searcher.search(
+                    query=query,
+                    limit=limit,
+                    tag=tag,
+                    project_id=project_id,
+                )
             return {
                 "success": True,
                 "results": [
                     {
-                        "memory_id": r.memory.id,
-                        "summary": r.memory.summary or r.memory.content[:200] + "..." if len(r.memory.content) > 200 else r.memory.content,
-                        "tags": r.memory.tags,
-                        "source": r.memory.source,
-                        "score": r.score,
-                        "method": r.method,
+                        "memory_id": result.memory.id,
+                        "summary": (
+                            result.memory.summary
+                            or (
+                                result.memory.content[:200] + "..."
+                                if len(result.memory.content) > 200
+                                else result.memory.content
+                            )
+                        ),
+                        "tags": result.memory.tags,
+                        "source": result.memory.source,
+                        "score": result.score,
+                        "method": result.method,
                     }
-                    for r in results
+                    for result in results
                 ],
                 "count": len(results),
             }
-        except Exception as e:
-            return {"error": f"Failed to search memory: {e}"}
+        except Exception as error:
+            return {"error": f"Failed to search memory: {error}"}
 
 
 class DeleteMemoryTool(BaseTool):

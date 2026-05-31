@@ -29,6 +29,12 @@ _THINK_TAG_PAIRS: list[tuple[str, str]] = [
 ]
 _OPEN_TAGS = [pair[0] for pair in _THINK_TAG_PAIRS]
 _CLOSE_TAGS = [pair[1] for pair in _THINK_TAG_PAIRS]
+_TOOL_TAG_PAIRS: list[tuple[str, str]] = [
+    ("<tool_call>", "</tool_call>"),
+    ("<tool_call|>", "</tool_call|>"),
+    ("<|tool_call_start|>", "<|tool_call_end|>"),
+    ("<|tool_call>", "<tool_call|>"),
+]
 
 
 def _clean_latex_shorthand(text: str) -> str:
@@ -460,8 +466,8 @@ class AssistantMessage(Vertical):
 
         Handles tags that arrive split across multiple streaming chunks by
         buffering the tail of each chunk when it's a prefix of a known tag.
-        Supports both  … (DeepSeek) and
-        <|channel>thought\\n…<channel|> (Gemma 4).
+        Supports both <think> … </think> (DeepSeek) and
+        <|channel>thought\n…<channel|> (Gemma 4).
 
         Also strips synthesized <tool_call> tags (from local models) from display.
         Backtick-aware: tags inside `code` or ```code``` blocks are treated as text.
@@ -472,13 +478,13 @@ class AssistantMessage(Vertical):
         # State: None, '`' (in inline code), or '```' (in code block)
         code_state = getattr(self, "_code_state", None)
 
-        i = 0
-        while i < len(text):
+        char_index = 0
+        while char_index < len(text):
             # Update code state by scanning from current position
             if code_state is None:
                 # Look for backticks
-                inline_bt = text.find("`", i)
-                block_bt = text.find("```", i)
+                inline_bt = text.find("`", char_index)
+                block_bt = text.find("```", char_index)
 
                 # Find which comes first
                 next_bt = -1
@@ -491,46 +497,46 @@ class AssistantMessage(Vertical):
 
                 if next_bt == -1:
                     # No more backticks, process rest of text normally
-                    self._process_text_segment(text[i:], code_state)
+                    self._process_text_segment(text[char_index:], code_state)
                     break
 
                 # Process text before backtick
-                if next_bt > i:
-                    self._process_text_segment(text[i:next_bt], code_state)
+                if next_bt > char_index:
+                    self._process_text_segment(text[char_index:next_bt], code_state)
 
                 # Enter code state
                 if next_bt == block_bt:
                     code_state = "```"
                     self._route_text("```")
-                    i = next_bt + 3
+                    char_index = next_bt + 3
                 else:
                     code_state = "`"
                     self._route_text("`")
-                    i = next_bt + 1
+                    char_index = next_bt + 1
 
             elif code_state == "`":
                 # Look for closing inline backtick
-                close_bt = text.find("`", i)
+                close_bt = text.find("`", char_index)
                 if close_bt == -1:
                     # Still in inline code, emit rest as text
-                    self._route_text(text[i:])
+                    self._route_text(text[char_index:])
                     break
                 # Emit code content as text
-                self._route_text(text[i : close_bt + 1])
+                self._route_text(text[char_index : close_bt + 1])
                 code_state = None
-                i = close_bt + 1
+                char_index = close_bt + 1
 
             elif code_state == "```":
                 # Look for closing code block
-                close_bt = text.find("```", i)
+                close_bt = text.find("```", char_index)
                 if close_bt == -1:
                     # Still in code block, emit rest as text
-                    self._route_text(text[i:])
+                    self._route_text(text[char_index:])
                     break
                 # Emit code content as text
-                self._route_text(text[i : close_bt + 3])
+                self._route_text(text[char_index : close_bt + 3])
                 code_state = None
-                i = close_bt + 3
+                char_index = close_bt + 3
 
         self._code_state = code_state
 
@@ -571,46 +577,65 @@ class AssistantMessage(Vertical):
     def _process_normal_text(self, text: str) -> None:
         """Process normal text, looking for think tags and tool_call tags."""
         remaining = text
+        # Strip leading "thought" artifact (common with Gemma models) at the start of the response
+        if not self._all_parts and not self._has_reasoning:
+            lower_remaining = remaining.lower()
+            if "thought".startswith(lower_remaining) and len(lower_remaining) < 7:
+                self._pending_buf = remaining
+                return
+            if lower_remaining.startswith("thought"):
+                length_to_strip = 7
+                while length_to_strip < len(remaining) and remaining[length_to_strip].isspace():
+                    length_to_strip += 1
+                remaining = remaining[length_to_strip:]
+
         while remaining:
             # Find earliest think tag or tool_call tag
-            best_pos, best_tag, tag_type = len(remaining), "", ""
+            best_position, best_tag, tag_type = len(remaining), "", ""
+            associated_close_tag = ""
 
             for tag in _OPEN_TAGS:
-                pos = remaining.find(tag)
-                if 0 <= pos < best_pos:
-                    best_pos, best_tag = pos, tag
+                position = remaining.find(tag)
+                if 0 <= position < best_position:
+                    best_position, best_tag = position, tag
                     tag_type = "think"
 
-            tool_pos = remaining.find("<tool_call>")
-            if tool_pos != -1 and tool_pos < best_pos:
-                best_pos, best_tag = tool_pos, "<tool_call>"
-                tag_type = "tool"
+            for tool_open, tool_close in _TOOL_TAG_PAIRS:
+                tool_position = remaining.find(tool_open)
+                if tool_position != -1 and tool_position < best_position:
+                    best_position, best_tag = tool_position, tool_open
+                    tag_type = "tool"
+                    associated_close_tag = tool_close
 
             if not best_tag:
                 # No tags found, emit all as text
-                buffered = self._try_buffer_partial(remaining, [*_OPEN_TAGS, "<tool_call>"], self._route_text)
+                all_possible_open_tags = [*_OPEN_TAGS]
+                for tool_open, _ in _TOOL_TAG_PAIRS:
+                    all_possible_open_tags.append(tool_open)
+
+                buffered = self._try_buffer_partial(remaining, all_possible_open_tags, self._route_text)
                 if not buffered:
                     self._route_text(remaining)
                 return
 
             # Emit text before tag
-            if best_pos:
-                self._route_text(remaining[:best_pos])
+            if best_position:
+                self._route_text(remaining[:best_position])
 
             if tag_type == "think":
                 self._in_think_tag = True
-                remaining = remaining[best_pos + len(best_tag) :]
+                remaining = remaining[best_position + len(best_tag) :]
                 # Process remaining text (may contain close tag)
                 if remaining:
                     self._process_think_text(remaining)
                 return
 
             # tool_call handling
-            tool_end = remaining.find("</tool_call>", best_pos)
-            if tool_end != -1:
-                remaining = remaining[tool_end + len("</tool_call>") :]
+            tool_end_position = remaining.find(associated_close_tag, best_position)
+            if tool_end_position != -1:
+                remaining = remaining[tool_end_position + len(associated_close_tag) :]
             else:
-                self._pending_buf = remaining[best_pos:]
+                self._pending_buf = remaining[best_position:]
                 return
 
     def _try_buffer_partial(
@@ -769,6 +794,7 @@ class AssistantMessage(Vertical):
         self._finalized = True
         self.remove_loading()
 
+        was_thinking = self._in_think_tag
         # Explicitly end thinking state to prevent cross-session contamination
         if self._in_think_tag:
             self._in_think_tag = False
@@ -776,17 +802,42 @@ class AssistantMessage(Vertical):
 
         # Flush any buffered partial tag text before finalizing
         if self._pending_buf:
-            if self._in_think_tag:  # Should be False now, but handle just in case
-                self._route_reasoning(self._pending_buf)
-            else:
-                self._route_text(self._pending_buf)
+            all_known_tags = [
+                "<|channel>thought\n",
+                "<channel|>",
+                "<think>",
+                "</think>",
+                "<tool_call>",
+                "</tool_call>",
+                "<tool_call|>",
+                "</tool_call|>",
+                "<|tool_call_start|>",
+                "<|tool_call_end|>",
+                "<|tool_call>",
+            ]
+            is_tag_content = (
+                self._pending_buf.startswith("<tool_call>")
+                or self._pending_buf.startswith("<tool_call|>")
+                or self._pending_buf.startswith("<|tool_call_start|>")
+                or self._pending_buf.startswith("<|tool_call>")
+                or any(known_tag.startswith(self._pending_buf) for known_tag in all_known_tags)
+            )
+            if not is_tag_content:
+                if was_thinking:
+                    self._route_reasoning(self._pending_buf)
+                else:
+                    self._route_text(self._pending_buf)
             self._pending_buf = ""
 
         # Collapse the active thought bubble if thinking has finished
         if self._active_thought_bubble and not self._active_thought_bubble._collapsed:
             self._active_thought_bubble.collapse()
 
-        if not self._all_parts and not self._has_reasoning:
+        has_tools_or_status = any(
+            isinstance(child, (InlineToolStatus, ToolResultMessage))
+            for child in self.children
+        )
+        if not self._all_parts and not self._has_reasoning and not has_tools_or_status:
             self.remove()
             return
 

@@ -91,9 +91,15 @@ class ReplaceFunctionTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Path to the Python file containing the function to replace"},
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the Python file containing the function to replace",
+                },
                 "function_name": {"type": "string", "description": "Name of the function to replace"},
-                "new_function_file": {"type": "string", "description": "Path to file containing the new function implementation"},
+                "new_function_file": {
+                    "type": "string",
+                    "description": "Path to file containing the new function implementation",
+                },
             },
             "required": ["file_path", "function_name", "new_function_file"],
         }

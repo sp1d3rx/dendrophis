@@ -21,7 +21,6 @@ from dendrophis.events import (
     PrimerInjectRequest,
     PrimerLoadRequest,
     PrimerSaveRequest,
-    PrimerScreenRequest,
     ReasoningEffortChangedEvent,
     ReasoningEffortChangeRequest,
     SendMessageRequest,
@@ -93,7 +92,6 @@ class SessionEventHandler:
         self._event_bus.subscribe(CancelStreamingRequest, self._on_cancel_streaming_request)
         self._event_bus.subscribe(TrackFileRequest, self._on_track_file_request)
         self._event_bus.subscribe(UntrackFileRequest, self._on_untrack_file_request)
-        self._event_bus.subscribe(PrimerScreenRequest, self._on_primer_screen_request)
 
     def _emit(self, event: Any) -> None:
         """Publish an event to the event bus."""
@@ -208,7 +206,3 @@ class SessionEventHandler:
     def _on_untrack_file_request(self, event: UntrackFileRequest) -> None:
         """Handle untrack file request from UI."""
         self._session.untrack_file(event.path)
-
-    def _on_primer_screen_request(self, event: PrimerScreenRequest) -> None:
-        """Handle primer screen request from UI."""
-        self._main_screen.push_screen(dendrophis.ui.screens.primer_screen.PrimerScreen(self._session))

@@ -38,11 +38,21 @@ InputBar {
 }
 
 Sidebar {
-    width: 28;
     height: 1fr;
-    border-left: solid $panel;
     padding: 0;
     overflow-y: auto;
+}
+
+Sidebar.dock-left {
+    dock: left;
+    border-right: solid $panel;
+    border-left: none;
+}
+
+Sidebar.dock-right {
+    dock: right;
+    border-left: solid $panel;
+    border-right: none;
 }
 
 Sidebar > Static, Sidebar > Vertical {

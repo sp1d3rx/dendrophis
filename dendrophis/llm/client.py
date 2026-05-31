@@ -629,6 +629,7 @@ class LLMClient:
 
         for attempt in range(max_retries + 1):
             error_status_code: int | None = None
+            error_details_message = ""
             try:
                 _chat_log(
                     "CLIENT [attempt]",
@@ -673,11 +674,37 @@ class LLMClient:
 
                     if http_response.status_code != 200:
                         error_status_code = http_response.status_code
-                        _chat_log("CLIENT [non-200]", f"status={http_response.status_code}, closing")
+                        _chat_log("CLIENT [non-200]", f"status={http_response.status_code}")
+                        try:
+                            error_response_body = await http_response.aread()
+                            # Parse JSON or raw text
+                            error_details_message = ""
+                            try:
+                                parsed_error_payload = json.loads(error_response_body)
+                                if isinstance(parsed_error_payload, dict):
+                                    if "error" in parsed_error_payload and isinstance(
+                                        parsed_error_payload["error"], dict
+                                    ):
+                                        error_details_message = parsed_error_payload["error"].get("message", "")
+                                    elif "detail" in parsed_error_payload:
+                                        error_details_message = str(parsed_error_payload["detail"])
+                            except Exception as json_error:
+                                _chat_log("CLIENT [non-200]", f"JSON parse failed: {json_error}")
+
+                            if not error_details_message:
+                                try:
+                                    error_details_message = error_response_body.decode(
+                                        "utf-8", errors="replace"
+                                    ).strip()
+                                except Exception as decode_error:
+                                    _chat_log("CLIENT [non-200]", f"decode failed: {decode_error}")
+                        except Exception as read_error:
+                            _chat_log("CLIENT [non-200]", f"failed to read error body: {read_error}")
+
                         try:
                             await asyncio.wait_for(http_response.aclose(), timeout=2.0)
-                        except Exception as exc:
-                            _chat_log("CLIENT [non-200]", f"aclose failed: {exc}")
+                        except Exception as close_exception:
+                            _chat_log("CLIENT [non-200]", f"aclose failed: {close_exception}")
                     else:
                         in_progress: dict[int, ToolCall] = {}
                         parsing_state = {"mode": provider_context.sse_start_mode, "buffer": "", "pending": ""}
@@ -709,6 +736,9 @@ class LLMClient:
                                             return
 
                                     yield event
+                            if not stream_started:
+                                yield ErrorEvent(message="Server returned an empty response")
+                                return
                             return
                         except Exception as sse_error:
                             yield ErrorEvent(message=f"SSE streaming failed: {sse_error!s}")
@@ -721,7 +751,12 @@ class LLMClient:
                         _chat_log("CLIENT [cleanup]", f"Failed to close response: {close_error}")
 
                 if error_status_code is not None:
-                    yield ErrorEvent(message=f"HTTP {error_status_code} from {provider_context.url}")
+                    if error_details_message:
+                        yield ErrorEvent(
+                            message=f"HTTP {error_status_code} from {provider_context.url} - {error_details_message}"
+                        )
+                    else:
+                        yield ErrorEvent(message=f"HTTP {error_status_code} from {provider_context.url}")
                     return
 
             except httpx.WriteTimeout:

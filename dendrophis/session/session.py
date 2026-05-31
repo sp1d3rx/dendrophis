@@ -160,6 +160,12 @@ class Session:
             return self._chat.is_streaming()
         return False
 
+    def is_caching_enabled(self) -> bool:
+        """Return True if caching is enabled in config and supported by active model."""
+        if self._chat:
+            return self._chat.is_caching_enabled()
+        return False
+
     def cancel_streaming(self) -> None:
         """Cancel the current streaming operation."""
         if self._chat:
@@ -300,12 +306,19 @@ class Session:
 
     def save_project_primer(self) -> str | None:
         """Capture current project understanding as a primer file."""
+        if not self.config.caching.pr_enabled:
+            return None
         if self._primer_manager:
-            return self._primer_manager.save_project_primer()
+            project_id = self._primer_manager.save_project_primer()
+            if project_id is not None:
+                self._publish_primer_loaded()
+            return project_id
         return None
 
     def load_project_primer(self) -> dict[str, Any] | None:
         """Load the project primer for the current working directory."""
+        if not self.config.caching.pr_enabled:
+            return None
         if self._primer_manager:
             return self._primer_manager.load_project_primer()
         return None
@@ -316,21 +329,62 @@ class Session:
         Returns:
             Dict with 'injected' (count) and 'total' (file count).
         """
+        if not self.config.caching.pr_enabled:
+            return {"injected": 0, "total": 0}
         if self._primer_manager:
             return self._primer_manager.inject_primer_files()
         return {"injected": 0, "total": 0}
 
     def track_file(self, path: str) -> bool:
         """Add a file to the project primer. Returns True on success."""
+        if not self.config.caching.pr_enabled:
+            return False
         if self._primer_manager:
-            return self._primer_manager.track_file(path)
+            success = self._primer_manager.track_file(path)
+            if success:
+                self._publish_primer_loaded()
+            return success
         return False
 
     def untrack_file(self, path: str) -> bool:
         """Remove a file from the project primer. Returns True on success."""
+        if not self.config.caching.pr_enabled:
+            return False
         if self._primer_manager:
-            return self._primer_manager.untrack_file(path)
+            success = self._primer_manager.untrack_file(path)
+            if success:
+                self._publish_primer_loaded()
+            return success
         return False
+
+    def _publish_primer_loaded(self) -> None:
+        """Publish PrimerLoadedEvent to notify UI/components of primer changes."""
+        if not self.config.caching.pr_enabled:
+            return
+        if self._event_bus and self._primer_manager:
+            from dendrophis.events import PrimerLoadedEvent
+
+            info = self._primer_manager.load_project_primer()
+            if info:
+                self._event_bus.publish(
+                    PrimerLoadedEvent(
+                        project_id=info["project_id"],
+                        project_name=info["project_name"],
+                        file_count=info["file_count"],
+                        turn_count=info.get("turn_count", 0),
+                        understanding=info.get("understanding", ""),
+                    )
+                )
+            else:
+                self._event_bus.publish(
+                    PrimerLoadedEvent(
+                        project_id=None,
+                        project_name=None,
+                        file_count=0,
+                        turn_count=0,
+                        understanding=None,
+                    )
+                )
 
     # =========================================================================
     # Configuration & Cleanup

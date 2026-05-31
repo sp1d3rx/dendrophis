@@ -30,12 +30,14 @@ class ToolExecutor:
         """Execute a tool call and return its result."""
         # Log tool execution
         import os
-        if os.environ.get('DENDROPHIS_TOOL_LOG') == '1':
+
+        if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
             from dendrophis.session.session import _tool_log
+
             _tool_log("=== TOOL EXECUTOR EXECUTE ===")
             _tool_log(f"Executing tool: {tool_call.name}(id={tool_call.id})")
             _tool_log(f"Arguments: {tool_call.arguments!r}")
-        
+
         tool = self._registry.get(tool_call.name)
         if not tool:
             return ToolResult(

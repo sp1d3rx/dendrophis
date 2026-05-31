@@ -56,11 +56,11 @@ def main(log_path: str, mode: str = "requests") -> None:
         for idx, req in enumerate(requests):
             p = req["payload"]
             if not isinstance(p, dict):
-                print(f"Request #{idx+1} [{req['ts']}]: (non-JSON)")
+                print(f"Request #{idx + 1} [{req['ts']}]: (non-JSON)")
                 continue
             msgs = p.get("messages", [])
             model = p.get("model", "?")
-            print(f"Request #{idx+1} [{req['ts']}] model={model} messages={len(msgs)}:")
+            print(f"Request #{idx + 1} [{req['ts']}] model={model} messages={len(msgs)}:")
             summarize_messages(msgs)
             print()
 
@@ -75,7 +75,7 @@ def main(log_path: str, mode: str = "requests") -> None:
                 delta = choice.get("delta", {})
                 for tc in delta.get("tool_calls") or []:
                     fn = tc.get("function", {})
-                    print(f"  [{e['ts']}] id={tc.get('id')} name={fn.get('name')} args={fn.get('arguments','')[:60]}")
+                    print(f"  [{e['ts']}] id={tc.get('id')} name={fn.get('name')} args={fn.get('arguments', '')[:60]}")
 
     elif mode == "duplicates":
         # Find requests with duplicate consecutive assistant messages
@@ -88,7 +88,7 @@ def main(log_path: str, mode: str = "requests") -> None:
             for i in range(1, len(msgs)):
                 prev, cur = msgs[i - 1], msgs[i]
                 if prev.get("role") == "assistant" and cur.get("role") == "assistant":
-                    print(f"Request #{idx+1} [{req['ts']}]: consecutive assistant msgs at [{i-1}] and [{i}]")
+                    print(f"Request #{idx + 1} [{req['ts']}]: consecutive assistant msgs at [{i - 1}] and [{i}]")
                     summarize_messages([prev, cur])
                     print()
 

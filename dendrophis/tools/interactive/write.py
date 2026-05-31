@@ -61,9 +61,6 @@ class InteractiveWriteTool(BaseTool):
             except Exception:
                 pass
 
-            if path.exists():
-                return {"error": f"File already exists: {file_path}", "hint": "Use 'edit' instead"}
-
             if self.silent:
                 # Auto-approved: write immediately, return stats
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,5 +97,5 @@ class InteractiveWriteTool(BaseTool):
                 }
             return {"error": "Write denied by user"}
 
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as error:
+            return {"error": str(error)}
