@@ -4,18 +4,47 @@ from __future__ import annotations
 
 DEFAULT_CONFIG_YAML = """\
 llm:
+  # --- Connection Settings ---
+  # Base URL of the OpenAI-compatible API endpoint
   base_url: "https://api.deepinfra.com/v1/openai"
-  api_key: ""           # or set DENDROPHIS_API_KEY env var
-  model: "meta-llama/Meta-Llama-3.1-70B-Instruct"
-  max_tokens: 4096
-  temperature: 0.2
-  context_limit: 128000
-  compaction_threshold: 0.85
+  # API key used for authentication (or set DENDROPHIS_API_KEY env var)
+  api_key: ""
+  # Maximum network request timeout in seconds
   timeout: 120.0
+
+  # --- Model Selection ---
+  # The primary LLM used for standard chat and agentic reasoning
+  model: "meta-llama/Meta-Llama-3.1-70B-Instruct"
+  # The model dedicated to the code-writer subagent for executing code changes (null = fallback to default)
+  code_writer_model: null
+
+  # --- Context & Compaction ---
+  # Maximum context window limit in tokens
+  context_limit: 128000
+  # Compress history when token usage exceeds this fraction of the context limit (e.g., 0.85 = 85%)
+  compaction_threshold: 0.85
+
+  # --- Generation & Sampling ---
+  # Maximum tokens the model is allowed to generate per response
+  max_tokens: 4096
+  # Sampling temperature (lower is more deterministic, higher is more creative)
+  temperature: 0.2
+  # Limit sampling to the top K most likely tokens (null = disabled)
+  top_k: null
+  # Nucleus sampling threshold (null = disabled)
+  top_p: null
+  # Reasoning depth for thinking models (e.g., low, medium, high, or none to disable)
+  reasoning_effort: null
+  # How the streaming parser starts ("text" for standard models, "thinking" for thinking models, null = auto)
+  thinking_start_mode: null
   # Mistral/Kimi prompt cache key (set to enable prompt caching for supported models)
   # Run `dendrophis --calibrate MODEL` to check if your model supports it
   # Requests with the same key and model share a KV cache, even if prompts differ slightly.
   prompt_cache_key: null
+
+  # --- Tool Configuration ---
+  # Format to send tools: "auto" (XML for local, native otherwise), "native" (OpenAI API), or "xml"
+  tool_mode: "auto"
 
 ui:
   theme: monokai
