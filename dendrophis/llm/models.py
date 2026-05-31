@@ -100,7 +100,7 @@ def make_user_message(content: str) -> dict[str, Any]:
     """Build an OpenAI-format user message dict with timestamp."""
     from datetime import datetime
 
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M %Z")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
     return {"role": "user", "content": f"[{ts}] {content}"}
 
 
