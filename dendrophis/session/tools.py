@@ -72,18 +72,25 @@ class SessionToolExecutor:
         self._emit = emit
         self._debug_logger = debug_logger
 
+    def update_tools(self, tool_registry: ToolRegistry | None, tool_executor: ToolExecutor | None) -> None:
+        """Update the tool registry and executor dependencies."""
+        self._tool_registry = tool_registry
+        self._tool_executor = tool_executor
+
     async def execute(self, tool_calls: list[Any]) -> list[Any]:
         """Execute tool calls with hierarchical confirmation flow."""
         # Log tool execution start
         import os
-        if os.environ.get('DENDROPHIS_TOOL_LOG') == '1':
+
+        if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
             from dendrophis.session.session import _tool_log
+
             _tool_log("=== SESSION TOOL EXECUTOR ===")
             _tool_log(f"Executing {len(tool_calls)} tool calls")
             for i, tc in enumerate(tool_calls):
-                _tool_log(f"  Tool {i+1}: {tc.name}(id={tc.id})")
+                _tool_log(f"  Tool {i + 1}: {tc.name}(id={tc.id})")
                 _tool_log(f"    Arguments: {tc.arguments!r}")
-        
+
         policy = PermissionPolicy.from_config(self._config)
 
         pending_approvals: list[tuple[Any, str]] = []

@@ -214,6 +214,7 @@ class Session:
         self._persister = persister
 
         self.models: list[ModelInfo] = []
+        self.models_by_id: dict[str, ModelInfo] = {}
         self.session_id: str = uuid.uuid4().hex
 
         # Set session-scoped prompt cache key for models that support it
@@ -311,7 +312,7 @@ class Session:
     def current_model_supports_tools(self) -> bool:
         """Return True if the active model supports tool/function calling."""
         current_id = self.config.llm.model
-        model = next((m for m in self.models if m.id == current_id), None)
+        model = self.models_by_id.get(current_id)
         if model:
             return model.supports_tools
         # Model list not yet fetched — fall back to ID-only heuristic
@@ -320,7 +321,7 @@ class Session:
     def _get_current_model_cost_per_1k(self) -> float:
         """Get the cost per 1k tokens for the current model."""
         current_model_id = self.config.llm.model
-        model = next((model_info for model_info in self.models if model_info.id == current_model_id), None)
+        model = self.models_by_id.get(current_model_id)
         if model:
             return model.cost_per_1k
         return 0.0
@@ -333,9 +334,9 @@ class Session:
         """Replace the tool registry and executor (used in tests)."""
         self._tool_registry = registry
         self._tool_executor = executor
-        # Update the session tool executor with new registry
-        self._tool_executor_session._tool_registry = registry
-        self._tool_executor_session._tool_executor = executor
+        # Update the session tool executor cleanly via its public update_tools method
+        if self._tool_executor_session is not None:
+            self._tool_executor_session.update_tools(registry, executor)
 
     async def invoke_subagent(
         self,
@@ -398,7 +399,8 @@ class Session:
     async def fetch_models(self) -> None:
         """Fetch available models and update context_limit from active model's context_window."""
         self.models = await self.llm.fetch_models()
-        active = next((model_info for model_info in self.models if model_info.id == self.config.llm.model), None)
+        self.models_by_id = {model_info.id: model_info for model_info in self.models}
+        active = self.models_by_id.get(self.config.llm.model)
         if active and active.context_window > 0:
             self.config.llm.context_limit = active.context_window
             self.context._config = self.config
@@ -414,7 +416,7 @@ class Session:
         if "llm" in self.config_loader._raw:
             self.config_loader._raw["llm"]["model"] = model_id
             self.config_loader.save()
-        active = next((model_info for model_info in self.models if model_info.id == model_id), None)
+        active = self.models_by_id.get(model_id)
         if active and active.context_window > 0:
             self.config.llm.context_limit = active.context_window
             self.context._config = self.config
