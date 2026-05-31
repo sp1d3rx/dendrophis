@@ -437,10 +437,10 @@ class AssistantMessage(Vertical):
         self._markdown.update("".join(self._clean_parts))
 
     def _schedule_render(self) -> None:
-        """Schedule a markdown render, throttled to every 250 ms."""
+        """Schedule a markdown render, throttled to every 50 ms."""
         if not self._render_pending:
             self._render_pending = True
-            self.set_timer(0.25, self._do_throttled_render)
+            self.set_timer(0.05, self._do_throttled_render)
 
     def _do_throttled_render(self) -> None:
         """Perform the actual render, but skip if finalize() already ran."""
