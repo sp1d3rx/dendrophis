@@ -454,13 +454,21 @@ async def run_single_chat(
     bus = EventBus()
     bus.set_event_loop(asyncio.get_event_loop())
 
+    import time
+
+    start_time = time.perf_counter()
+    first_token_time = None
+
     # Collect events
     collected_events: list[Any] = []
 
-    def collect_event(evt: AnyEvent) -> None:
-        collected_events.append(evt)
+    def collect_event(event: AnyEvent) -> None:
+        nonlocal first_token_time
+        collected_events.append(event)
+        if isinstance(event, (TextDeltaEvent, ReasoningDeltaEvent)) and first_token_time is None:
+            first_token_time = time.perf_counter()
         if verbose:
-            print(_format_event(evt), file=sys.stderr)
+            print(_format_event(event), file=sys.stderr)
 
     # Subscribe to all event types
 
@@ -504,25 +512,35 @@ async def run_single_chat(
 
     try:
         result = await session.run_turn(message, tools=tools)
+        end_time = time.perf_counter()
 
         # Extract usage info
         usage_info = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0}
-        for evt in collected_events:
-            if isinstance(evt, UsageEvent):
+        for event in collected_events:
+            if isinstance(event, UsageEvent):
                 usage_info = {
-                    "prompt_tokens": evt.prompt_tokens,
-                    "completion_tokens": evt.completion_tokens,
-                    "cached_tokens": evt.cached_tokens,
+                    "prompt_tokens": event.prompt_tokens,
+                    "completion_tokens": event.completion_tokens,
+                    "cached_tokens": event.cached_tokens,
                 }
+
+        prefill_duration = (first_token_time - start_time) if first_token_time else None
+        generation_duration = (end_time - first_token_time) if first_token_time else None
+        total_duration = end_time - start_time
 
         return {
             "text": result.text,
             "reasoning": result.reasoning,
-            "tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in result.tool_calls],
+            "tool_calls": [
+                {"name": tool_call.name, "arguments": tool_call.arguments} for tool_call in result.tool_calls
+            ],
             "finish_reason": result.finish_reason,
             "events": collected_events,
             "usage": usage_info,
             "messages": session.messages,
+            "prefill_duration": prefill_duration,
+            "generation_duration": generation_duration,
+            "total_duration": total_duration,
         }
     finally:
         await session.llm_client.aclose()
@@ -608,14 +626,59 @@ async def main():
             print(f"USER: {user_input}", file=sys.stderr)
 
             try:
-                result = await session.run_turn(user_input)
+                import time
+
+                start_time = time.perf_counter()
+                first_token_time = None
+                completion_tokens = 0
+                prompt_tokens = 0
+                cached_tokens = 0
+
+                def on_event(event: AnyEvent) -> None:
+                    nonlocal first_token_time, completion_tokens, prompt_tokens, cached_tokens
+                    if isinstance(event, (TextDeltaEvent, ReasoningDeltaEvent)) and first_token_time is None:
+                        first_token_time = time.perf_counter()
+                    elif isinstance(event, UsageEvent):
+                        completion_tokens = event.completion_tokens
+                        prompt_tokens = event.prompt_tokens
+                        cached_tokens = event.cached_tokens
+
+                token_sub = bus.subscribe(TextDeltaEvent, on_event)
+                reasoning_sub = bus.subscribe(ReasoningDeltaEvent, on_event)
+                usage_sub = bus.subscribe(UsageEvent, on_event)
+
+                try:
+                    result = await session.run_turn(user_input)
+                finally:
+                    bus.unsubscribe(TextDeltaEvent, token_sub)
+                    bus.unsubscribe(ReasoningDeltaEvent, reasoning_sub)
+                    bus.unsubscribe(UsageEvent, usage_sub)
+
+                end_time = time.perf_counter()
+
                 print(f"\nASSISTANT: {result.text}", file=sys.stderr)
                 if result.reasoning:
                     print(f"REASONING: {result.reasoning[:200]}...", file=sys.stderr)
                 if result.tool_calls:
                     print(f"TOOL CALLS: {len(result.tool_calls)}", file=sys.stderr)
-                    for tc in result.tool_calls:
-                        print(f"  - {tc.name}({tc.arguments[:100]})", file=sys.stderr)
+                    for tool_call in result.tool_calls:
+                        print(f"  - {tool_call.name}({tool_call.arguments[:100]})", file=sys.stderr)
+
+                # Print speed performance statistics
+                print("-" * 40, file=sys.stderr)
+                print("PERFORMANCE STATISTICS:", file=sys.stderr)
+                prefill_duration = (first_token_time - start_time) if first_token_time else (end_time - start_time)
+                print(f"  Time-to-first-token (Prefill): {prefill_duration:.4f}s", file=sys.stderr)
+                if first_token_time:
+                    generation_duration = end_time - first_token_time
+                    print(f"  Generation duration: {generation_duration:.4f}s", file=sys.stderr)
+                    if completion_tokens > 0 and generation_duration > 0:
+                        speed = completion_tokens / generation_duration
+                        print(f"  Generation speed: {speed:.2f} tok/s ({completion_tokens} tokens)", file=sys.stderr)
+                print(f"  Total time: {end_time - start_time:.4f}s", file=sys.stderr)
+                if prompt_tokens > 0:
+                    print(f"  Usage: prompt={prompt_tokens}, cached={cached_tokens}", file=sys.stderr)
+                print("-" * 40, file=sys.stderr)
             except Exception as e:
                 print(f"\nERROR: {e}", file=sys.stderr)
                 import traceback
@@ -741,6 +804,18 @@ Examples:
             print(f"Finish reason: {result['finish_reason']}", file=sys.stderr)
             print(f"Usage: {result['usage']}", file=sys.stderr)
             print(f"Total events: {len(result['events'])}", file=sys.stderr)
+
+            # Print speed performance statistics
+            if result.get("prefill_duration") is not None:
+                print(f"Prefill duration (Time-to-first-token): {result['prefill_duration']:.4f}s", file=sys.stderr)
+            if result.get("generation_duration") is not None:
+                print(f"Generation duration: {result['generation_duration']:.4f}s", file=sys.stderr)
+                completion_tokens = result["usage"]["completion_tokens"]
+                if completion_tokens > 0 and result["generation_duration"] > 0:
+                    speed = completion_tokens / result["generation_duration"]
+                    print(f"Generation speed: {speed:.2f} tok/s ({completion_tokens} tokens)", file=sys.stderr)
+            if result.get("total_duration") is not None:
+                print(f"Total duration: {result['total_duration']:.4f}s", file=sys.stderr)
 
         asyncio.run(run())
     else:
