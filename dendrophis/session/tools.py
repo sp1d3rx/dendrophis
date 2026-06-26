@@ -7,7 +7,8 @@ import json
 import threading
 import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 from dendrophis.events import (
     ToolConfirmationRequestEvent,
@@ -16,13 +17,7 @@ from dendrophis.events import (
 )
 from dendrophis.permissions import Decision, PermissionPolicy
 from dendrophis.tools.bash_sandbox import BashSandbox, is_heredoc_write_pattern
-
-# from dendrophis.utils import _sanitize_tool_id  # REMOVED - no tool ID hashing
-
-if TYPE_CHECKING:
-    from dendrophis.events import EventBus
-    from dendrophis.tools import ToolExecutor, ToolRegistry
-
+from dendrophis.tools.names import ToolName
 
 # Constants for tool execution timeouts
 CONFIRMATION_TIMEOUT = 300.0  # 5 minutes
@@ -30,12 +25,62 @@ POLL_INTERVAL = 0.1
 TOOL_EXECUTION_TIMEOUT = 120.0  # 2 minutes
 
 
-def tool_call_to_payload(tc: Any) -> dict[str, Any]:
+class ToolLike(Protocol):
+    """Protocol for tool objects expected by SessionToolExecutor."""
+
+    @property
+    def self_confirming(self) -> bool: ...
+
+    @property
+    def silent(self) -> bool: ...
+
+    @silent.setter
+    def silent(self, value: bool) -> None: ...
+
+
+class ToolRegistryLike(Protocol):
+    """Protocol for tool registry expected by SessionToolExecutor."""
+
+    def get(self, name: str) -> ToolLike | None: ...
+
+
+class ToolResultLike(Protocol):
+    """Protocol for tool results expected by SessionToolExecutor."""
+
+    @property
+    def tool_call_id(self) -> str: ...
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def content(self) -> str: ...
+
+
+class ToolExecutorLike(Protocol):
+    """Protocol for tool executors expected by SessionToolExecutor."""
+
+    async def execute(self, tool_call: Any) -> ToolResultLike: ...
+
+
+@dataclass
+class FallbackToolResult:
+    """A fallback ToolResultLike structure for executing error and timeout results."""
+
+    tool_call_id: str
+    name: str
+    content: str
+
+
+def tool_call_to_payload(tool_call: Any) -> dict[str, Any]:
     """Convert a tool call to a payload dict for context storage."""
     return {
-        "id": tc.id,  # No hashing - use original ID
+        "id": tool_call.id,  # No hashing - use original ID
         "type": "function",
-        "function": {"name": tc.name, "arguments": tc.arguments or "{}"},
+        "function": {
+            "name": tool_call.name,
+            "arguments": tool_call.arguments or "{}",
+        },
     }
 
 
@@ -52,9 +97,9 @@ class SessionToolExecutor:
 
     def __init__(
         self,
-        tool_registry: ToolRegistry | None,
-        tool_executor: ToolExecutor | None,
-        event_bus: EventBus | None,
+        tool_registry: ToolRegistryLike | None,
+        tool_executor: ToolExecutorLike | None,
+        event_bus: Any | None,
         config: Any,
         pending_confirmations: dict[str, bool],
         confirmation_results: dict[str, bool],
@@ -72,7 +117,11 @@ class SessionToolExecutor:
         self._emit = emit
         self._debug_logger = debug_logger
 
-    def update_tools(self, tool_registry: ToolRegistry | None, tool_executor: ToolExecutor | None) -> None:
+    def update_tools(
+        self,
+        tool_registry: ToolRegistryLike | None,
+        tool_executor: ToolExecutorLike | None,
+    ) -> None:
         """Update the tool registry and executor dependencies."""
         self._tool_registry = tool_registry
         self._tool_executor = tool_executor
@@ -83,13 +132,13 @@ class SessionToolExecutor:
         import os
 
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
-            from dendrophis.session.session import _tool_log
+            from dendrophis.session.chat import _tool_log
 
             _tool_log("=== SESSION TOOL EXECUTOR ===")
             _tool_log(f"Executing {len(tool_calls)} tool calls")
-            for i, tc in enumerate(tool_calls):
-                _tool_log(f"  Tool {i + 1}: {tc.name}(id={tc.id})")
-                _tool_log(f"    Arguments: {tc.arguments!r}")
+            for index, tool_call in enumerate(tool_calls):
+                _tool_log(f"  Tool {index + 1}: {tool_call.name}(id={tool_call.id})")
+                _tool_log(f"    Arguments: {tool_call.arguments!r}")
 
         policy = PermissionPolicy.from_config(self._config)
 
@@ -97,24 +146,42 @@ class SessionToolExecutor:
         invalid_tools: list[tuple[Any, str]] = []
         approved_tools: list[tuple[Any, bool]] = []
 
-        for tc in tool_calls:
+        for tool_call in tool_calls:
             if self._cancel_flag.is_set():
                 break
 
-            if tc.name == "bash":
-                self._process_bash_tool(tc, policy, invalid_tools, approved_tools, pending_approvals)
+            # Validate arguments first before doing any permission or confirmation checks
+            error_message = self._validate_tool_arguments(tool_call)
+            if error_message is not None:
+                invalid_tools.append((tool_call, error_message))
+                continue
+
+            if tool_call.name == ToolName.BASH:
+                self._process_bash_tool(
+                    tool_call,
+                    policy,
+                    invalid_tools,
+                    approved_tools,
+                    pending_approvals,
+                )
             else:
-                self._process_regular_tool(tc, policy, invalid_tools, approved_tools, pending_approvals)
+                self._process_regular_tool(
+                    tool_call,
+                    policy,
+                    invalid_tools,
+                    approved_tools,
+                    pending_approvals,
+                )
 
         results: list[Any] = []
 
         # Add invalid tool results first
-        for tc, error_msg in invalid_tools:
-            result = self._make_error_result(tc, error_msg)
+        for tool_call, error_message in invalid_tools:
+            result = self._make_error_result(tool_call, error_message)
             results.append(result)
 
         # Poll for confirmation responses
-        for tc, request_id in pending_approvals:
+        for tool_call, request_id in pending_approvals:
             if self._cancel_flag.is_set():
                 break
 
@@ -123,28 +190,28 @@ class SessionToolExecutor:
             if approved is None:
                 # Timeout
                 self._pending_confirmations.pop(request_id, None)
-                err_msg = '{"error": "Tool execution timed out waiting for approval"}'
-                result = self._make_error_result(tc, err_msg)
+                error_message = '{"error": "Tool execution timed out waiting for approval"}'
+                result = self._make_error_result(tool_call, error_message)
                 results.append(result)
             elif not approved:
-                err_msg = '{"error": "Tool execution rejected by user"}'
-                result = self._make_error_result(tc, err_msg)
+                error_message = '{"error": "Tool execution rejected by user"}'
+                result = self._make_error_result(tool_call, error_message)
                 results.append(result)
             else:
-                approved_tools.append((tc, False))
+                approved_tools.append((tool_call, False))
 
         # Execute all approved tools
-        for tc, silent in approved_tools:
+        for tool_call, silent in approved_tools:
             if self._cancel_flag.is_set():
                 break
 
-            await self._execute_single_tool(tc, silent, results)
+            await self._execute_single_tool(tool_call, silent, results)
 
         return results
 
     def _process_bash_tool(
         self,
-        tc: Any,
+        tool_call: Any,
         policy: PermissionPolicy,
         invalid_tools: list[tuple[Any, str]],
         approved_tools: list[tuple[Any, bool]],
@@ -152,63 +219,65 @@ class SessionToolExecutor:
     ) -> None:
         """Apply permission policy to bash tool calls."""
         try:
-            args = json.loads(tc.arguments) if tc.arguments else {}
+            args = json.loads(tool_call.arguments) if tool_call.arguments else {}
             command = args.get("command", "")
             if is_heredoc_write_pattern(command):
-                msg = f"Bash heredoc file writes should use the 'write' tool instead. Command: {command[:50]}..."
-                invalid_tools.append((tc, msg))
+                error_message = (
+                    f"Bash heredoc file writes should use the 'write' tool instead. Command: {command[:50]}..."
+                )
+                invalid_tools.append((tool_call, error_message))
                 return
-            sim = BashSandbox().simulate(command)
-            decision, reason = policy.check_bash(sim)
+            simulation = BashSandbox().simulate(command)
+            decision, reason = policy.check_bash(simulation)
             if decision == Decision.DENY:
-                invalid_tools.append((tc, f"Blocked by permission policy: {reason}"))
+                invalid_tools.append((tool_call, f"Blocked by permission policy: {reason}"))
                 return
             if decision == Decision.ALLOW:
-                approved_tools.append((tc, True))
+                approved_tools.append((tool_call, True))
                 return
             # CONFIRM falls through
         except Exception:
             pass  # Let invalid JSON reach normal error handling
 
-        self._request_confirmation(tc, pending_approvals)
+        self._request_confirmation(tool_call, pending_approvals)
 
     def _process_regular_tool(
         self,
-        tc: Any,
+        tool_call: Any,
         policy: PermissionPolicy,
         invalid_tools: list[tuple[Any, str]],
         approved_tools: list[tuple[Any, bool]],
         pending_approvals: list[tuple[Any, str]],
     ) -> None:
         """Apply permission policy to non-bash tool calls."""
-        decision = policy.check_tool(tc.name)
+        decision = policy.check_tool(tool_call.name)
         if decision == Decision.DENY:
-            invalid_tools.append((tc, f"Tool '{tc.name}' is not permitted"))
+            invalid_tools.append((tool_call, f"Tool '{tool_call.name}' is not permitted"))
             return
         if decision == Decision.ALLOW:
-            approved_tools.append((tc, True))
+            approved_tools.append((tool_call, True))
             return
 
         # CONFIRM — skip generic dialog if tool manages its own confirmation
-        tool_obj = self._tool_registry.get(tc.name) if self._tool_registry else None
+        tool_obj = self._tool_registry.get(tool_call.name) if self._tool_registry else None
         if tool_obj is not None and tool_obj.self_confirming:
-            approved_tools.append((tc, False))
+            approved_tools.append((tool_call, False))
             return
 
-        self._request_confirmation(tc, pending_approvals)
+        self._request_confirmation(tool_call, pending_approvals)
 
-    def _request_confirmation(self, tc: Any, pending_approvals: list[tuple[Any, str]]) -> None:
+    def _request_confirmation(self, tool_call: Any, pending_approvals: list[tuple[Any, str]]) -> None:
         """Request user confirmation for a tool call."""
         request_id = str(uuid.uuid4())
         self._pending_confirmations[request_id] = True
         self._emit(
             ToolConfirmationRequestEvent(
                 request_id=request_id,
-                tool_name=tc.name,
-                arguments=tc.arguments,
+                tool_name=tool_call.name,
+                arguments=tool_call.arguments,
             )
         )
-        pending_approvals.append((tc, request_id))
+        pending_approvals.append((tool_call, request_id))
 
     async def _wait_for_confirmation(self, request_id: str) -> bool | None:
         """Wait for user confirmation response. Returns True if approved, False if rejected, None if timeout."""
@@ -224,58 +293,89 @@ class SessionToolExecutor:
                 return None
         return None
 
+    def _validate_tool_arguments(self, tool_call: Any) -> str | None:
+        """Validate that all required parameters are present in tool call arguments.
+
+        Returns an error message string if invalid, or None if valid.
+        """
+        tool_obj = self._tool_registry.get(tool_call.name) if self._tool_registry else None
+        if tool_obj is None:
+            if self._tool_registry and getattr(self._tool_registry, "is_disabled", None) and self._tool_registry.is_disabled(tool_call.name):
+                return f"Tool '{tool_call.name}' is currently disabled and is not available."
+            return f"Unknown tool: '{tool_call.name}'"
+
+        try:
+            import json
+
+            args = json.loads(tool_call.arguments) if tool_call.arguments else {}
+        except Exception as parse_error:
+            return f"Invalid arguments format: {parse_error}"
+
+        if hasattr(tool_obj, "parameters") and isinstance(tool_obj.parameters, dict):
+            required_params = tool_obj.parameters.get("required", [])
+            missing_params = [param for param in required_params if param not in args]
+            if missing_params:
+                missing_str = ", ".join(missing_params)
+                return f"Missing required parameter(s): {missing_str}"
+
+        return None
+
     @staticmethod
-    def _make_error_result(tc: Any, error_msg: str) -> Any:
+    def _make_error_result(tool_call: Any, error_message: str) -> FallbackToolResult:
         """Create an error result object for a tool call."""
-        return type(
-            "ToolResult",
-            (),
-            {"tool_call_id": tc.id, "name": tc.name, "content": json.dumps({"error": error_msg})},
+        return FallbackToolResult(
+            tool_call_id=tool_call.id,
+            name=tool_call.name,
+            content=json.dumps({"error": error_message}),
         )
 
-    async def _execute_single_tool(self, tc: Any, silent: bool, results: list[Any]) -> None:
+    async def _execute_single_tool(self, tool_call: Any, silent: bool, results: list[Any]) -> None:
         """Execute a single approved tool call."""
         # Emit tool execution started
         description = ""
         try:
-            args = json.loads(tc.arguments) if tc.arguments else {}
+            args = json.loads(tool_call.arguments) if tool_call.arguments else {}
             description = args.get("description", "")
         except Exception:
             pass
 
         self._emit(
             ToolExecutionStartedEvent(
-                tool_name=tc.name,
+                tool_name=tool_call.name,
                 description=description,
-                arguments=tc.arguments,
-                tool_call_index=tc.index,
+                arguments=tool_call.arguments,
+                tool_call_index=tool_call.index,
             )
         )
 
         # For self-confirming tools, communicate whether to skip interactive UI
         if self._tool_registry:
-            tool_obj = self._tool_registry.get(tc.name)
+            tool_obj = self._tool_registry.get(tool_call.name)
             if tool_obj is not None and tool_obj.self_confirming:
-                tool_obj.silent = silent  # type: ignore[attr-defined]
+                tool_obj.silent = silent
 
         # Execute the tool
         try:
+            if self._tool_executor is None:
+                raise ValueError("No tool executor provided")
             result = await asyncio.wait_for(
-                self._tool_executor.execute(tc),
-                timeout=TOOL_EXECUTION_TIMEOUT,  # type: ignore[arg-type]
+                self._tool_executor.execute(tool_call),
+                timeout=TOOL_EXECUTION_TIMEOUT,
             )
         except TimeoutError:
-            result = type(
-                "ToolResult",
-                (),
-                {
-                    "tool_call_id": tc.id,
-                    "name": tc.name,
-                    "content": '{"error": "Tool execution timed out after 120 seconds"}',
-                },
+            result = FallbackToolResult(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content='{"error": "Tool execution timed out after 120 seconds"}',
+            )
+        except Exception as exception_error:
+            result = FallbackToolResult(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=json.dumps({"error": f"Execution failed: {exception_error}"}),
             )
 
         # Emit tool execution finished
         success = "error" not in result.content.lower()
-        self._emit(ToolExecutionFinishedEvent(tool_name=tc.name, success=success))
+        self._emit(ToolExecutionFinishedEvent(tool_name=tool_call.name, success=success))
         results.append(result)

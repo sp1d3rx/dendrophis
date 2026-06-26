@@ -1,0 +1,42 @@
+{
+  "router": "192.168.1.1",
+  "protocol": "json-rpc-2.0",
+  "session_id": "116037103bce2f87a636d1849d710e8d",
+  "notes": "Session ID from HAR capture. Login via POST /cgi-bin/luci/admin/ to get a fresh one.",
+
+  "ubus_calls": [
+    {
+      "name": "uci.changes",
+      "description": "Check for uncommitted UCI config changes",
+      "request": {"jsonrpc": "2.0", "id": 1, "method": "call", "params": ["<session>", "uci", "changes", {}]},
+      "source": "POST /ubus/ — from logs page"
+    },
+    {
+      "name": "file.stat",
+      "description": "Stat a file (used to check if syslog has new entries)",
+      "request": {"jsonrpc": "2.0", "id": 2, "method": "call", "params": ["<session>", "file", "stat", {"path": "/usr/libexec/syslog-wrapper"}]},
+      "source": "POST /ubus/ — from logs page polling"
+    },
+    {
+      "name": "syslog-wrapper",
+      "description": "Execute syslog wrapper to fetch log entries",
+      "request": "POST /cgi-bin/cgi-exec with sessionid=<session>&command=/usr/libexec/syslog-wrapper",
+      "source": "POST /cgi-bin/cgi-exec — from logs page"
+    }
+  ],
+
+  "dashboard_ideas": [
+    {"call": "network.interface", "method": "status", "description": "Interface status (WAN/LAN, IP, up/down)"},
+    {"call": "network.interface", "method": "dump", "description": "Full interface dump with stats"},
+    {"call": "system", "method": "info", "description": "System info (model, firmware, uptime, load, memory)"},
+    {"call": "uci", "method": "get", "config": "network", "description": "Network config"},
+    {"call": "luci", "method": "getAvailableUpgrades", "description": "Check for firmware updates"},
+    {"call": "luci", "method": "getBoard", "description": "Board info"},
+    {"call": "luci", "method": "getDHCPLeases", "description": "Active DHCP leases (connected devices)"},
+    {"call": "luci", "method": "getFirewall", "description": "Firewall rules"},
+    {"call": "luci", "method": "getNetwork", "description": "Network overview"},
+    {"call": "luci", "method": "getSystemInfo", "description": "System info (CPU, memory, disk)"},
+    {"call": "luci", "method": "getSystemLog", "description": "System log entries"},
+    {"call": "luci", "method": "getWireless", "description": "Wireless status and clients"}
+  ]
+}

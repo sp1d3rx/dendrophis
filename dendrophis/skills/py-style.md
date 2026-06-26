@@ -1,5 +1,6 @@
 ---
 name: py-style
+aliases: [py-codestyle, python-style]
 description: >
   Python style guide based on Raymond Hettinger's principles for beautiful, pythonic code.
   Enforces meaningful naming, avoids single-letter variables, and promotes idiomatic

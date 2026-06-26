@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LLMConfig(BaseModel):
@@ -151,10 +151,27 @@ class UIConfig(BaseModel):
     scrollback_limit: int = 100
 
 
+class MCPServerConfig(BaseModel):
+    """Configuration for an individual MCP server."""
+
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] | None = None
+    enabled: bool = True
+    url: str | None = None
+
+    @model_validator(mode="after")
+    def validate_command_or_url(self) -> MCPServerConfig:
+        if not self.command and not self.url:
+            raise ValueError("Either command or url must be specified for MCP server config.")
+        return self
+
+
 class DendrophisConfig(BaseModel):
     """Root configuration model for a Dendrophis session."""
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     ui: UIConfig = Field(default_factory=UIConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)

@@ -22,6 +22,7 @@ def _config_search_paths() -> list[Path]:
         return [Path(env)]
     return [
         Path("dendrophis.yaml"),
+        Path("configs/dendrophis.yaml"),
         Path.home() / ".config" / "dendrophis" / "config.yaml",
     ]
 

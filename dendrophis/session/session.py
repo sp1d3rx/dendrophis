@@ -65,6 +65,7 @@ class Session:
         persister: SessionPersister | None = None,
         chat: ChatOrchestrator | None = None,
         subagent_bootstrapper: SubagentBootstrapper | None = None,
+        mcp_manager: Any | None = None,
     ) -> None:
         self.config_loader = config_loader
         self.config: DendrophisConfig = config_loader.config
@@ -76,6 +77,7 @@ class Session:
         self._memory_store = memory_store
         self._skill_manager = skill_manager
         self._tool_registry = tool_registry
+        self.mcp_manager = mcp_manager
         self._tool_executor = tool_executor
         self._understanding_detector = understanding_detector or UnderstandingPhaseDetector(
             min_turns_before_established=self.config.caching.tier2_project_understanding_min_turns
@@ -148,6 +150,11 @@ class Session:
                 config=self.config,
             )
             self._subagent_bootstrapper.initialize()
+
+    @property
+    def memory_store(self) -> MemoryStore | None:
+        """Public accessor for the memory store used by UI and tools."""
+        return self._memory_store
 
     def _emit(self, event: Any) -> None:
         """Publish an event to the event bus."""
@@ -395,8 +402,16 @@ class Session:
         self.config_loader.reload()
         self.config = self.config_loader.config
         self.llm = LLMClient(self.config.llm)
+
+        if getattr(self, "mcp_manager", None):
+            import asyncio
+
+            self._mcp_sync_task = asyncio.create_task(self.mcp_manager.sync_servers())
+
         self._emit(ConfigReloadedEvent())
 
     async def aclose(self) -> None:
         """Close the LLM client and release resources."""
+        if getattr(self, "mcp_manager", None):
+            await self.mcp_manager.aclose()
         await self.llm.aclose()

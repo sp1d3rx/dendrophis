@@ -73,6 +73,7 @@ ui:
       - cost
       - sysinfo
       - reasoning
+      - mcp_status
 
 hooks:
   pre_tool_use: []

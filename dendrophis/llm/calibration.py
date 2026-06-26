@@ -269,20 +269,26 @@ def detect_provider(base_url: str) -> str:
 
 def _get_models_endpoint(base_url: str, provider: str) -> str:
     """Get the models endpoint for a provider."""
+    base_url_stripped = base_url.rstrip("/")
     # DeepInfra uses /models
     if provider == "deepinfra":
-        return f"{base_url.rstrip('/')}/models"
+        return f"{base_url_stripped}/models"
+    if base_url_stripped.endswith("/v1"):
+        return f"{base_url_stripped}/models"
     # Most OpenAI-compatible providers use /v1/models
-    return f"{base_url.rstrip('/')}/v1/models"
+    return f"{base_url_stripped}/v1/models"
 
 
 def _get_chat_completions_endpoint(base_url: str, provider: str) -> str:
     """Get the chat completions endpoint for a provider."""
+    base_url_stripped = base_url.rstrip("/")
     # DeepInfra uses /chat/completions (not /v1/chat/completions)
     if provider == "deepinfra":
-        return f"{base_url.rstrip('/')}/chat/completions"
+        return f"{base_url_stripped}/chat/completions"
+    if base_url_stripped.endswith("/v1"):
+        return f"{base_url_stripped}/chat/completions"
     # Most OpenAI-compatible providers use /v1/chat/completions
-    return f"{base_url.rstrip('/')}/v1/chat/completions"
+    return f"{base_url_stripped}/v1/chat/completions"
 
 
 def fetch_model_metadata(base_url: str, api_key: str, model_id: str) -> dict[str, Any] | None:
@@ -449,9 +455,6 @@ async def calibrate_model(
             base_url = "https://openrouter.ai/api/v1"
         else:
             base_url = "https://api.openai.com/v1"
-
-    if not api_key:
-        raise ValueError("API key required for calibration. Set DENDROPHIS_API_KEY or provide api_key.")
 
     if not api_key:
         raise ValueError("API key required for calibration. Set DENDROPHIS_API_KEY or provide api_key.")

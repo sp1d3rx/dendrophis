@@ -391,6 +391,27 @@ class WriteApprovalEvent(ConfirmationEvent):
 
 
 # =============================================================================
+# Python Exec Events
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class PythonExecProposalEvent(ConfirmationEvent):
+    """Request human approval for Python code execution, showing the code for review."""
+
+    request_id: str
+    code: str
+
+
+@dataclass(frozen=True, slots=True)
+class PythonExecApprovalEvent(ConfirmationEvent):
+    """Response to a PythonExecProposalEvent."""
+
+    request_id: str
+    approved: bool
+
+
+# =============================================================================
 # Config Events
 # =============================================================================
 
@@ -737,6 +758,8 @@ AnyEvent = (
     | EditApprovalEvent
     | WriteProposalEvent
     | WriteApprovalEvent
+    | PythonExecProposalEvent
+    | PythonExecApprovalEvent
     # Config events
     | ConfigReloadedEvent
     # Request events

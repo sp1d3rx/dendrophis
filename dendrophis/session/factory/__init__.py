@@ -39,8 +39,16 @@ class SessionFactory:
         config_loader: ConfigLoader,
         event_bus: EventBus | None = None,
         debug_logger: Callable[[str], None] | None = None,
+        no_interactive: bool = False,
     ) -> Session:
-        """Create and wire a Session instance with all standard vertical slices."""
+        """Create and wire a Session instance with all standard vertical slices.
+
+        Args:
+            config_loader: Configuration loader
+            event_bus: Event bus for inter-component communication
+            debug_logger: Optional debug logger callback
+            no_interactive: If True, skip interactive approval flows (useful for tests)
+        """
         config = config_loader.config
         bus = event_bus or get_event_bus()
 
@@ -70,8 +78,14 @@ class SessionFactory:
         skill_manager.load_skills()
 
         # 4. Tools
-        tool_registry = create_builtin_registry(bus, interactive=True, memory_store=memory_store)
+        tool_registry = create_builtin_registry(
+            bus, interactive=True, memory_store=memory_store, no_interactive=no_interactive,
+        )
         tool_executor = ToolExecutor(tool_registry)
+
+        # 4c. MCP Manager
+        from dendrophis.tools.mcp import MCPManager
+        mcp_manager = MCPManager(config, tool_registry, debug_logger)
 
         # 4b. Subagent Bootstrapper
         subagent_bootstrapper = SubagentBootstrapper(
@@ -154,6 +168,7 @@ class SessionFactory:
             persister=persister,
             chat=chat,
             subagent_bootstrapper=subagent_bootstrapper,
+            mcp_manager=mcp_manager,
         )
 
         # Wire remaining reference objects

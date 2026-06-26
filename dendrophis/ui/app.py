@@ -82,8 +82,10 @@ class DendrophisApp(App):
         # Update title with session ID and model
         self._update_title()
 
-        # Fetch models in background
+        # Fetch models and initialize MCP servers in background
         self.run_worker(self._session.fetch_models())
+        if getattr(self._session, "mcp_manager", None):
+            self.run_worker(self._session.mcp_manager.initialize_servers())
 
         if not self._session.config.llm.api_key:
             from dendrophis.ui.screens.api_key_prompt import ApiKeyPromptScreen
@@ -115,6 +117,7 @@ class DendrophisApp(App):
     def _on_model_switched(self, event: ModelSwitchedEvent) -> None:
         """Update title bar when model changes."""
         self._update_title()
+        self.call_later(self._check_and_prompt_calibration, event.model_id)
 
     def _on_auth_failed(self, event: AuthFailedEvent) -> None:
         from dendrophis.ui.screens.api_key_prompt import ApiKeyPromptScreen
@@ -134,6 +137,9 @@ class DendrophisApp(App):
         self.push_screen(self._main_screen)
         # Get reference to debug widget for logging
         self._debug_widget = self._main_screen._debug_widget
+
+        # Check calibration for initial model
+        self.call_later(self._check_and_prompt_calibration, self._session.config.llm.model)
 
     async def on_unmount(self) -> None:
         await self._session.aclose()
@@ -185,3 +191,35 @@ class DendrophisApp(App):
         # Also write to screen debug log if it exists
         if self._debug_log_screen:
             self._debug_log_screen.write(message)
+
+    def _check_and_prompt_calibration(self, model_id: str) -> None:
+        """Check if the model is calibrated and prompt the user to calibrate if not."""
+        from dendrophis.llm.calibration import ModelOverrideStore
+
+        store = ModelOverrideStore()
+        if not store.get(model_id):
+            from dendrophis.ui.screens.calibration_prompt import CalibrationPromptScreen
+
+            def _on_prompt_result(should_calibrate: bool | None) -> None:
+                if should_calibrate:
+                    self.run_worker(self._run_calibration_in_background(model_id))
+
+            self.push_screen(CalibrationPromptScreen(model_id), _on_prompt_result)
+
+    async def _run_calibration_in_background(self, model_id: str) -> None:
+        """Run model calibration in the background and notify user of progress."""
+        from dendrophis.llm.calibration import calibrate_model
+
+        self.notify(f"Calibrating {model_id}...", severity="information")
+        try:
+            api_key = self._session.config.llm.api_key
+            base_url = self._session.config.llm.base_url
+            await calibrate_model(
+                model_id=model_id,
+                base_url=base_url,
+                api_key=api_key,
+                force=True,
+            )
+            self.notify(f"Successfully calibrated {model_id}!", severity="success")
+        except Exception as error:
+            self.notify(f"Calibration failed: {error}", severity="error")

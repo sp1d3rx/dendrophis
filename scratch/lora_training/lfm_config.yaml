@@ -1,0 +1,17 @@
+# LFM2.5 LoRA training configuration for Raymond Hettinger style Python coding
+model: "mlx-community/LFM2.5-8B-A1B-MLX-8bit"
+data: "scratch/lora_training/data_lfm"
+train: true
+fine_tune_type: "lora"
+num_layers: -1
+batch_size: 1
+iters: 3000
+learning_rate: 0.00001
+adapter_path: "scratch/lora_training/lfm_adapters"
+save_every: 500
+mask_prompt: true
+grad_checkpoint: true
+max_seq_length: 4096
+val_batches: 25
+steps_per_eval: 500
+steps_per_report: 10

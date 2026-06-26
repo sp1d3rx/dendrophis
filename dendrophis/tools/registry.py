@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from dendrophis.tools.names import ToolName
+
 if TYPE_CHECKING:
     from dendrophis.tools.base import BaseTool
 
@@ -13,10 +15,22 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
+        self._disabled_tools: dict[str, BaseTool] = {}
 
     def add(self, tool: BaseTool) -> None:
         """Add a tool instance to the registry."""
         self._tools[tool.name] = tool
+        self._disabled_tools.pop(tool.name, None)
+
+    def remove(self, name: str) -> None:
+        """Remove a tool from the registry by name."""
+        tool = self._tools.pop(name, None)
+        if tool:
+            self._disabled_tools[name] = tool
+
+    def is_disabled(self, name: str) -> bool:
+        """Return True if the tool is currently disabled."""
+        return name in self._disabled_tools
 
     def get(self, name: str) -> BaseTool | None:
         """Return the named tool, or None if not registered."""
@@ -29,7 +43,14 @@ class ToolRegistry:
     def all(self) -> list[BaseTool]:
         """Return all registered tool instances, ordered by preference."""
         # Preferred order: glob, ripgrep, read, edit, write, bash
-        preferred_order = ["glob", "ripgrep", "read", "edit", "write", "bash"]
+        preferred_order = [
+            ToolName.GLOB,
+            ToolName.RIPGREP,
+            ToolName.READ,
+            ToolName.EDIT,
+            ToolName.WRITE,
+            ToolName.BASH,
+        ]
 
         ordered_tools: list[BaseTool] = []
         remaining = list(self._tools.values())
@@ -49,7 +70,14 @@ class ToolRegistry:
     def all_schema(self) -> list[dict[str, Any]]:
         """Return list of all tool schemas for OpenAI, ordered by preference."""
         # Preferred order: glob, ripgrep, read, edit, write, bash
-        preferred_order = ["glob", "ripgrep", "read", "edit", "write", "bash"]
+        preferred_order = [
+            ToolName.GLOB,
+            ToolName.RIPGREP,
+            ToolName.READ,
+            ToolName.EDIT,
+            ToolName.WRITE,
+            ToolName.BASH,
+        ]
 
         ordered_tools: list[dict[str, Any]] = []
         remaining = list(self._tools.values())

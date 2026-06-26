@@ -18,6 +18,7 @@ from dendrophis.tools.builtins.memory import (
     SaveMemoryTool,
     SearchMemoryTool,
 )
+from dendrophis.tools.builtins.python_exec import execute_code
 from dendrophis.tools.builtins.subagents import InvokeSubagentTool
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "SearchMemoryTool",
     "WriteTool",
     "analyze_functions",
+    "execute_code",
     "get_filesystem_tools",
     "get_function",
     "replace_function",

@@ -1,0 +1,41 @@
+{
+    "adapter_path": "scratch/lora_training/lfm_adapters",
+    "batch_size": 1,
+    "clear_cache_threshold": 0,
+    "config": "scratch/lora_training/lfm_config.yaml",
+    "data": "scratch/lora_training/data_lfm",
+    "fine_tune_type": "lora",
+    "grad_accumulation_steps": 1,
+    "grad_checkpoint": true,
+    "iters": 3000,
+    "learning_rate": 1e-05,
+    "lora_parameters": {
+        "rank": 8,
+        "dropout": 0.0,
+        "scale": 20.0
+    },
+    "lr_schedule": null,
+    "mask_prompt": true,
+    "max_seq_length": 4096,
+    "model": "mlx-community/LFM2.5-8B-A1B-MLX-8bit",
+    "num_layers": -1,
+    "optimizer": "adam",
+    "optimizer_config": {
+        "adam": {},
+        "adamw": {},
+        "muon": {},
+        "sgd": {},
+        "adafactor": {}
+    },
+    "project_name": null,
+    "report_to": null,
+    "resume_adapter_file": null,
+    "save_every": 500,
+    "seed": 0,
+    "steps_per_eval": 500,
+    "steps_per_report": 10,
+    "test": false,
+    "test_batches": 500,
+    "train": true,
+    "val_batches": 25
+}

@@ -10,12 +10,14 @@ if TYPE_CHECKING:
 
 
 SUMMARY_PROMPT = (
-    "You are summarizing conversation history for context compaction. "
-    "Your goal: preserve everything needed to continue the work without re-reading the full history.\n"
-    "Preserve: session intent/goals, file paths and modifications, architectural decisions, "
-    "key constraints, unresolved issues, next steps, important code patterns.\n"
-    "Omit: verbose tool outputs, exploratory dead-ends, redundant confirmations.\n"
-    "Be concise but thorough. Output only the summary, no preamble or apologies.\n\n"
+    "Summarize the following conversation history for context compaction. "
+    "Preserve only what is needed to continue the work: session goals, file paths and modifications, "
+    "architectural decisions, key constraints, unresolved issues, next steps, and important code patterns.\n"
+    "Omit: verbose tool outputs, raw code dumps, exploratory dead-ends, redundant confirmations, "
+    "and any meta-commentary about how you are producing the summary.\n"
+    "Do not start with phrases like 'Here is a summary', 'Let me extract', or 'The conversation involved'.\n"
+    "Do not use bullet points or numbered steps. Write plain, concise paragraphs.\n"
+    "Output only the summary text. No preamble, no apologies, no markdown formatting.\n\n"
     "--- CONVERSATION HISTORY ---\n{history}\n--- END HISTORY ---"
 )
 
@@ -23,7 +25,11 @@ TAIL_TURNS = 6
 
 
 def _messages_to_text(messages: list[dict[str, Any]]) -> str:
-    """Serialise a list of OpenAI-format messages to a plain-text transcript."""
+    """Serialise a list of OpenAI-format messages to a plain-text transcript.
+
+    Drops system and tool messages; the system prompt is preserved separately,
+    and tool outputs are usually too verbose and low-signal for a summary.
+    """
     transcript_lines: list[str] = []
     for msg in messages:
         # Edge case: Handle None or non-dict messages
@@ -34,6 +40,10 @@ def _messages_to_text(messages: list[dict[str, Any]]) -> str:
         role = msg.get("role", "unknown")
         if not isinstance(role, str):
             role = "unknown"
+
+        # Skip system/tool roles to keep the summary focused on the dialogue.
+        if role in {"system", "tool"}:
+            continue
 
         # Edge case: Handle various content formats
         content = msg.get("content")
@@ -115,14 +125,11 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
     summary_prompt = SUMMARY_PROMPT.format(history=history_text)
     summary_messages = [{"role": "user", "content": summary_prompt}]
 
-    from dendrophis.events import ErrorEvent, ReasoningDeltaEvent, TextDeltaEvent
+    from dendrophis.events import ErrorEvent, TextDeltaEvent
 
     summary_parts: list[str] = []
     async for event in llm.stream_chat(summary_messages, tools=None):
         if isinstance(event, TextDeltaEvent):
-            summary_parts.append(event.delta)
-        elif isinstance(event, ReasoningDeltaEvent):
-            # Some models return reasoning content instead of text
             summary_parts.append(event.delta)
         elif isinstance(event, ErrorEvent):
             raise RuntimeError(f"LLM error during compaction: {event.message}")
@@ -135,7 +142,7 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
         )
 
     summary_message: dict[str, Any] = {
-        "role": "user",
+        "role": "assistant",
         "content": f"[Context summary — earlier conversation compacted]\n\n{summary}",
     }
 
@@ -145,6 +152,7 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
 
     context.messages = [*messages[:start], summary_message, *messages[end:]]
     context.recalculate_tokens()
+    context.clear_read_hashes()
 
     return {
         "compacted": True,

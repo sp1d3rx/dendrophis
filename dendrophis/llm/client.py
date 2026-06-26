@@ -24,7 +24,6 @@ from dendrophis.events import (
     TextDeltaEvent,
     ToolCall,
     ToolCallDoneEvent,
-    ToolCallStartEvent,
     TurnResult,
 )
 from dendrophis.llm.models import (
@@ -381,8 +380,10 @@ class LLMClient:
             # MLC returns 422/400 if tool_calls appear in history; tool intent
             # is encoded in <tool_call> tags in the content string instead.
             strip_keys.add("tool_calls")
-        if not is_direct_anthropic:
-            # cache_control is Anthropic-specific; other providers reject it.
+        from dendrophis.llm.calibration import is_param_rejected
+
+        if not is_direct_anthropic or is_param_rejected(self._config.model, "cache_control"):
+            # cache_control is Anthropic-specific or rejected; other providers/configs reject it.
             strip_keys.add("cache_control")
 
         if is_deepinfra:
@@ -539,7 +540,12 @@ class LLMClient:
             else:
                 # Standard OpenAI format; optionally add cache_control for Anthropic
                 model_is_claude = "claude" in self._config.model.lower()
-                if enable_cache_control and model_is_claude and provider_context.is_direct_anthropic:
+                if (
+                    enable_cache_control
+                    and model_is_claude
+                    and provider_context.is_direct_anthropic
+                    and not is_param_rejected(self._config.model, "cache_control")
+                ):
                     tools = [{**tool, "cache_control": {"type": "ephemeral"}} for tool in tools]
                 payload["tools"] = tools
                 payload["tool_choice"] = tool_choice
@@ -898,7 +904,9 @@ class LLMClient:
                 text_parts.append(event.delta)
             elif isinstance(event, ReasoningDeltaEvent):
                 reasoning_parts.append(event.delta)
-            elif isinstance(event, ToolCallStartEvent):
+            elif isinstance(event, ToolCallDoneEvent):
+                # The finalized tool call (with arguments) is delivered here.
+                # ToolCallStartEvent only carries index/id/name and should not be used.
                 tool_calls.append(event.tool_call)
             elif isinstance(event, TurnResult):
                 return event

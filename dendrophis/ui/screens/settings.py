@@ -102,6 +102,194 @@ class HookListEditor(Vertical):
         return [row.get_data() for row in self.query(HookEntryRow)]
 
 
+class McpServerEntryRow(Vertical):
+    """Dynamic container for editing a single MCP server configuration."""
+
+    DEFAULT_CSS = """
+    McpServerEntryRow {
+        height: auto;
+        margin-bottom: 2;
+        padding: 1;
+        border: solid $primary 30%;
+        background: $surface-darken-1;
+    }
+    .mcp-header-row {
+        height: auto;
+        margin-bottom: 1;
+        align: left middle;
+    }
+    .mcp-name-label {
+        width: auto;
+        margin-right: 1;
+        align: left middle;
+    }
+    .mcp-name-input {
+        width: 25;
+        margin-right: 2;
+        height: 3;
+    }
+    .mcp-enabled-switch {
+        margin-right: 2;
+    }
+    .mcp-del-btn {
+        width: 10;
+    }
+    .mcp-fields-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+    .mcp-field-col {
+        width: 1fr;
+        padding-right: 2;
+        height: auto;
+    }
+    .mcp-field-col:last-child {
+        padding-right: 0;
+    }
+    .mcp-label {
+        color: $text;
+        text-style: bold;
+        margin-bottom: 0;
+    }
+    .mcp-input {
+        width: 100%;
+        height: 3;
+    }
+    """
+
+    def __init__(
+        self,
+        server_name: str,
+        command: str,
+        arguments: list[str],
+        env_vars: dict[str, str] | None,
+        enabled: bool,
+    ) -> None:
+        super().__init__()
+        self._initial_name = server_name
+        self._initial_command = command
+        self._initial_args = arguments
+        self._initial_env = env_vars or {}
+        self._initial_enabled = enabled
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="mcp-header-row"):
+            yield Label("Server Name:", classes="mcp-name-label")
+            yield Input(value=self._initial_name, placeholder="e.g. gkeep", classes="mcp-name-input")
+            yield Switch(value=self._initial_enabled, classes="mcp-enabled-switch")
+            yield Button("Delete", variant="error", classes="mcp-del-btn")
+
+        with Horizontal(classes="mcp-fields-row"):
+            with Vertical(classes="mcp-field-col"):
+                yield Label("Command", classes="mcp-label")
+                yield Input(value=self._initial_command, placeholder="e.g. npx", classes="mcp-input mcp-command")
+
+            with Vertical(classes="mcp-field-col"):
+                yield Label("Arguments (comma-separated)", classes="mcp-label")
+                arguments_string = ", ".join(self._initial_args)
+                yield Input(
+                    value=arguments_string,
+                    placeholder="e.g. -y, @modelcontextprotocol/server-postgres",
+                    classes="mcp-input mcp-args",
+                )
+
+            with Vertical(classes="mcp-field-col"):
+                yield Label("Env Variables (KEY=VAL, comma-separated)", classes="mcp-label")
+                env_string = ", ".join(f"{env_key}={env_value}" for env_key, env_value in self._initial_env.items())
+                yield Input(
+                    value=env_string,
+                    placeholder="e.g. DB_URL=postgresql://localhost",
+                    classes="mcp-input mcp-env",
+                )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.has_class("mcp-del-btn"):
+            self.remove()
+
+    def get_data(self) -> dict:
+        inputs = self.query(Input)
+        switch = self.query_one(Switch)
+
+        server_name = inputs[0].value.strip()
+        command = inputs[1].value.strip()
+        args_str = inputs[2].value
+        env_str = inputs[3].value
+        enabled = switch.value
+
+        arguments_list = []
+        if args_str.strip():
+            arguments_list = [argument.strip() for argument in args_str.split(",") if argument.strip()]
+
+        env_dict = {}
+        if env_str.strip():
+            for part in env_str.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "=" in part:
+                    env_key, env_value = part.split("=", 1)
+                    env_dict[env_key.strip()] = env_value.strip()
+
+        return {
+            "name": server_name,
+            "config": {
+                "command": command,
+                "args": arguments_list,
+                "env": env_dict if env_dict else None,
+                "enabled": enabled,
+            },
+        }
+
+
+class McpServerListEditor(Vertical):
+    """Editor for a list of MCP servers."""
+
+    DEFAULT_CSS = """
+    McpServerListEditor {
+        height: auto;
+        margin-bottom: 1;
+        padding: 1;
+    }
+    .add-mcp-btn {
+        margin-top: 1;
+        width: 25;
+    }
+    """
+
+    def __init__(self, title: str, initial_servers: dict[str, Any], id: str) -> None:
+        super().__init__(id=id)
+        self._title = title
+        self._initial_servers = initial_servers
+
+    def compose(self) -> ComposeResult:
+        yield Label(self._title, classes="settings-section")
+        with Vertical(id="mcp-container"):
+            for server_name, server_config in self._initial_servers.items():
+                command = (
+                    server_config.command if hasattr(server_config, "command") else server_config.get("command", "")
+                )
+                args = server_config.args if hasattr(server_config, "args") else server_config.get("args", [])
+                env = server_config.env if hasattr(server_config, "env") else server_config.get("env", {})
+                enabled = (
+                    server_config.enabled if hasattr(server_config, "enabled") else server_config.get("enabled", True)
+                )
+                yield McpServerEntryRow(server_name, command, args, env, enabled)
+        yield Button("+ Add MCP Server", classes="add-mcp-btn", variant="success")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.has_class("add-mcp-btn"):
+            self.query_one("#mcp-container").mount(McpServerEntryRow("", "", [], {}, True))
+
+    def get_servers_dict(self) -> dict[str, dict]:
+        servers_dictionary = {}
+        for row in self.query(McpServerEntryRow):
+            data = row.get_data()
+            name = data["name"]
+            if name:
+                servers_dictionary[name] = data["config"]
+        return servers_dictionary
+
+
 class SettingsScreen(Screen):
     """Full-screen config editor."""
 
@@ -127,7 +315,9 @@ class SettingsScreen(Screen):
     TabbedContent {
         max-width: 120;
         width: 100%;
+        height: 1fr;
     }
+
     .settings-group {
         border: solid $primary 20%;
         background: $surface-darken-1;
@@ -212,6 +402,13 @@ class SettingsScreen(Screen):
         padding-top: 1;
         width: 100%;
         text-style: bold;
+    }
+    #settings-footer {
+        dock: bottom;
+        height: auto;
+        width: 100%;
+        align-horizontal: center;
+        background: $surface;
     }
     #error-label {
         max-width: 120;
@@ -515,6 +712,9 @@ class SettingsScreen(Screen):
                         yield Label("System Prompt (Instructions to Agent)", classes="settings-group-title")
                         yield TextArea(self._cfg.system_prompt, id="system_prompt")
 
+                with TabPane("MCP Servers", id="tab-mcp"), VerticalScroll():
+                    yield McpServerListEditor("MCP Servers Config", self._cfg.mcp_servers, id="editor-mcp-servers")
+
                 with TabPane("Permissions", id="tab-permissions"), VerticalScroll():
                     yield from self._make_permissions_tab()
 
@@ -534,10 +734,11 @@ class SettingsScreen(Screen):
                         id="config-editor",
                     )
 
-            yield Label("", id="error-label")
-            with Horizontal(id="actions"):
-                yield Button("Save (Ctrl+S)", variant="primary", id="save-btn")
-                yield Button("Cancel (Esc)", id="cancel-btn")
+            with Vertical(id="settings-footer"):
+                yield Label("", id="error-label")
+                with Horizontal(id="actions"):
+                    yield Button("Save (Ctrl+S)", variant="primary", id="save-btn")
+                    yield Button("Cancel (Esc)", id="cancel-btn")
 
         yield Footer()
 
@@ -794,6 +995,9 @@ class SettingsScreen(Screen):
 
             set_nested(raw, ["system_prompt"], self.query_one("#system_prompt", TextArea).text)
 
+            mcp_servers = self.query_one("#editor-mcp-servers", McpServerListEditor).get_servers_dict()
+            raw["mcp_servers"] = mcp_servers
+
             # Save Permissions additional settings
             self._save_permissions(raw)
             allowed_tools_val = self._get_val("permissions_allowed_tools").strip()
@@ -845,9 +1049,9 @@ class SettingsScreen(Screen):
             except Exception:
                 continue
             if val == "deny":
-                denied_tools.append(name)
+                denied_tools.append(str(name))
             elif val == "confirm":
-                require_confirmation.append(name)
+                require_confirmation.append(str(name))
 
         denied_cats: list[str] = []
         auto_cats: list[str] = []

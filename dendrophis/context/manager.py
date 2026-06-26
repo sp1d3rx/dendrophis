@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,8 @@ class ContextManager:
         self._turn_to_index: dict[int, int] = {0: 0}  # Turn 0 is system prompt
         # File tracking for Phase 2 caching
         self._file_tracker = FileBlockTracker(_stable_threshold=config.caching.tier2_file_blocks_stable_turns)
+        # Dedup: track SHA256 hashes of read contents (skip identical read results per file path)
+        self._read_file_hashes: dict[str, str] = {}
         self._init_system()
 
     def _init_system(self) -> None:
@@ -92,6 +95,36 @@ class ContextManager:
         if len(name) == 9 and all(c in "0123456789abcdef" for c in name):
             raise ValueError(f"Tool name cannot be hashed ID: {name}. This indicates a bug in tool call processing.")
 
+        # Skip duplicate read results (same tool + identical content per file path)
+        if name == "read":
+            try:
+                import json
+
+                result_data = json.loads(content)
+                if isinstance(result_data, dict) and result_data.get("type") == "file":
+                    file_path = result_data.get("path")
+                    file_content = result_data.get("content", "")
+                    content_hash = hashlib.sha256(file_content.encode(errors="replace")).hexdigest()
+                    if self._read_file_hashes.get(file_path) == content_hash:
+                        return
+                    self._read_file_hashes[file_path] = content_hash
+                else:
+                    # Fallback for non-file reads (like directory lists)
+                    content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
+                    if content_hash in self._read_file_hashes:
+                        return
+                    self._read_file_hashes[content_hash] = content_hash
+            except Exception:
+                content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
+                if content_hash in self._read_file_hashes:
+                    return
+                self._read_file_hashes[content_hash] = content_hash
+
+            # Cap dictionary size to 500 to prevent unbounded growth
+            if len(self._read_file_hashes) > 500:
+                self._read_file_hashes.pop(next(iter(self._read_file_hashes)), None)
+
+
         msg = make_tool_result_message(tool_call_id, name, content)
         self.messages.append(msg)
         self.token_count += count_tokens(content) + 4
@@ -130,6 +163,14 @@ class ContextManager:
 
     def needs_compaction(self) -> bool:
         return self.token_pct >= self._config.llm.compaction_threshold
+
+    def clear_read_hashes(self) -> None:
+        """Clear the read dedup set after compaction.
+
+        Called after context compaction so that files in compacted-away
+        messages can be re-read without being silently dropped.
+        """
+        self._read_file_hashes.clear()
 
     # ── Caching (Phase 2) ──────────────────────────────────────────────────────
 
@@ -225,4 +266,5 @@ class ContextManager:
         self._turn_count = 0
         self._turn_to_index = {0: 0}
         self._file_tracker = FileBlockTracker(_stable_threshold=self._config.caching.tier2_file_blocks_stable_turns)
+        self._read_file_hashes = {}
         self._init_system()

@@ -69,3 +69,10 @@ test_*.py
 
 # benchmarks
 benchmarks/baseline_*.txt
+
+# local model downloads
+*MLX*
+*MLC*
+LFM2.5-1.2B-*
+*.safetensors
+*.jsonl

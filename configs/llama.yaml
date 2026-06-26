@@ -1,0 +1,32 @@
+llm:
+  # --- Connection Settings ---
+  # Base URL of the OpenAI-compatible API endpoint
+  base_url: "http://127.0.0.1:1234/v1"
+  # API key used for authentication (local servers accept any dummy string)
+  api_key: "lmstudio"
+  # Maximum network request timeout in seconds
+  timeout: 60.0
+
+  # --- Model Selection ---
+  # The primary LLM used for standard chat and agentic reasoning
+  model: "llama-3.2-1b-instruct"
+  # The model dedicated to the code-writer subagent for executing code changes (null = fallback to default)
+  code_writer_model: null
+
+  # --- Context & Compaction ---
+  # Maximum context window limit in tokens
+  context_limit: 16384
+  # Compress history when token usage exceeds this fraction of the context limit (e.g., 0.85 = 85%)
+  compaction_threshold: 0.85
+
+  # --- Generation & Sampling ---
+  # Maximum tokens the model is allowed to generate per response
+  max_tokens: 4096
+  # Sampling temperature (lower is more deterministic, higher is more creative)
+  temperature: 0.1
+
+  # --- Tool Configuration ---
+  # Format to send tools: "auto" (XML for local, native otherwise), "native" (OpenAI API), or "xml"
+  tool_mode: native
+  # Maximum token budget allowed for a single tool output before truncation
+  max_tool_output_tokens: 2000

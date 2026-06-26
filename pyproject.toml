@@ -19,6 +19,7 @@ dependencies = [
     "tiktoken>=0.7",
     "psutil>=5.9",
     "numpy>=1.26",
+    "mcp>=1.27.2",
 ]
 
 [project.urls]
@@ -34,6 +35,10 @@ dev = [
 
 [project.scripts]
 dendrophis = "dendrophis.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dendrophis"]
+include = ["dendrophis/skills/*.md"]
 
 [tool.ruff]
 target-version = "py313"

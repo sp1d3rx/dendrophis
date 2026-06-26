@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Router Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Router Dashboard</h1>
+
+    <div class="tabs">
+        <button class="tab active" data-tab="logs" onclick="switchTab('logs')">Logs</button>
+        <button class="tab" data-tab="connections" onclick="switchTab('connections')">Connections</button>
+        <button class="tab" data-tab="insights" onclick="switchTab('insights')">Insights</button>
+    </div>
+
+    <div id="page-logs" class="page active">
+        <div class="filters">
+            <input type="text" id="search" placeholder="Search messages..." />
+            <button id="refresh-btn" onclick="loadLogs()">Refresh</button>
+            <button id="auto-refresh-btn" onclick="toggleAutoRefresh()">Auto: Off</button>
+        </div>
+
+        <div class="status">
+            <span id="count"></span>
+            <span id="last-updated"></span>
+        </div>
+
+        <div id="error"></div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="col-date">Date</th>
+                        <th class="col-level" data-filter="level">Level</th>
+                        <th class="col-facility" data-filter="facility">Facility</th>
+                        <th class="col-process" data-filter="process">Process</th>
+                        <th class="col-action" data-filter="action">Action</th>
+                        <th class="col-detail" data-filter="detail">Detail</th>
+                        <th class="col-client" data-filter="client">Client</th>
+                        <th class="col-result" data-filter="result">Result</th>
+                    </tr>
+                </thead>
+                <tbody id="log-body">
+                    <tr><td colspan="8" class="loading">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination">
+            <button id="prev-btn" onclick="changePage(-1)" disabled>&larr; Prev</button>
+            <span id="page-info"></span>
+            <button id="next-btn" onclick="changePage(1)" disabled>Next &rarr;</button>
+        </div>
+    </div>
+
+    <div id="page-connections" class="page">
+        <div class="filters">
+            <input type="text" id="conn-search" placeholder="Search by IP, port..." />
+            <button id="conn-refresh-btn" onclick="loadConnections(); loadBandwidth()">Refresh</button>
+            <button id="conn-auto-refresh-btn" onclick="toggleConnAutoRefresh()">Auto: Off</button>
+            <button id="conn-analyze-btn" onclick="runConnectionAnalysis()">Analyze Traffic</button>
+        </div>
+
+        <div class="status">
+            <span id="conn-count"></span>
+            <span id="conn-updated"></span>
+        </div>
+
+        <div id="conn-error"></div>
+
+        <div id="conn-insight-card" class="insight-card" style="display: none; margin-bottom: 1.5rem;">
+            <div class="insight-card-header">
+                <h3>LLM Traffic Insights</h3>
+                <button class="insight-close-btn" onclick="closeConnectionAnalysis()">&times;</button>
+            </div>
+            <div class="insight-card-body" id="conn-insight-body"></div>
+        </div>
+
+        <div class="bandwidth-section" id="bandwidth-section"></div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="col-conn-src">Source</th>
+                        <th class="col-conn-dst">Destination</th>
+                        <th class="col-conn-sport">S-Port</th>
+                        <th class="col-conn-dport">D-Port</th>
+                        <th class="col-conn-proto">Proto</th>
+                        <th class="col-conn-l3">Layer 3</th>
+                        <th class="col-conn-l4">Layer 4</th>
+                        <th class="col-conn-bytes">Bytes</th>
+                        <th class="col-conn-packets">Packets</th>
+                    </tr>
+                </thead>
+                <tbody id="conn-body">
+                    <tr><td colspan="9" class="loading">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination">
+            <button id="conn-prev-btn" onclick="changeConnPage(-1)" disabled>&larr; Prev</button>
+            <span id="conn-page-info"></span>
+            <button id="conn-next-btn" onclick="changeConnPage(1)" disabled>Next &rarr;</button>
+        </div>
+    </div>
+
+    <div id="page-insights" class="page">
+        <div class="filters">
+            <input type="text" id="insight-search" placeholder="Filter by message..." />
+            <select id="insight-process">
+                <option value="">All Processes</option>
+                <option value="dnsmasq">dnsmasq</option>
+                <option value="netifd">netifd</option>
+                <option value="uhttpd">uhttpd</option>
+            </select>
+            <select id="insight-level">
+                <option value="">All Levels</option>
+                <option value="err">Error</option>
+                <option value="warn">Warning</option>
+                <option value="info">Info</option>
+                <option value="debug">Debug</option>
+            </select>
+            <button id="insight-classify-btn" onclick="runInsight('classify', true)">Classify Selected</button>
+            <button id="insight-anomaly-btn" onclick="runInsight('anomaly', false)">Anomaly Detection</button>
+            <button id="insight-summary-btn" onclick="runInsight('summary', false)">Session Summary</button>
+        </div>
+
+        <div class="status">
+            <span id="insight-status"></span>
+            <span id="insight-updated"></span>
+            <span id="insight-count"></span>
+        </div>
+
+        <div id="insight-error"></div>
+
+        <div id="insight-content">
+            <div class="loading">Select filters and an analysis action above</div>
+        </div>
+
+        <div class="pagination" id="insight-pagination" style="display: none; margin-top: 1rem;">
+            <button id="insight-prev-btn" onclick="changeInsightPage(-1)" disabled>&larr; Prev</button>
+            <span id="insight-page-info"></span>
+            <button id="insight-next-btn" onclick="changeInsightPage(1)" disabled>Next &rarr;</button>
+        </div>
+    </div>
+
+    <script>
+        window.__initialLogs = {{ initial_logs | safe }};
+        window.__initialError = {{ error | tojson }};
+    </script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

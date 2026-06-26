@@ -5,9 +5,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILING_DIR="${SCRIPT_DIR}/.profiling"
 RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+ORIGINAL_DIR="$(pwd)"
 
-# Prefer the installed package in the venv
-cd "$SCRIPT_DIR"
+# The venv path is absolute, so no need to cd into SCRIPT_DIR.
+# Always run dendrophis from the user's original working directory.
+cd "$ORIGINAL_DIR"
 
 # Parse arguments
 UNBUFFERED=0
@@ -36,10 +38,10 @@ if [[ "${DENDROPHIS_PROFILE:-0}" == "1" ]]; then
     echo "Profiling enabled - output will be written to $PROFILING_DIR"
     
     # Run with cProfile, output to timestamped file
-    .venv/bin/python -m cProfile -o "$PROFILING_DIR/profile_${RUN_TIMESTAMP}.prof" -m dendrophis "${REMAINING_ARGS[@]}"
+    "$SCRIPT_DIR/.venv/bin/python" -m cProfile -o "$PROFILING_DIR/profile_${RUN_TIMESTAMP}.prof" -m dendrophis "${REMAINING_ARGS[@]}"
     
     # Generate human-readable stats summary
-    .venv/bin/python -c "
+    "$SCRIPT_DIR/.venv/bin/python" -c "
 import pstats
 import sys
 stats_file = '$PROFILING_DIR/profile_${RUN_TIMESTAMP}.prof'
@@ -52,5 +54,5 @@ with open('$PROFILING_DIR/profile_${RUN_TIMESTAMP}_summary.txt', 'w') as f:
 print(f'Profile summary written to: $PROFILING_DIR/profile_${RUN_TIMESTAMP}_summary.txt')
 "
 else
-    .venv/bin/dendrophis "${REMAINING_ARGS[@]}"
+    "$SCRIPT_DIR/.venv/bin/dendrophis" "${REMAINING_ARGS[@]}"
 fi

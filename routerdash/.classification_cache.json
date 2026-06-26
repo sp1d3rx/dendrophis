@@ -1,0 +1,2223 @@
+{
+  "0cd38709cd81f54791e22080f8667f28": {
+    "category": "security",
+    "severity": "info",
+    "summary": "Root login accepted from internal IP 192.168.1.129 via uhttpd",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1780296232.5134258
+  },
+  "87d84a6ba289234d26cf046efdb19c2b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780296232.513432
+  },
+  "f4a9f7b2b59bb1594c4af941c47e07ae": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of 7866 resolved to 9.9.9.9",
+    "tags": [
+      "dns",
+      "lookup",
+      "9.9.9.9"
+    ],
+    "_expires": 1780296232.5134342
+  },
+  "2c281d19722eb86386fd93a5d9b553ad": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of 7866 resolved to 2620:fe::9",
+    "tags": [
+      "dns",
+      "lookup",
+      "api.github.com"
+    ],
+    "_expires": 1780296232.513435
+  },
+  "e9a4c8e9ccd7104369a3f49ddea17bb5": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of 7865 resolved to 9.9.9.10",
+    "tags": [
+      "dns",
+      "lookup",
+      "api.github.com"
+    ],
+    "_expires": 1780296232.5134358
+  },
+  "4b838d6fa69b2283bd5dc3508ff479d2": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of 7865 resolved to 9.9.9.9",
+    "tags": [
+      "dns",
+      "lookup"
+    ],
+    "_expires": 1780296232.513437
+  },
+  "e4f6ae805fdc88e86c22db374b73e4a4": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of 7865 forwarded to 2620:fe::9",
+    "tags": [
+      "dns",
+      "forward"
+    ],
+    "_expires": 1780296232.513438
+  },
+  "a4473a77249c69cea1338aabebd1c87a": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of 7865 forwarded to 9.9.9.9",
+    "tags": [
+      "dns",
+      "forward"
+    ],
+    "_expires": 1780296232.513439
+  },
+  "3bf7d47fd5c88f84a32cf6beefcabf7c": {
+    "category": "info",
+    "severity": "info",
+    "summary": "Internal DNS query for api.github.com from 192.168.1.129",
+    "tags": [
+      "api",
+      "github.com"
+    ],
+    "_expires": 1780296232.51344
+  },
+  "9ecac590f1e5e1e80b28de6a2059cdca": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Duplicate DNS query detected from internal IP 192.168.1.129",
+    "tags": [
+      "duplicate",
+      "dns",
+      "192.168.1"
+    ],
+    "_expires": 1780296232.735328
+  },
+  "3df2c182fb73929f2427eeb6a989ebef": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS resolution completed for google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "response",
+      "www"
+    ],
+    "_expires": 1780296233.1494122
+  },
+  "0e1c48c613092a5ff7c69f1db348705e": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "www.google.com"
+    ],
+    "_expires": 1780296233.149416
+  },
+  "8fecccd39303e62fcee1b10c55e797bc": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS responses for internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "response",
+      "internal"
+    ],
+    "_expires": 1780296308.1465862
+  },
+  "a42528d9d88182d9754662a6803b3c5b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS queries from internal IP 192.168.1.129 to external domains",
+    "tags": [
+      "dns",
+      "query",
+      "external"
+    ],
+    "_expires": 1780296308.146591
+  },
+  "868851c34576d5bee3db3009bb06198d": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS resolution of 192.168.1.129 succeeded",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296308.146594
+  },
+  "8091a60a1706ceaf51648ce23b9be6c6": {
+    "category": "info",
+    "severity": "info",
+    "summary": "DNS record lookup completed for 23.37.17.250",
+    "tags": [
+      "dns",
+      "record"
+    ],
+    "_expires": 1780296308.146595
+  },
+  "e1a2f163f969586129b761ff3292c5dc": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response for 23.37.17.250 from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296308.1465962
+  },
+  "a3ec184b823401249a10242da72548f5": {
+    "category": "info",
+    "severity": "info",
+    "summary": "DNS lookup for www.myaccountaccess.com.edgekey.net succeeded",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296308.1465962
+  },
+  "4f11ddff9548de085d9a6498be44f934": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS query returned NODATA for 192.168.1.129/19347",
+    "tags": [
+      "dns",
+      "query"
+    ],
+    "_expires": 1780296308.1465971
+  },
+  "76beab066a0b54d2f9d66181ce175725": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for www.myaccountaccess.com.edgekey.net resolved to 9.9.9.9",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296308.1465979
+  },
+  "fca4b17954a95d24476d1fa77b5bebba": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response redirected to external domain for website access",
+    "tags": [
+      "dns",
+      "cname",
+      "access",
+      "domain"
+    ],
+    "process": "dnsmasq",
+    "level": "info",
+    "_expires": 1780296308.4019399
+  },
+  "0b29d6c3ba5fc5b1fac34f43d8d41a77": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS entry for myaccountaccess.com routed to external IP 9.9.9.9",
+    "tags": [
+      "dns",
+      "myaccountaccess.com",
+      "dnsmasq"
+    ],
+    "process": "dnsmasq",
+    "level": "info",
+    "_expires": 1780296308.6914601
+  },
+  "e59483b014039005723f95fd2a1cf1d0": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS queries for www.myaccountaccess.com from local IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "www"
+    ],
+    "_expires": 1780296310.41392
+  },
+  "d17fa21fa65f19c243d5e79302563860": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS forwarding of www.myaccountaccess.com to 9.9.9.9",
+    "tags": [
+      "dns",
+      "forward",
+      "www"
+    ],
+    "_expires": 1780296310.413923
+  },
+  "8bf5f5e9a833ff1e684153ebba69c276": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS query results for www.myaccountaccess.com from 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "access"
+    ],
+    "_expires": 1780296310.413924
+  },
+  "fc3a3c0055572eba211ccd93828943f2": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache update for www.myaccountaccess.com on 192.168.1.129",
+    "tags": [
+      "dns",
+      "cache",
+      "update"
+    ],
+    "_expires": 1780296310.4139252
+  },
+  "a69c1506d84b802e662fb0654bf3985e": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Local DNS response indicates cached content for www.myaccountaccess.com",
+    "tags": [
+      "dns",
+      "cache",
+      "content"
+    ],
+    "_expires": 1780296310.4139252
+  },
+  "caf08aab1a3dd608fc1c5cce833c0e53": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS lookup for www.myaccountaccess.com returning CNAME records",
+    "tags": [
+      "dns",
+      "query",
+      "cname"
+    ],
+    "_expires": 1780296310.413926
+  },
+  "e1ba84059725b63ae86bd01f230047d8": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Duplicate DNS reply detected on 192.168.1.129",
+    "tags": [
+      "dns",
+      "duplicate"
+    ],
+    "_expires": 1780296310.4139268
+  },
+  "2e4884b0da59093595dce0ac184545f1": {
+    "category": "info",
+    "severity": "info",
+    "summary": "External domain lookup from 192.168.1.129 resolved to 142.251.151.119",
+    "tags": [
+      "dns",
+      "external"
+    ],
+    "_expires": 1780296310.413928
+  },
+  "45c486004fa29c5ed9d88de4a485b754": {
+    "category": "network",
+    "severity": "info",
+    "summary": "External domain lookup from 192.168.1.129 resolved to 142.251.154.119",
+    "tags": [
+      "dns",
+      "external"
+    ],
+    "_expires": 1780296310.413928
+  },
+  "1eb2c7ee6c223920ee5c3ca39fe6c537": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response from local IP 192.168.1.129 resolved domain",
+    "tags": [
+      "dns",
+      "192.168.1.129",
+      "goog",
+      "response"
+    ],
+    "_expires": 1780296310.645928
+  },
+  "8822e9229ece47931775cca2674d9100": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS responses from local IP 192.168.1.129 for google.com",
+    "tags": [
+      "dns",
+      "response",
+      "www.google.com"
+    ],
+    "_expires": 1780296312.4774249
+  },
+  "720d2a0c8ade9747796ede4b51587a41": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS queries for internal IP 192.168.1.129 resolved external domains",
+    "tags": [
+      "dns",
+      "query",
+      "external"
+    ],
+    "_expires": 1780296312.477428
+  },
+  "ec3a46895d0da25d01f347611844b5bd": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Multiple DNS lookups from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "internal"
+    ],
+    "_expires": 1780296312.477429
+  },
+  "b964566915de628e34bc8ec9bdd5b728": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS server 192.168.1.129 answered 142.251.155.119",
+    "tags": [
+      "dns",
+      "response",
+      "192.168.1.129"
+    ],
+    "_expires": 1780296312.47743
+  },
+  "00136bc96ed0db6bcebb1309732bf5b5": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS server 192.168.1.129 reported duplicate query",
+    "tags": [
+      "dns",
+      "duplicate"
+    ],
+    "_expires": 1780296312.477431
+  },
+  "9604436bc5fca516297bb6159979df59": {
+    "category": "error",
+    "severity": "info",
+    "summary": "Duplicate DNS response detected",
+    "tags": [],
+    "_expires": 1780296312.477432
+  },
+  "0b813bae2b26d32aba679c681fd825d8": {
+    "category": "network",
+    "severity": "info",
+    "summary": "External domain accessed via local DNS 192.168.1.129",
+    "tags": [
+      "dns",
+      "external"
+    ],
+    "_expires": 1780296312.477432
+  },
+  "d8d9690277b4a6f58c1f68d1f6710500": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup for www.google.com from 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "www.google.com"
+    ],
+    "_expires": 1780296312.4774332
+  },
+  "c96c8537805325f00aff4d74672a69df": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS server 192.168.1.129 cached 2001:4860:4826",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296312.4774342
+  },
+  "ec5a4e9f6c479119e7099d818ea959e8": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS server 192.168.1.129 cached 2001:4860:4829",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296312.4774349
+  },
+  "e0d824c345ef4a0216b3b20840965c00": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache updated for www.google.com with internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "cache",
+      "www.google.com"
+    ],
+    "_expires": 1780296314.566922
+  },
+  "81049b93df4349f32959bd8f0716f203": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for www.google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "www.google.com"
+    ],
+    "_expires": 1780296314.5669272
+  },
+  "9db1ba3c0fcd658a5dca6d448be67472": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache updated for www.google.com with internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "cache",
+      "www.google.com"
+    ],
+    "_expires": 1780296314.566928
+  },
+  "d40cdb0b6eca07dc3677b4eb5a9b644c": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache updated for www.google.com with internal IP 192.168.1.129/57728",
+    "tags": [
+      "dns",
+      "query",
+      "www.google.com"
+    ],
+    "_expires": 1780296314.5669289
+  },
+  "f26e3f0d99f4e53dec2e7b5502266504": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Cached www.google.com response received from 192.168.1.129",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296314.5669289
+  },
+  "0935d2f2b74ed76201e2a2193587f27a": {
+    "category": "network",
+    "severity": "info",
+    "summary": "HTTP response from www.google.com received from 192.168.1.129",
+    "tags": [
+      "http",
+      "response"
+    ],
+    "_expires": 1780296314.5669298
+  },
+  "481e32b86b856929b86dcf2eca051389": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS AAAA record lookup completed for www.google.com",
+    "tags": [
+      "dns",
+      "query"
+    ],
+    "_expires": 1780296314.566931
+  },
+  "1a0fc4317f9db92b68ef312b0428e6e3": {
+    "category": "network",
+    "severity": "info",
+    "summary": "External domain queried via DNS from internal IP 192.168.1.129",
+    "tags": [
+      "external",
+      "dns"
+    ],
+    "_expires": 1780296314.566931
+  },
+  "f4656aad392b691ac70a786a70483a17": {
+    "category": "system",
+    "severity": "info",
+    "summary": "192.168.1.129 resolved external IP 9.9.9.9",
+    "tags": [
+      "ip",
+      "resolution"
+    ],
+    "_expires": 1780296314.566932
+  },
+  "9432dc0cbc3153fb8a65d2e11cbc4e90": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query from internal IP to external domain",
+    "tags": [
+      "dns",
+      "query",
+      "internal",
+      "192.168.1.129"
+    ],
+    "_expires": 1780296314.815574
+  },
+  "226842a36d70c4b6599842620cc0fbbf": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache updated for www.google.com with internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "cache",
+      "www.google.com"
+    ],
+    "_expires": 1780296316.3653572
+  },
+  "aab52cd93bf441b87b8c1fa4c494e882": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for www.google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "www.google.com"
+    ],
+    "_expires": 1780296316.365359
+  },
+  "6d163959162d56b1621ec7fdc44f1d13": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache updated for www.google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "cache",
+      "internal"
+    ],
+    "_expires": 1780296316.36536
+  },
+  "0cf0ee34273efa8c41dc21296e3e897f": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache miss detected for www.google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "miss"
+    ],
+    "_expires": 1780296316.36536
+  },
+  "09a7b898592d93496f26cfc9bc5294ed": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache updated for www.google.com (AAAA) from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "www.google.com"
+    ],
+    "_expires": 1780296316.365361
+  },
+  "e757e9d0a4a734a37077d8538134c3c7": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS cache updated for www.google.com (AAAA) from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "internal"
+    ],
+    "_expires": 1780296316.365361
+  },
+  "abd439657fa310b3de1413134a38920f": {
+    "category": "network",
+    "severity": "info",
+    "summary": "External DNS lookup initiated for www.google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query"
+    ],
+    "_expires": 1780296316.365362
+  },
+  "af61c3a2e7ce316b392df051c84bb6a9": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS lookup completed for www.google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "192.168.1.129",
+      "cached",
+      "www"
+    ],
+    "_expires": 1780296316.615752
+  },
+  "954d123d823af136724e7371ecbffc12": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query from internal IP 192.168.1.129 to external domain",
+    "tags": [
+      "dns",
+      "log",
+      "internal"
+    ],
+    "_expires": 1780296316.8589618
+  },
+  "c908ab86e50e05112bf2948fa20aefe0": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS resolution of www.google.com to external IP 9.9.9.9 using dnsmasq",
+    "tags": [
+      "dns",
+      "resolution",
+      "www",
+      "goog"
+    ],
+    "_expires": 1780296385.1430001
+  },
+  "7441439283ef8a79bf4a0770ab768aa7": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS queries and responses observed on router",
+    "tags": [
+      "dns",
+      "query",
+      "www"
+    ],
+    "_expires": 1780296937.9872692
+  },
+  "69e6ecde3abf2a98284c8641c74ddb2d": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of google.com from 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "github.com"
+    ],
+    "_expires": 1780296937.987273
+  },
+  "ebc9565dfa1c608133a32682d76f1fbb": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS forwarding chain for github.com",
+    "tags": [
+      "dns",
+      "forward",
+      "github.com"
+    ],
+    "_expires": 1780296937.987274
+  },
+  "ed868aa878ffd4095929f42d0b0ae70f": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of github.com from 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "github.com"
+    ],
+    "_expires": 1780296937.9872751
+  },
+  "e9791fae47b7bdc0eb3dacd6bfe8b457": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response to api.github.com from 192.168.1.129",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296937.987276
+  },
+  "d27ad5e3a35067cf7aea2122724d815b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS reply chain for api.github.com to 9.9.9.9",
+    "tags": [
+      "dns",
+      "reply",
+      "api"
+    ],
+    "_expires": 1780296937.987277
+  },
+  "28814be2487887ade1382b1946fee5fb": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS forwarding to 9.9.9.10 from api.github.com",
+    "tags": [
+      "dns",
+      "forward"
+    ],
+    "_expires": 1780296937.987278
+  },
+  "d8e545d49ac8a7d4e637a4c9bde4e40f": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of api.github.com from 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "api"
+    ],
+    "_expires": 1780296937.9872792
+  },
+  "d674b4374b7549f4ff34bcbcd807eae7": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response to api.github.com from 192.168.1.129",
+    "tags": [
+      "dns",
+      "response"
+    ],
+    "_expires": 1780296937.98728
+  },
+  "20a4c14a1f968511fc95c13ac2372bd7": {
+    "category": "info",
+    "severity": "debug",
+    "summary": "Internal DNS lookup of youtube-ui.l.google.com",
+    "tags": [
+      "dns",
+      "query"
+    ],
+    "_expires": 1780296937.98728
+  },
+  "bfe4385170802d0a1f84a5f1e000c312": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS cache updated with youtube-ui.l.google.com records",
+    "tags": [
+      "dns",
+      "cache",
+      "youtube"
+    ],
+    "_expires": 1780296939.568226
+  },
+  "8c946d8ea4dec962d6abeab14abff8b2": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS lookup for youtube-ui.l.google.com completed successfully",
+    "tags": [
+      "dns",
+      "query",
+      "youtube"
+    ],
+    "_expires": 1780296939.5682292
+  },
+  "5776cb233117ab4988ae0fce8e7d573c": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS resolution for 192.168.1.191 completed",
+    "tags": [
+      "dns",
+      "internal"
+    ],
+    "_expires": 1780296939.56823
+  },
+  "673eec8ce2150377c037758a6631272c": {
+    "category": "info",
+    "severity": "info",
+    "summary": "CNAME lookup for www.youtube.com returned external IP address",
+    "tags": [
+      "cname",
+      "youtube"
+    ],
+    "_expires": 1780296939.5682309
+  },
+  "452d7c92afdf0e7e0732a614b9838fbb": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query responded with public IPs for youtube-ui.l.google.com",
+    "tags": [
+      "dns",
+      "query"
+    ],
+    "_expires": 1780296939.5682318
+  },
+  "77ec87667883f8cdd767757c6fc61f6d": {
+    "category": "info",
+    "severity": "info",
+    "summary": "Internal DNS cache updated with 142.251.45.14 IP",
+    "tags": [
+      "dns",
+      "internal"
+    ],
+    "_expires": 1780296939.568233
+  },
+  "4cc001f0a21ce537534d088b3edd618c": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response for 7869 IP range shows consistent public IPs",
+    "tags": [
+      "dns",
+      "range",
+      "ip"
+    ],
+    "_expires": 1780296939.568234
+  },
+  "4fae312b279af8decc63f7317d233e66": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response for 7869 IP range shows consistent public IPs",
+    "tags": [
+      "dns",
+      "range"
+    ],
+    "_expires": 1780296939.568235
+  },
+  "0579c5ad364a942343ab23b0b6c0e92b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response for 7869 IP range shows consistent public IPs",
+    "tags": [
+      "dns",
+      "internal"
+    ],
+    "_expires": 1780296939.568236
+  },
+  "15a10c2d933487afdbbbb82ead3142fd": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS reply from external domain received",
+    "tags": [
+      "dns",
+      "youtube",
+      "goog",
+      "response"
+    ],
+    "_expires": 1780296939.761015
+  },
+  "e4b6d2bb299f7e47905ca3cd1c5fb0e8": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS responses from internal IP 192.168.1.191 resolved external domains",
+    "tags": [
+      "dns",
+      "resolution",
+      "internal"
+    ],
+    "_expires": 1780296941.2787771
+  },
+  "83789ef23834454652180d62282e1850": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Multiple DNS queries for youtube-ui.l.google.com from internal IP",
+    "tags": [
+      "dns",
+      "query",
+      "youtube"
+    ],
+    "_expires": 1780296941.278781
+  },
+  "b9b660705956f2c084368c6003796528": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS responses from internal IP 192.168.1.191 changed to new values",
+    "tags": [
+      "dns",
+      "update"
+    ],
+    "_expires": 1780296941.278782
+  },
+  "d36423796eeccacf4060c77ff65048a4": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS server processed a YouTube CNAME lookup",
+    "tags": [
+      "youtube",
+      "cname",
+      "internal"
+    ],
+    "_expires": 1780296941.278783
+  },
+  "a152946f4c6d97890b33a233af206ef5": {
+    "category": "system",
+    "severity": "info",
+    "summary": "Routing table updated for www.youtube.com",
+    "tags": [
+      "youtube",
+      "http",
+      "internal"
+    ],
+    "_expires": 1780296941.278786
+  },
+  "c1de42bd56399e7ec9cc02c3ac3aeafc": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for www.youtube.com resolved successfully",
+    "tags": [
+      "youtube",
+      "query"
+    ],
+    "_expires": 1780296941.2787871
+  },
+  "165c924c644aa28e04abb9fc30aab997": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS resolution completed without errors",
+    "tags": [
+      "dns",
+      "forwarding"
+    ],
+    "_expires": 1780296941.278788
+  },
+  "a40646fdd7f76fa122f354b5b71302df": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS lookup for connectivity.smartthings.com from internal IP",
+    "tags": [
+      "smartthings",
+      "dns"
+    ],
+    "_expires": 1780296941.278788
+  },
+  "cb70c5f47c272e7df6f0893edaf2d816": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response for connectivity.smartthings.com",
+    "tags": [
+      "smartthings"
+    ],
+    "_expires": 1780296941.278789
+  },
+  "6d9ce739ff16fcc268ce60b424909f47": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response received from external domain with high IP range",
+    "tags": [
+      "dns",
+      "smartthings",
+      "192.168.1",
+      "connectivity"
+    ],
+    "_expires": 1780296941.521866
+  },
+  "f7de198a59d8706886a9006a1edf7464": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response from dnsmasq for connectivity.smartthings.com",
+    "tags": [
+      "dns",
+      "smartthings"
+    ],
+    "_expires": 1780296943.1576698
+  },
+  "06b9b883a2c3ae5fb8bc81183f33a94d": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS query for connectivity.smartthings.com from 192.168.1.172",
+    "tags": [
+      "dns",
+      "192.168.1.172"
+    ],
+    "_expires": 1780296943.157672
+  },
+  "9ca267585db8d8c35153f6e3753ca9b9": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response from dnsmasq for connectivity.smartthings.com",
+    "tags": [
+      "dns",
+      "192.168.1.172"
+    ],
+    "_expires": 1780296943.157673
+  },
+  "366813449a02f14efcf37aba99fa130e": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response from dnsmasq for connectivity.smartthings.com",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1780296943.157674
+  },
+  "e76c2dabf52cc1765b96ad60f4c865c0": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response from dnsmasq for connectivity.smartthings.com on 2600:9000",
+    "tags": [
+      "dns",
+      "smartthings"
+    ],
+    "_expires": 1780296943.157675
+  },
+  "b78eccfa09bb78d19035deea83dc344b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS response from dnsmasq for connectivity.smartthings.com on 2600:9000:2753",
+    "tags": [
+      "dns",
+      "smartthings"
+    ],
+    "_expires": 1780296943.157676
+  },
+  "0b3ed44138ad30495959b13d3de52659": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS resolution succeeded for external IP 108.157.254.41",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1780296943.157676
+  },
+  "c0835575543a59c099735235b27be911": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS resolution succeeded for external IP 108.157.254.15",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1780296943.1576772
+  },
+  "4bc5de84d08db3b00f7a5b4025eb3e19": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS resolution succeeded for external IP 108.157.254.34",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1780296943.1576781
+  },
+  "757c07677798820d32bb622f112cf121": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS response received for internal IP 192.168.1.172 with external domain",
+    "tags": [
+      "dns",
+      "smartthings",
+      "ip",
+      "response"
+    ],
+    "_expires": 1780296943.39164
+  },
+  "11f495b93dce124caccb075e17dcabde": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS entries for connectivity.smartthings.com resolved successfully",
+    "tags": [
+      "dns",
+      "connection",
+      "smartthings"
+    ],
+    "_expires": 1780296944.506315
+  },
+  "d406d20d866da914b0fef282cde80958": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Queries and forwarding of connectivity.smartthings.com to external IPs",
+    "tags": [
+      "query",
+      "dns",
+      "smartthings"
+    ],
+    "_expires": 1780296944.506318
+  },
+  "5186c32ce92d09f1faa55d79b0842ce1": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Internal DNS lookup of smartthings.com completed",
+    "tags": [
+      "dns",
+      "internal"
+    ],
+    "_expires": 1780296944.506319
+  },
+  "a088b1d08cb6f6a15ac9d106d88338e1": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded connectivity.smartthings.com to 9.9.9.10 from internal IP",
+    "tags": [
+      "forward",
+      "connection",
+      "9.9.9.10"
+    ],
+    "_expires": 1780296944.5063198
+  },
+  "fb123ba26ca33083e07d33d8b51baeea": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded connectivity.smartthings.com to 9.9.9.9 via dnsmasq",
+    "tags": [
+      "forward",
+      "connection",
+      "dns"
+    ],
+    "_expires": 1780296944.506321
+  },
+  "dd52307f066c5aa21a9335bc43fccac6": {
+    "category": "network",
+    "severity": "info",
+    "summary": "External DNS lookup for connectivity.smartthings.com from internal IP",
+    "tags": [
+      "external",
+      "query"
+    ],
+    "_expires": 1780296944.506322
+  },
+  "32ebd618a09b5d45594ceb01c5366fe2": {
+    "category": "security",
+    "severity": "info",
+    "summary": "Root login accepted from internal IP 192.168.1.129",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1780468742.972073
+  },
+  "b3ab98b2f1c247d9c77096c27fe3d74b": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468742.9720802
+  },
+  "5c6f498d7bc01c8dd6a710ed98aa085d": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468742.972082
+  },
+  "5c45cb194cdbd285fbb2b773d6b62c88": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for 104.18.3.115 from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "104.18.3.115"
+    ],
+    "_expires": 1780468742.9720829
+  },
+  "5a74d8eb751941aae81689f143d4a5c1": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for 104.18.2.115 from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "104.18.2.115"
+    ],
+    "_expires": 1780468742.972084
+  },
+  "dfd12f8f65bc96ec8a30f6352f61d2fe": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for openrouter.ai from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "openrouter.ai"
+    ],
+    "_expires": 1780468742.972084
+  },
+  "8e437a10b9f7450898786bb0c702053e": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for openrouter.ai from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "openrouter.ai"
+    ],
+    "_expires": 1780468742.972084
+  },
+  "4595b929fc5eec7cc73e8ab7e222ca09": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for openrouter.ai from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "openrouter.ai"
+    ],
+    "_expires": 1780468742.972085
+  },
+  "9dda41fd01ecd5314f847dd41ce1f30f": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468742.972085
+  },
+  "f2a251cfced2c62080c584ad1e9ac766": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468742.972086
+  },
+  "ed99fbaf4b49811321d2231ef5e1312b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Accepted login on /admin for root from internal IP 192.168.1.129",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1780468746.4691572
+  },
+  "e4b402d402e2132609c2139db96b1a67": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468746.469159
+  },
+  "8149209b5592fc1f03e77b7404d4b058": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468746.469159
+  },
+  "c6d07d811961a2e851bf794803ff79ca": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468746.469159
+  },
+  "6040e8ab2c69b10f018fd56ee78b2424": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468746.469159
+  },
+  "098797db1cf5710e94e76d050e0c0e23": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468746.4691598
+  },
+  "f8328de1e923025d691ae8b12828ec77": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded play.googleapis.com to 9.9.9.9 from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "forwarded",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468746.4691598
+  },
+  "150d7bbf7aea139e630200721a3078ee": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query AAAA for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "query",
+      "AAAA"
+    ],
+    "_expires": 1780468746.4691598
+  },
+  "3e307c0a4fbe977dc6bd9d204fbccc4e": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded play.googleapis.com to 9.9.9.9 from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "forwarded",
+      "play.googleapis.com"
+    ],
+    "_expires": 1780468746.4691598
+  },
+  "3866237f2409e8478867fc1d56c5357e": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query AAAA for play.googleapis.com from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "query",
+      "AAAA"
+    ],
+    "_expires": 1780468746.469161
+  },
+  "64a4b6e249dac43124edd52bf812c977": {
+    "category": "security",
+    "severity": "info",
+    "summary": "Root login accepted from internal IP 192.168.1.129",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1780468750.0263839
+  },
+  "a5cb09b8aafff49b00b7926c73f8b9a0": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468750.026386
+  },
+  "0f863330880e9ccc049fc9f82288026d": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for lh3.googleusercontent.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "lh3.googleusercontent.com"
+    ],
+    "_expires": 1780468750.026387
+  },
+  "e186fcc5ca5eb9cf7a27054b50e3598c": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for googlehosted.l.googleusercontent.com from internal IP 192.168.1.129",
+    "tags": [
+      "dns",
+      "query",
+      "googlehosted.l.googleusercontent.com"
+    ],
+    "_expires": 1780468750.026387
+  },
+  "42f45d8dbc950b9098aa0646fbcd4c7f": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded lh3.googleusercontent.com to 9.9.9.9",
+    "tags": [
+      "network",
+      "forwarded",
+      "lh3.googleusercontent.com"
+    ],
+    "_expires": 1780468750.026388
+  },
+  "99d5aed51e040038a7ea9711b1e29822": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query AAAA for lh3.googleusercontent.com from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "query",
+      "lh3.googleusercontent.com"
+    ],
+    "_expires": 1780468750.026388
+  },
+  "d48c753ee330591578cba0f5651dae96": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query AAAA for lh3.googleusercontent.com from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "query",
+      "lh3.googleusercontent.com"
+    ],
+    "_expires": 1780468750.026389
+  },
+  "0231a8daac6817b9f735d189e094b865": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query AAAA for lh3.googleusercontent.com from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "query",
+      "lh3.googleusercontent.com"
+    ],
+    "_expires": 1780468750.02639
+  },
+  "2e2afff5b4afe7479df80ea692742633": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply from 142.251.215.170 for www.googleapis.com",
+    "tags": [
+      "network",
+      "reply",
+      "www.googleapis.com"
+    ],
+    "_expires": 1780468750.02639
+  },
+  "217ef167e7216e419cc78a10d803c7fb": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply from 142.251.45.10 for www.googleapis.com",
+    "tags": [
+      "network",
+      "reply",
+      "www.googleapis.com"
+    ],
+    "_expires": 1780468750.026391
+  },
+  "ad2e155faf97be624a45152d39a1c7f0": {
+    "category": "security",
+    "severity": "info",
+    "summary": "Root login accepted from internal IP 192.168.1.129",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1780468753.3668969
+  },
+  "d758874ca437dac03facd856b2939e96": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.366901
+  },
+  "8e58867861592c5df98f2a8a50d14cf9": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.366902
+  },
+  "27d2e6efaa13d58afbd758c7e6b6242c": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.366903
+  },
+  "fb12db5eaff0160793fa5b04b431802d": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.366904
+  },
+  "52f768ac5fdab563d0f4247830d9bf77": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.366905
+  },
+  "57b71c46f6ad47c0a062a80f0bc64bcc": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.366905
+  },
+  "73bce66d3480e8308414fccad0b0dde6": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.3669062
+  },
+  "e261a69d302d3917a9e6a029e1db59a0": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468753.366907
+  },
+  "881a895f2df0785bc7785d54b879e1ff": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded www.googleapis.com to 9.9.9.9 from internal IP 192.168.1.129",
+    "tags": [
+      "network",
+      "forwarded",
+      "googleapis.com"
+    ],
+    "_expires": 1780468753.3669078
+  },
+  "c0a9edee02a4a72717c5a991a24c8b8e": {
+    "category": "security",
+    "severity": "info",
+    "summary": "Root login accepted from internal IP 192.168.1.129",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1780468757.904256
+  },
+  "a3d0a2f7e857901df4b6ccc604d792e3": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1780468757.904258
+  },
+  "4ae2b7e35e4d3d8052df6796db834d28": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:7e00:1d:66fe:afc0:93a1 from internal IP 192.168.1.172",
+    "tags": [
+      "dns",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.904259
+  },
+  "9bfe423a092a6569a66ae7a075b955fc": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:f200:1d:66fe:afc0:93a1 from internal IP 192.168.1.172",
+    "tags": [
+      "dns",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.904259
+  },
+  "eddc1bb18bc52e09200db75b858398bf": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:a400:1d:66fe:afc0:93a1 from internal IP 192.168.1.172",
+    "tags": [
+      "dns",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.9042602
+  },
+  "a79167faa7915327172714d243461186": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:c400:1d:66fe:afc0:93a1 from internal IP 192.168.1.172",
+    "tags": [
+      "dns",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.9042602
+  },
+  "a141f155ec626045ba1a5890f40ca662": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:c500:1d:66fe:afc0:93a1 from internal IP 192.168.1.172",
+    "tags": [
+      "dns",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.904261
+  },
+  "c0831334d064abd1d5758e9ab495dd7b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:7a00:1d:66fe:afc0:93a1 from internal IP 192.168.1.172",
+    "tags": [
+      "dns",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.904261
+  },
+  "b16f7b71c076ab1fffc31fb2a027486e": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:5000:1d:66fe:afc0:93a1 from internal IP 192.168.1.172",
+    "tags": [
+      "dns",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.9042618
+  },
+  "caea4bf2d47aa3f37c102a6c0448ed0c": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for connectivity.smartthings.com is 2600:9000:2753:9.9.9.9 from internal IP 192.168.1.172",
+    "tags": [
+      "network",
+      "connectivity.smartthings.com"
+    ],
+    "_expires": 1780468757.9042618
+  },
+  "4f76d3229a692abb7fbe69438663e270": {
+    "category": "security",
+    "severity": "info",
+    "summary": "Root login accepted from internal IP 192.168.1.199",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1781218840.812694
+  },
+  "51d00a2d8a52eaab6596d55511ac67bf": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.199",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1781218840.812696
+  },
+  "e35ce4f14ceb90b74eb7d5af927c7341": {
+    "category": "security",
+    "severity": "info",
+    "summary": "NDRP service is NXDOMAIN for internal IP 192.168.1.199",
+    "tags": [
+      "security",
+      "nrdp",
+      "logs"
+    ],
+    "_expires": 1781218840.8126972
+  },
+  "ee4944daf5780d4ef6780b681f57cd3c": {
+    "category": "security",
+    "severity": "info",
+    "summary": "NDRP service is NXDOMAIN for internal IP 192.168.1.199",
+    "tags": [
+      "security",
+      "nrdp",
+      "logs"
+    ],
+    "_expires": 1781218840.8126981
+  },
+  "c768062bc53182386b5adc1c205a886a": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply from internal IP 192.168.1.220 to external IP 142.251.32.163",
+    "tags": [
+      "network"
+    ],
+    "_expires": 1781218840.8126981
+  },
+  "0018db3f75f2aeb6eeddcd39e1ae8949": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Reply from internal IP 192.168.1.220 to external IP 142.251.32.163",
+    "tags": [
+      "dns",
+      "ssl"
+    ],
+    "_expires": 1781218840.8126988
+  },
+  "38059d5811deca71235d7f002d3cca2f": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Reply from internal IP 192.168.1.220 to external IP 2607:f8b0:4007:808::2003",
+    "tags": [
+      "dns",
+      "ssl"
+    ],
+    "_expires": 1781218840.8126988
+  },
+  "818d4bab8c30314009179155b7f40104": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Reply from internal IP 192.168.1.220 to external IP 2607:f8b0:4007:805::2003",
+    "tags": [
+      "dns",
+      "ssl"
+    ],
+    "_expires": 1781218840.8126988
+  },
+  "d9af385eceaf42e1443494db3a62584c": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply from internal IP 192.168.1.220 to external IP 142.251.32.163",
+    "tags": [
+      "network"
+    ],
+    "_expires": 1781218840.8126988
+  },
+  "e6221a02078597dd8bba800784319aae": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply from internal IP 192.168.1.220 to external IP 142.251.32.163",
+    "tags": [
+      "network"
+    ],
+    "_expires": 1781218840.8126998
+  },
+  "3f546e71eef3e0d061deafe92161a98f": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded SSL connection from internal IP 192.168.1.220 to Google's DNS server (9.9.9.9)",
+    "tags": [
+      "forwarded",
+      "ssl",
+      "google.com"
+    ],
+    "_expires": 1781218844.341444
+  },
+  "afae288633f50c7824e3c7aff34979ee": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query for Google's DNS server from internal IP 192.168.1.220",
+    "tags": [
+      "query",
+      "dns",
+      "google.com"
+    ],
+    "_expires": 1781218844.341446
+  },
+  "46046beeca3423e8e7de2587547aad13": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded SSL connection from internal IP 192.168.1.220 to Google's DNS server (9.9.9.9)",
+    "tags": [
+      "forwarded",
+      "ssl",
+      "google.com"
+    ],
+    "_expires": 1781218844.3414469
+  },
+  "3c52c7886c0e23d434353b29acea25b3": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query for Google's DNS server from internal IP 192.168.1.220",
+    "tags": [
+      "query",
+      "dns",
+      "google.com"
+    ],
+    "_expires": 1781218844.341451
+  },
+  "3fd6a9a41445cd8f5d60811fd8d08aa6": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded SSL connection from internal IP 192.168.1.220 to Google's DNS server (9.9.9.9)",
+    "tags": [
+      "forwarded",
+      "ssl",
+      "google.com"
+    ],
+    "_expires": 1781218844.341451
+  },
+  "1cf068db3a82867a9557535790fb19e9": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query for HTTPS connection from internal IP 192.168.1.220",
+    "tags": [
+      "query",
+      "https",
+      "google.com"
+    ],
+    "_expires": 1781218844.3414521
+  },
+  "77d6868b07b9d1dd424a486448124e47": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded SSL connection from internal IP 192.168.1.220 to Google's DNS server (9.9.9.9)",
+    "tags": [
+      "forwarded",
+      "ssl",
+      "google.com"
+    ],
+    "_expires": 1781218844.3414521
+  },
+  "af74e94cba7f1242767b947f0fe81592": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query for HTTPS connection from internal IP 192.168.1.220",
+    "tags": [
+      "query",
+      "https",
+      "google.com"
+    ],
+    "_expires": 1781218844.341453
+  },
+  "ce1be47287a3649dc88107c7ef36f112": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarding www.gstatic.com to 9.9.9.9",
+    "tags": [
+      "forwarding",
+      "gstatic.com",
+      "9.9.9.9"
+    ],
+    "_expires": 1781218844.864115
+  },
+  "2a44d644069ea831b3195566f13852e4": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query for Google's DNS server from internal IP 192.168.1.220",
+    "tags": [
+      "query",
+      "dns",
+      "google.com"
+    ],
+    "_expires": 1781218844.864118
+  },
+  "191a0121c07a38b717c549545ea64d87": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded www.gstatic.com to 9.9.9.9",
+    "tags": [
+      "forwarded",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.939232
+  },
+  "db0c7e2f2adc9f275c2e31d7ac8f7fbf": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query for www.gstatic.com from 192.168.1.220",
+    "tags": [
+      "query",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.939235
+  },
+  "8c0f9dd2eba6b8004a85a445459bb8e0": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply for www3.l.google.com is NODATA",
+    "tags": [
+      "reply",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.9392362
+  },
+  "4941de184b9fe9c3f40efedcd28eaf1b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply for ogs.google.com is <CNAME>",
+    "tags": [
+      "reply",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.939237
+  },
+  "23f6d9e16a087c92c28f0fd8b4032640": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply for www3.l.google.com is 2607:f8b0:4007:80b::200e",
+    "tags": [
+      "reply",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.939237
+  },
+  "6b5c2d028e41e29726cfcfaf4d4e9361": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply for ogs.google.com is <CNAME>",
+    "tags": [
+      "reply",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.9392378
+  },
+  "f103286cf7fcd17ba107f1251038df15": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply for www3.l.google.com is 142.251.215.174",
+    "tags": [
+      "reply",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.9392378
+  },
+  "3c92d7f1f4a63ee3732d94f819576d5b": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply for ogs.google.com is <CNAME>",
+    "tags": [
+      "reply",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.939239
+  },
+  "45733d28f484d0ca89bd3025286fcf11": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded ogs.google.com to 9.9.9.9",
+    "tags": [
+      "forwarded",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.93924
+  },
+  "d8ce1556effdbe826e7dec1674f1a455": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query for ogs.google.com from 192.168.1.220",
+    "tags": [
+      "query",
+      "domain",
+      "dns"
+    ],
+    "_expires": 1781218847.939241
+  },
+  "468e415a39239d157ff7a1dd98ccbae3": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded ogs.google.com to 9.9.9.9 from internal IP 192.168.1.220",
+    "tags": [
+      "forwarded",
+      "google.com"
+    ],
+    "_expires": 1781218851.2989922
+  },
+  "0358938dd4d912f5f8b2b06d3f96276d": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.220",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1781218851.298996
+  },
+  "1be08ecb94122e331e015cb91b62604c": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Forwarded ogs.google.com to 9.9.9.9 from internal IP 192.168.1.220",
+    "tags": [
+      "forwarded",
+      "google.com"
+    ],
+    "_expires": 1781218851.298997
+  },
+  "f237b2baf4d891876e9804fa1d383481": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Query HTTPS for google.com from internal IP 192.168.1.220",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1781218851.298998
+  },
+  "a45c73c8ae3c4b73a91afd98f984e733": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply simonmed.com is 66.115.171.15 from internal IP 192.168.1.220",
+    "tags": [
+      "network"
+    ],
+    "_expires": 1781218851.298999
+  },
+  "18d3d1c1dfed804a37c6468bf176396b": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Config nrdp.logs.netflix.com is NXDOMAIN from internal IP 192.168.1.199",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1781218851.299
+  },
+  "9645c56ed08266c8d00d85360a3bee0a": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Query nrdp.logs.netflix.com from internal IP 192.168.1.199",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1781218851.299
+  },
+  "d28e4666c6b63877ea7d6ef9ae0dfc92": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Config nrdp.logs.netflix.com is NXDOMAIN from internal IP 192.168.1.199",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1781218851.2990022
+  },
+  "07984c4cf6ad0bd1663b2829f656d8dc": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "Query AAAA for nrdp.logs.netflix.com from internal IP 192.168.1.199",
+    "tags": [
+      "dns"
+    ],
+    "_expires": 1781218851.2990022
+  },
+  "01731b5f960346c83ffd864c22b63d75": {
+    "category": "network",
+    "severity": "info",
+    "summary": "Reply simonmed.com is NODATA-IPv6 from internal IP 192.168.1.220",
+    "tags": [
+      "network"
+    ],
+    "_expires": 1781218851.299003
+  },
+  "5fab938c6b64e9cb22577d4e145d8da2": {
+    "category": "security",
+    "severity": "info",
+    "summary": "Root login accepted from internal IP 192.168.1.129",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1781218855.291189
+  },
+  "3442a5f85d7dfdc7f9d62007fd85f461": {
+    "category": "dns",
+    "severity": "info",
+    "summary": "DNS query for google.com from internal IP 192.168.1.120",
+    "tags": [
+      "dns",
+      "query",
+      "google.com"
+    ],
+    "_expires": 1781218855.291193
+  },
+  "3272ff72156fa97dc05e3e00baff0b6c": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS forwarded simonmed.com to 9.9.9.9 from internal IP 192.168.1.220",
+    "tags": [
+      "dns",
+      "forwarded",
+      "simonmed.com"
+    ],
+    "_expires": 1781218855.2911942
+  },
+  "e759d83b0dc2dbfc3a7ac32f45179be6": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS forwarded simonmed.com to 9.9.9.9 from internal IP 192.168.1.220",
+    "tags": [
+      "dns",
+      "forwarded",
+      "simonmed.com"
+    ],
+    "_expires": 1781218855.291195
+  },
+  "e01d5071da3bbee7178f1ded4530dff9": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS forwarded simonmed.com to 9.9.9.9 from internal IP 192.168.1.220",
+    "tags": [
+      "dns",
+      "forwarded",
+      "simonmed.com"
+    ],
+    "_expires": 1781218855.2911959
+  },
+  "8b96bd23f66d42975353941e9fad8465": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS forwarded simonmed.com to 9.9.9.9 from internal IP 192.168.1.220",
+    "tags": [
+      "dns",
+      "forwarded",
+      "simonmed.com"
+    ],
+    "_expires": 1781218855.2911968
+  },
+  "fcd8949a912a513f878f36b0b17fddec": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS forwarded simonmed.com to 9.9.9.9 from internal IP 192.168.1.220",
+    "tags": [
+      "dns",
+      "forwarded",
+      "simonmed.com"
+    ],
+    "_expires": 1781218855.291198
+  },
+  "724691449c1cb90fd9f1173342ab13f1": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for nrdp.logs.netflix.com is NXDOMAIN from internal IP 192.168.1.199",
+    "tags": [
+      "network",
+      "query",
+      "nrdp.logs.netflix.com"
+    ],
+    "_expires": 1781218855.291199
+  },
+  "9b13ccf93e1d46548bd8397ab2f2b8dd": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for nrdp.logs.netflix.com from internal IP 192.168.1.199",
+    "tags": [
+      "network",
+      "query",
+      "nrdp.logs.netflix.com"
+    ],
+    "_expires": 1781218855.2912
+  },
+  "84f09165783b55707c6bd7f167570024": {
+    "category": "network",
+    "severity": "info",
+    "summary": "DNS query for nrdp.logs.netflix.com is NXDOMAIN from internal IP 192.168.1.199",
+    "tags": [
+      "network",
+      "query",
+      "nrdp.logs.netflix.com"
+    ],
+    "_expires": 1781218855.291201
+  },
+  "78d03d90d64c67454da2855e1b2ba882": {
+    "category": "security",
+    "severity": "error",
+    "summary": "Accepted login for root from internal IP 192.168.1.220 by uhttpd",
+    "tags": [
+      "login",
+      "root",
+      "uhttpd"
+    ],
+    "_expires": 1781218917.471719
+  }
+}

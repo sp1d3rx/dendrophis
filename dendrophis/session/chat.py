@@ -16,6 +16,7 @@ from typing import Any
 from dendrophis.caching.understanding import UnderstandingPhaseDetector
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.context.manager import ContextManager
+from dendrophis.context.tokenizer import count_tokens
 from dendrophis.events import (
     AuthFailedEvent,
     ContextUpdatedEvent,
@@ -82,39 +83,88 @@ class SessionStats:
     # transient stream timing — reset each turn
     _stream_start: float = field(default=0.0, repr=False)
     _first_token_at: float = field(default=0.0, repr=False)
+    _segment_first_token_at: float = field(default=0.0, repr=False)
     _turn_completion: int = field(default=0, repr=False)
+    _total_streaming_duration: float = field(default=0.0, repr=False)
+    _total_segment_duration: float = field(default=0.0, repr=False)
+    _total_streaming_tokens: int = field(default=0, repr=False)
+    _segment_completion_tokens: int = field(default=0, repr=False)
 
     def start_turn(self) -> None:
         """Reset per-turn timing counters at the start of a new message."""
         self._stream_start = time.monotonic()
         self._first_token_at = 0.0
+        self._segment_first_token_at = 0.0
         self._turn_completion = 0
+        self._total_streaming_duration = 0.0
+        self._total_segment_duration = 0.0
+        self._total_streaming_tokens = 0
+        self._segment_completion_tokens = 0
 
-    def record_token(self) -> None:
-        """Record arrival of one completion token; samples TPS every 8 tokens."""
+    def record_token(self, text_delta: str) -> bool:
+        """Record arrival of one completion token; samples TPS every 8 tokens.
+
+        Returns:
+            True if TPS was sampled/updated, False otherwise.
+        """
+        now = time.monotonic()
         if self._first_token_at == 0.0:
-            self._first_token_at = time.monotonic()
+            self._first_token_at = now
             self.time_to_first_token = self._first_token_at - self._stream_start
-        self._turn_completion += 1
-        if self._turn_completion % TPS_SAMPLE_INTERVAL == 0:
+            self._segment_first_token_at = now
+        elif self._segment_first_token_at == 0.0:
+            self._segment_first_token_at = now
+
+        delta_tokens = count_tokens(text_delta)
+        self._segment_completion_tokens += delta_tokens
+        previous_turn_completion = self._turn_completion
+        self._turn_completion = self._total_streaming_tokens + self._segment_completion_tokens
+
+        # Sample TPS when crossing a multiple of TPS_SAMPLE_INTERVAL
+        if (self._turn_completion // TPS_SAMPLE_INTERVAL) > (previous_turn_completion // TPS_SAMPLE_INTERVAL):
             self.tokens_per_sec = self.current_tps
+            return True
+        return False
+
+    def record_segment(self, duration: float, completion_tokens: int = 0) -> None:
+        """Record the duration of a completed streaming segment and reset segment timing."""
+        if self._segment_first_token_at > 0.0:
+            self._total_streaming_duration += time.monotonic() - self._segment_first_token_at
+            self._segment_first_token_at = 0.0
+
+        if completion_tokens > 0:
+            self._total_streaming_tokens += completion_tokens
+        else:
+            self._total_streaming_tokens += self._segment_completion_tokens
+
+        self._segment_completion_tokens = 0
+        self._turn_completion = self._total_streaming_tokens
+        self._total_segment_duration += duration
 
     @property
     def current_tps(self) -> float:
-        """Dynamically calculate tokens per second."""
-        if self._first_token_at == 0.0:
+        """Dynamically calculate tokens per second based on active streaming time."""
+        now = time.monotonic()
+        current_segment_duration = 0.0
+        if self._segment_first_token_at > 0.0:
+            current_segment_duration = now - self._segment_first_token_at
+
+        total_duration = self._total_streaming_duration + current_segment_duration
+        if self._turn_completion == 0 or total_duration <= 0.0:
             return 0.0
-        elapsed = time.monotonic() - self._first_token_at
-        if elapsed > 0:
-            return self._turn_completion / elapsed
-        return 0.0
+        return self._turn_completion / total_duration
 
     def finish_turn(self) -> None:
         """Finalise TPS for the completed turn."""
-        if self._turn_completion > 0 and self._first_token_at > 0:
-            elapsed = time.monotonic() - self._first_token_at
-            if elapsed > 0:
-                self.tokens_per_sec = self._turn_completion / elapsed
+        if self._turn_completion > 0:
+            now = time.monotonic()
+            current_segment_duration = 0.0
+            if self._segment_first_token_at > 0.0:
+                current_segment_duration = now - self._segment_first_token_at
+
+            total_duration = self._total_streaming_duration + current_segment_duration
+            if total_duration > 0.0:
+                self.tokens_per_sec = self._turn_completion / total_duration
 
     def update(self, prompt: int, completion: int, cost_per_1k: float = 0.0, cached: int = 0) -> None:
         """Accumulate token counts and estimated cost."""
@@ -133,7 +183,12 @@ class SessionStats:
         self.time_to_first_token = 0.0
         self._stream_start = 0.0
         self._first_token_at = 0.0
+        self._segment_first_token_at = 0.0
         self._turn_completion = 0
+        self._total_streaming_duration = 0.0
+        self._total_segment_duration = 0.0
+        self._total_streaming_tokens = 0
+        self._segment_completion_tokens = 0
 
 
 @dataclass
@@ -286,8 +341,9 @@ class ChatOrchestrator:
                 try:
                     association = self.association_generator.on_turn(text)
                     if association is not None:
-                        assoc_text = MemoryAssociationGenerator.format_association(association)
-                        self.context.append_system(f"[Memory: {assoc_text}]")
+                        summary = association.memory_summary or ""
+                        memory_id = association.memory_id[:8]
+                        self.context.append_system(f"[Memory surfaced (ID: {memory_id}): {summary}]")
                         self._emit(association)
                 except Exception as association_error:
                     self._log(f"Memory association failed: {association_error}")
@@ -329,6 +385,15 @@ class ChatOrchestrator:
 
             try:
                 self.stats.finish_turn()
+                self._emit(
+                    StatsUpdatedEvent(
+                        prompt_tokens=self.stats.prompt_tokens,
+                        completion_tokens=self.stats.completion_tokens,
+                        total_cost_usd=self.stats.total_cost_usd,
+                        tokens_per_sec=self.stats.tokens_per_sec,
+                        time_to_first_token=self.stats.time_to_first_token,
+                    )
+                )
                 self._emit(StreamingFinishedEvent())
                 self._emit(WaitingForInputEvent())
             except Exception as finalise_error:
@@ -360,6 +425,11 @@ class ChatOrchestrator:
             turn: TurnResult | None = None
             partial_text: str = ""
             partial_reasoning: str = ""
+            segment_completion_tokens = 0
+
+            # Start timing the streaming segment
+            segment_start = time.monotonic()
+
             async for event in self.llm.stream_chat(
                 self.context.get_messages_for_api(),
                 tools=tools_schema,
@@ -379,13 +449,32 @@ class ChatOrchestrator:
                     turn = event
                 elif isinstance(event, TextDeltaEvent):
                     partial_text += event.delta
-                    self.stats.record_token()
+                    if self.stats.record_token(event.delta):
+                        self._emit(
+                            StatsUpdatedEvent(
+                                prompt_tokens=self.stats.prompt_tokens,
+                                completion_tokens=self.stats.completion_tokens,
+                                total_cost_usd=self.stats.total_cost_usd,
+                                tokens_per_sec=self.stats.tokens_per_sec,
+                                time_to_first_token=self.stats.time_to_first_token,
+                            )
+                        )
                     self._emit(event)
                 elif isinstance(event, ReasoningDeltaEvent):
                     partial_reasoning += event.delta
-                    self.stats.record_token()
+                    if self.stats.record_token(event.delta):
+                        self._emit(
+                            StatsUpdatedEvent(
+                                prompt_tokens=self.stats.prompt_tokens,
+                                completion_tokens=self.stats.completion_tokens,
+                                total_cost_usd=self.stats.total_cost_usd,
+                                tokens_per_sec=self.stats.tokens_per_sec,
+                                time_to_first_token=self.stats.time_to_first_token,
+                            )
+                        )
                     self._emit(event)
                 elif isinstance(event, UsageEvent):
+                    segment_completion_tokens = event.completion_tokens
                     self.context.sync_token_count(event.prompt_tokens, event.completion_tokens)
                     self._emit(
                         ContextUpdatedEvent(
@@ -402,7 +491,7 @@ class ChatOrchestrator:
                             prompt_tokens=self.stats.prompt_tokens,
                             completion_tokens=self.stats.completion_tokens,
                             total_cost_usd=self.stats.total_cost_usd,
-                            tokens_per_sec=self.stats.tokens_per_sec,
+                            tokens_per_sec=self.stats.current_tps,
                             time_to_first_token=self.stats.time_to_first_token,
                         )
                     )
@@ -412,6 +501,10 @@ class ChatOrchestrator:
                     return
                 else:
                     self._emit(event)
+
+            # End timing the streaming segment and record duration
+            self.stats.record_segment(time.monotonic() - segment_start, segment_completion_tokens)
+
             if turn is None:
                 return
             self._log(f"Turn complete: finish_reason={turn.finish_reason}, tool_calls={len(turn.tool_calls)}")

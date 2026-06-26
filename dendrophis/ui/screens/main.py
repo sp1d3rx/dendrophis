@@ -21,6 +21,7 @@ from dendrophis.events import (
     MultipleChoiceRequestEvent,
     PrimerLoadedEvent,
     PrimerScreenRequest,
+    PythonExecProposalEvent,
     ReasoningDeltaEvent,
     RetryEvent,
     SessionResetRequest,
@@ -56,7 +57,9 @@ class MainScreen(Screen):
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("ctrl+l", "clear_chat", "Clear"),
-        ("ctrl+s", "open_settings", "Settings"),
+        ("ctrl+o", "open_session_picker", "Resume"),
+        ("ctrl+t", "open_settings", "Settings"),
+        ("ctrl+m", "open_memory_viewer", "Memory"),
         ("ctrl+shift+d", "toggle_debug", "Debug"),
         ("ctrl+e", "export_session", "Export"),
         ("escape", "interrupt", "Interrupt"),
@@ -157,6 +160,7 @@ class MainScreen(Screen):
             (ConfigReloadedEvent, self._on_config_reloaded),
             (EditProposalEvent, self._on_edit_proposal),
             (WriteProposalEvent, self._on_write_proposal),
+            (PythonExecProposalEvent, self._on_python_exec_proposal),
             (PrimerScreenRequest, self._on_primer_screen_request),
         ]
 
@@ -281,6 +285,18 @@ class MainScreen(Screen):
             self.app.push_screen(WriteConfirmationScreen(event, self._event_bus))
 
         self.call_later(show_write_confirmation)
+
+    def _on_python_exec_proposal(self, event: PythonExecProposalEvent) -> None:
+        """Handle request for Python code execution approval with code preview."""
+
+        def show_python_exec_confirmation() -> None:
+            from dendrophis.ui.screens.python_exec_confirmation import (
+                PythonExecConfirmationScreen,
+            )
+
+            self.app.push_screen(PythonExecConfirmationScreen(event, self._event_bus))
+
+        self.call_later(show_python_exec_confirmation)
 
     def _on_primer_screen_request(self, event: PrimerScreenRequest) -> None:
         """Handle request to open the project primer screen."""
@@ -553,7 +569,8 @@ class MainScreen(Screen):
                 "",
                 "[bold]Key Bindings[/bold]",
                 "  Ctrl+L  — Clear chat (same as /clear)",
-                "  Ctrl+S  — Open settings",
+                "  Ctrl+S  — Open session picker",
+                "  Ctrl+T  — Open settings",
                 "  Ctrl+E  — Export session (same as /export)",
                 "  Esc     — Interrupt streaming",
                 "  Ctrl+Q  — Quit",
@@ -785,10 +802,42 @@ class MainScreen(Screen):
 
         self.run_worker(do_compact(), exclusive=True, exit_on_error=False)
 
+    def action_open_session_picker(self) -> None:
+        """Open the session picker to load a previous session."""
+        from dendrophis.ui.screens.session_picker import SessionPickerScreen
+
+        def handle_session_selected(selected_path: str | None) -> None:
+            if not selected_path:
+                return
+
+            # Save current session to avoid data loss
+            if self._session.context.messages:
+                saved_path = self._session.save_session()
+                if saved_path:
+                    self._debug_widget.write(f"[NOTIFY] Session autosaved to: {saved_path}")
+
+            loaded_info = self._session.load_session(selected_path)
+            if loaded_info:
+                self.app._update_title()
+                message_count = loaded_info.get("message_count", 0)
+                self.notify(f"Resumed session with {message_count} messages", severity="information")
+                self._debug_widget.write(f"[NOTIFY] Session loaded: {selected_path}")
+            else:
+                self.notify("Failed to load session", severity="error")
+                self._debug_widget.write(f"[NOTIFY ERROR] Failed to load session: {selected_path}")
+
+        self.app.push_screen(SessionPickerScreen(self._session), handle_session_selected)
+
     def action_open_settings(self) -> None:
         from dendrophis.ui.screens.settings import SettingsScreen
 
         self.app.push_screen(SettingsScreen(self._session))
+
+    def action_open_memory_viewer(self) -> None:
+        """Open the memory viewer."""
+        from dendrophis.ui.screens.memory_viewer import MemoryViewerScreen
+
+        self.app.push_screen(MemoryViewerScreen(self._session))
 
     def action_interrupt(self) -> None:
         if self._streaming:
