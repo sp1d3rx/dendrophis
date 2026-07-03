@@ -14,13 +14,13 @@ from dendrophis.events import (
     ToolExecutionStartedEvent,
     WaitingForInputEvent,
 )
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class StatusPanel(BasePanel):
+class StatusPanel(TextPanel):
     """Panel showing current activity status with colored indicators."""
 
     REFRESH_INTERVAL = 0.5  # Handle flashing via refresh interval

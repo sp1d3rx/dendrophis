@@ -12,13 +12,13 @@ from textual.widgets import Static
 
 from dendrophis.events import EventBus, MemoryAssociationEvent
 from dendrophis.memory.association import MemoryAssociationGenerator
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class MemoryAssociationPanel(BasePanel):
+class MemoryAssociationPanel(TextPanel):
     """Panel for displaying memory associations - "this reminds me of..."
 
     Shows up occasionally, not on every turn. Framed as thoughts,

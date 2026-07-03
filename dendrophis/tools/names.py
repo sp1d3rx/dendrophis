@@ -15,6 +15,12 @@ class ToolName(StrEnum):
     RIPGREP = "ripgrep"
     READ = "read"
 
+    # Agent-friendly aliases (high-level, descriptive names for subagents)
+    READ_FILE = "read_file"
+    WRITE_FILE = "write_file"
+    EDIT_FUNCTION = "edit_function"
+    LIST_DIR = "list_dir"
+
     # Interaction
     ASK_MULTIPLE_CHOICE = "ask_multiple_choice"
 

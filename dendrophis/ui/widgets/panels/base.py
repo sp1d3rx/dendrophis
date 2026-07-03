@@ -12,7 +12,7 @@ class PanelMetaclass(type(Static), ABCMeta):
     pass
 
 
-class PanelBase(Static, ABC, metaclass=PanelMetaclass):
+class Panel(Static, ABC, metaclass=PanelMetaclass):
     """Fundamental abstract class for all sidebar panels.
 
     Handles CSS, and basic metadata.
@@ -25,7 +25,7 @@ class PanelBase(Static, ABC, metaclass=PanelMetaclass):
     panel_name: ClassVar[str] = ""
 
     DEFAULT_CSS = """
-    PanelBase {
+    Panel {
         height: auto;
         margin-bottom: 1;
         padding: 0 1;
@@ -33,7 +33,7 @@ class PanelBase(Static, ABC, metaclass=PanelMetaclass):
         border: solid $panel-darken-2;
         color: $text-muted;
     }
-    PanelBase:hover {
+    Panel:hover {
         background: $surface;
         border: solid $primary;
     }
@@ -62,7 +62,7 @@ class PanelBase(Static, ABC, metaclass=PanelMetaclass):
         pass
 
 
-class BasePanel(PanelBase):
+class TextPanel(Panel):
     """Simple panel that updates its content via a string return value.
 
     Subclasses implement render_value().

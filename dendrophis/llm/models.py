@@ -124,7 +124,7 @@ def make_assistant_message(
         import os
 
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
-            from dendrophis.session.session import _tool_log
+            from dendrophis.session.chat import _tool_log
 
             _tool_log("=== ASSISTANT MESSAGE WITH TOOL CALLS ===")
             content_preview = final_content[:50] if final_content else ""

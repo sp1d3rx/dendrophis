@@ -1,139 +1,110 @@
-"""Code-writer subagent handler — implements changes precisely."""
+"""Code-writer subagent handler — agentic tool-based worker."""
 
 from __future__ import annotations
 
+import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
-from dendrophis.config.schema import DendrophisConfig, LLMConfig
-from dendrophis.llm.client import LLMClient
-from dendrophis.subagents.messages import SubagentRequest, SubagentResponse
-from dendrophis.tools.builtins.filesystem import BashTool, EditTool, ReadTool, WriteTool
-from dendrophis.tools.builtins.function_analyzer import analyze_functions
-from dendrophis.tools.builtins.function_tools import replace_function
+from dendrophis.config.schema import DendrophisConfig
+from dendrophis.context.manager import ContextManager
+from dendrophis.llm.client import LLMClient, TurnResult
+from dendrophis.tools.executor import ToolExecutor
+from dendrophis.tools.registry import ToolRegistry
+
+from ..messages import SubagentRequest, SubagentResponse
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# System prompt for the CodeWriter agent
+# ---------------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# Custom Exceptions
-# -----------------------------------------------------------------------------
+CODE_WRITER_SYSTEM_PROMPT = """You are Dendrophis CodeWriter, an agentic code worker.
+
+Your job: implement changes precisely by calling tools. You operate in a loop:
+1. Call tools (read_file, list_dir, edit_function, write_file, bash) to gather context and make changes
+2. Receive tool results
+3. Decide next action based on results
+4. Repeat until the task is complete
+5. Return a summary when done
+
+Rules:
+- Investigate first: use list_dir and read_file to understand the codebase before editing
+- Surgical edits: use edit_function for Python functions, write_file for new files, edit for text replacements
+- Verify after editing: read_file to confirm changes took effect
+- Run ruff check and ruff format via bash after any Python edits
+- If a tool call fails, read the error and retry with corrections
+- If you are stuck or ambiguous, report the blocker — do not guess
+- Make minimal, targeted changes. Change only what is needed.
+- Follow existing code style and patterns in the files you read
+
+Tool usage:
+- list_dir(path=".") — explore directory structure
+- read_file(file_path, offset=1, limit=2000) — read file contents
+- edit_function(file_path, function_name, new_source) — replace a Python function
+- write_file(file_path, content) — create or overwrite a file
+- edit(file_path, old_string, new_string) — text replacement in any file
+- glob(pattern, path=".") — find files by pattern
+- ripgrep(pattern, path, include) — search file contents
+- bash(command, description) — run shell commands (use for ruff, pytest, etc.)
+
+When you are done, output a final summary message describing what you changed.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
 
 
 class CodeWriterError(Exception):
     """Base exception for code-writer errors."""
 
 
-class FileReadError(CodeWriterError):
-    """Failed to read a file."""
-
-
-class FileEditError(CodeWriterError):
-    """Failed to edit a file."""
-
-
 class LLMCallError(CodeWriterError):
     """Failed to call the LLM."""
 
 
-class ParseError(CodeWriterError):
-    """Failed to parse LLM response."""
+class ToolExecutionError(CodeWriterError):
+    """Tool execution failed."""
 
 
-# -----------------------------------------------------------------------------
-# Constants
-# -----------------------------------------------------------------------------
-
-# Minimal system prompt for code-writer
-CODE_WRITER_PROMPT = """You are a precise code editor. Your job is to implement changes exactly as specified.
-
-Rules:
-- Make surgical edits. Change only what's needed.
-- Follow existing code style and patterns.
-- Run ruff check and ruff format after edits.
-- If something is ambiguous, stop and ask. Never guess.
-- Verify files after editing.
-- Return a summary of what changed.
-
-Workflow for Python files (surgical editing):
-1. analyze_functions(file_path) -> get function names and line numbers
-2. get_function(file_path, function_name) -> extract function to temp file
-3. edit(temp_file) -> make surgical changes with minimal context
-4. replace_function(file_path, function_name, new_function) -> swap in edited version
-
-This minimizes token usage and avoids exact-match issues with large files.
-
-You have access to: analyze_functions, get_function, replace_function, read, edit, write, bash (for ruff).
-
-When making changes, you MUST use the following formats:
-
-### 1. To Create a New File:
-FILE: path/to/new_file.py
-OLD:
-<file does not exist>
-NEW:
-<full content of the new file>
----
-
-### 2. To Edit an Existing File:
-FILE: path/to/existing_file.py
-OLD:
-<exact text to replace, including surrounding context for uniqueness>
-NEW:
-<new text>
----
-
-Repeat for each file edited.
-
-CRITICAL: NEVER use markdown code blocks. Output raw text only.
-"""
-
-
-# -----------------------------------------------------------------------------
-# Handler
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# CodeWriterHandler — agentic loop
+# ---------------------------------------------------------------------------
 
 
 class CodeWriterHandler:
-    """Handler for code-writer subagent."""
+    """Handler for code-writer subagent. Runs an agentic tool-based loop."""
 
     async def __call__(self, request: SubagentRequest) -> SubagentResponse:
-        """Make handler callable - delegates to execute."""
+        """Make handler callable — delegates to execute."""
         return await self.execute(request)
 
     def __init__(
         self,
         llm_client: LLMClient | None = None,
-        read_tool: ReadTool | None = None,
-        edit_tool: EditTool | None = None,
-        write_tool: WriteTool | None = None,
-        bash_tool: BashTool | None = None,
+        tool_registry: ToolRegistry | None = None,
+        tool_executor: ToolExecutor | None = None,
         config: DendrophisConfig | None = None,
         model: str = "qwen/qwen3-coder:latest",
     ) -> None:
-        """Initialize CodeWriterHandler with dependency injection.
+        """Initialize with dependency injection.
 
         Args:
             llm_client: LLM client for making API calls. If None, created lazily.
-            read_tool: Tool for reading files. If None, created lazily.
-            edit_tool: Tool for editing files. If None, created lazily.
-            write_tool: Tool for writing files. If None, created lazily.
-            bash_tool: Tool for bash commands. If None, created lazily.
+            tool_registry: Tool registry for available tools. If None, created lazily.
+            tool_executor: Tool executor for executing tool calls. If None, created lazily.
             config: Dendrophis configuration. If None, loaded lazily.
             model: Model name for code-writer (used if no llm_client provided).
         """
-        # Store injected dependencies
         self._llm_client = llm_client
-        self._read_tool = read_tool
-        self._edit_tool = edit_tool
-        self._write_tool = write_tool
-        self._bash_tool = bash_tool
+        self._tool_registry = tool_registry
+        self._tool_executor = tool_executor
         self._config = config
         self._model_override = model
-
-        # Initialize logger
         self._logger = logger
 
     @property
@@ -142,17 +113,18 @@ class CodeWriterHandler:
         if self._llm_client is not None:
             return self._llm_client
 
-        # Fallback to creating LLM client with config or defaults
         if self._config is not None:
             llm_config = self._get_llm_config()
             self._llm_client = LLMClient(llm_config)
             return self._llm_client
 
-        # Last resort: create with hardcoded defaults (backward compatibility)
+        # Last resort: create with hardcoded defaults
         from dendrophis.config.loader import ConfigLoader
 
         config_loader = ConfigLoader.load()
         cfg = config_loader.config
+        from dendrophis.config.schema import LLMConfig
+
         llm_config = LLMConfig(
             model=self._model_override,
             api_key=cfg.llm.api_key,
@@ -165,140 +137,116 @@ class CodeWriterHandler:
         return self._llm_client
 
     @property
-    def read_tool(self) -> ReadTool:
-        """Lazily create ReadTool if not injected."""
-        if self._read_tool is None:
-            self._read_tool = ReadTool()
-        return self._read_tool
+    def tool_registry(self) -> ToolRegistry:
+        """Lazily create tool registry if not injected."""
+        if self._tool_registry is None:
+            # Create a minimal registry with only agent-friendly tools
+            self._tool_registry = ToolRegistry()
+            from dendrophis.tools.builtins.filesystem import get_agent_tools
+            from dendrophis.tools.builtins.filesystem.bash import BashTool
+            from dendrophis.tools.executor import ToolExecutor
+
+            for tool in get_agent_tools():
+                self._tool_registry.add(tool)
+            self._tool_registry.add(BashTool())
+
+            self._tool_executor = ToolExecutor(self._tool_registry)
+        return self._tool_registry
 
     @property
-    def edit_tool(self) -> EditTool:
-        """Lazily create EditTool if not injected."""
-        if self._edit_tool is None:
-            self._edit_tool = EditTool()
-        return self._edit_tool
-
-    @property
-    def write_tool(self) -> WriteTool:
-        """Lazily create WriteTool if not injected."""
-        if self._write_tool is None:
-            self._write_tool = WriteTool()
-        return self._write_tool
-
-    @property
-    def bash_tool(self) -> BashTool:
-        """Lazily create BashTool if not injected."""
-        if self._bash_tool is None:
-            self._bash_tool = BashTool()
-        return self._bash_tool
+    def tool_executor(self) -> ToolExecutor:
+        """Return the tool executor."""
+        _ = self.tool_registry  # Ensures executor is created
+        return self._tool_executor
 
     @property
     def config(self) -> DendrophisConfig | None:
         """Return the injected config."""
         return self._config
 
-    def _get_llm_config(self) -> LLMConfig:
+    def _get_llm_config(self) -> Any:
         """Get LLM config for code-writer from injected config."""
         if self._config is None:
             raise ValueError("No config available to create LLM client")
 
-        # Use code_writer_model if set, otherwise use default model
-        model = self._config.llm.code_writer_model or self._model_override
+        from dendrophis.config.schema import LLMConfig
 
+        model = self._config.llm.code_writer_model or self._model_override
         return LLMConfig(
             model=model,
             api_key=self._config.llm.api_key,
             base_url=self._config.llm.base_url,
-            temperature=0.1,  # Lower temp for more deterministic code
-            top_k=64,  # Limit to top 64 tokens
-            min_p=0.05,  # Filter out unlikely tokens
+            temperature=0.1,
+            top_k=64,
+            min_p=0.05,
             max_tokens=self._config.llm.max_tokens,
             timeout=self._config.llm.timeout,
         )
 
     async def execute(self, request: SubagentRequest) -> SubagentResponse:
-        """Execute code-writing task."""
+        """Execute code-writing task using an agentic tool-based loop.
+
+        This replaces the old text-parsing approach. The CodeWriter now:
+        1. Creates its own isolated context with the system prompt
+        2. Calls the LLM with tool definitions
+        3. Executes any tool calls returned by the LLM
+        4. Feeds tool results back to the LLM
+        5. Repeats until the task is complete or max iterations reached
+
+        Returns a structured result with changes made and any blockers.
+        """
         task = request.payload.get("task", "")
         files = request.payload.get("files", [])
         context = request.context
 
+        # Build isolated context
+        context_manager = self._build_isolated_context(task, files, context)
+
         changes: list[dict[str, Any]] = []
         blockers: list[str] = []
+        max_iterations = 20  # Prevent infinite loops
+        iteration = 0
 
         try:
-            # Separate Python files from others
-            python_files = [f for f in files if f.endswith(".py")]
+            while iteration < max_iterations:
+                iteration += 1
 
-            # Read all files
-            file_contents, read_blockers = await self._read_files(files)
-            blockers.extend(read_blockers)
+                # Call LLM with current context
+                turn = await self._call_llm(context_manager)
+
+                if not turn.tool_calls:
+                    # No tool calls — LLM is done
+                    self._logger.debug(f"[CODE-WRITER] Done after {iteration} iterations")
+                    break
+
+                # Execute tool calls
+                tool_results = await self._execute_tool_calls(turn.tool_calls, context_manager)
+
+                # Track changes from successful tool executions
+                changes.extend(info for result in tool_results if (info := self._extract_change_info(result)))
+
+                # Check for blockers (failed tool calls)
+                blockers.extend(
+                    f"Tool {result.name} failed: {result.content[:200]}"
+                    for result in tool_results
+                    if self._is_tool_error(result)
+                )
+
+            if iteration >= max_iterations:
+                self._logger.warning(f"[CODE-WRITER] Hit max iterations ({max_iterations})")
+                blockers.append(f"Hit maximum iteration limit ({max_iterations}). Task may be incomplete.")
 
             if blockers:
-                self._logger.warning(f"Blockers during file reading: {blockers}")
+                self._logger.warning(f"[CODE-WRITER] Blockers: {blockers}")
                 return SubagentResponse(
                     agent="code-writer",
                     task_id=request.task_id,
                     status="needs_clarification",
-                    result={"blockers": blockers},
+                    result={
+                        "changes": changes,
+                        "blockers": blockers,
+                    },
                 )
-
-            # Analyze Python files
-            python_analysis, analysis_blockers = await self._analyze_files(python_files)
-            blockers.extend(analysis_blockers)
-
-            if blockers:
-                self._logger.warning(f"Blockers during file analysis: {blockers}")
-                return SubagentResponse(
-                    agent="code-writer",
-                    task_id=request.task_id,
-                    status="needs_clarification",
-                    result={"blockers": blockers},
-                )
-
-            # Build LLM prompt
-            prompt = self._build_llm_prompt(task, file_contents, python_analysis, context)
-
-            # Call LLM for implementation plan
-            try:
-                result = await self.llm.complete(
-                    [
-                        {"role": "system", "content": CODE_WRITER_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ]
-                )
-                plan = result.text
-            except Exception as e:
-                raise LLMCallError(f"LLM call failed: {e}") from e
-
-            # Debug logging - check for DENDROPHIS_DEBUG env var as before
-            import os
-
-            if os.environ.get("DENDROPHIS_DEBUG"):
-                self._logger.debug(
-                    f"[CODE-WRITER] Result: text={len(result.text)} chars, "
-                    f"reasoning={len(result.reasoning)} chars, "
-                    f"tool_calls={len(result.tool_calls)}"
-                )
-                self._logger.debug(f"[CODE-WRITER] Plan:\n{plan[:2000]}")
-
-            # Parse and execute edits
-            edits = self._parse_edits(plan)
-            changes, edit_blockers = await self._apply_edits(edits)
-            blockers.extend(edit_blockers)
-
-            if blockers:
-                self._logger.warning(f"Blockers during edit application: {blockers}")
-                return SubagentResponse(
-                    agent="code-writer",
-                    task_id=request.task_id,
-                    status="needs_clarification",
-                    result={"blockers": blockers, "changes": changes},
-                )
-
-            # Run ruff check/format on edited files
-            edited_files = list({c["file"] for c in changes if c.get("file")})
-            for f in edited_files:
-                await self._run_ruff(f)  # Non-blocking - errors logged but not raised
 
             return SubagentResponse(
                 agent="code-writer",
@@ -320,24 +268,8 @@ class CodeWriterHandler:
                 status="failure",
                 result={"error": str(e)},
             )
-        except FileReadError as e:
-            self._logger.error(f"File read error: {e}")
-            return SubagentResponse(
-                agent="code-writer",
-                task_id=request.task_id,
-                status="failure",
-                result={"error": str(e)},
-            )
-        except FileEditError as e:
-            self._logger.error(f"File edit error: {e}")
-            return SubagentResponse(
-                agent="code-writer",
-                task_id=request.task_id,
-                status="failure",
-                result={"error": str(e)},
-            )
-        except ParseError as e:
-            self._logger.error(f"Parse error: {e}")
+        except ToolExecutionError as e:
+            self._logger.error(f"Tool execution error: {e}")
             return SubagentResponse(
                 agent="code-writer",
                 task_id=request.task_id,
@@ -353,289 +285,138 @@ class CodeWriterHandler:
                 result={"error": str(e)},
             )
 
-    async def _read_files(self, files: list[str]) -> tuple[dict[str, str], list[str]]:
-        """Read file contents.
+    def _build_isolated_context(self, task: str, files: list[str], context: dict[str, Any]) -> ContextManager:
+        """Build an isolated context for the CodeWriter agent."""
+        # Create a minimal config for the isolated context
+        from dendrophis.config.schema import DendrophisConfig
 
-        Args:
-            files: List of file paths to read.
+        cfg = self._config if self._config else DendrophisConfig()
+        cm = ContextManager(cfg)
 
-        Returns:
-            Tuple of (file_contents dict, blockers list).
-        """
-        file_contents: dict[str, str] = {}
-        blockers: list[str] = []
+        # Add files to context if provided
+        if files:
+            file_parts = []
+            for f in files:
+                path = Path(f)
+                if path.exists():
+                    try:
+                        content = path.read_text(encoding="utf-8")[:5000]  # Limit file size
+                        file_parts.append(f"\n--- {f} ---\n{content}...")
+                    except Exception as e:
+                        file_parts.append(f"\n--- {f} ---\n[Error reading: {e}]")
 
-        for file_path in files:
-            try:
-                result = await self.read_tool.execute(file_path=file_path)
-                if isinstance(result, dict) and "content" in result:
-                    file_contents[file_path] = result["content"]
-            except FileNotFoundError:
-                blockers.append(f"File not found: {file_path}")
-                self._logger.error(f"File not found: {file_path}")
-            except PermissionError as e:
-                blockers.append(f"Permission denied reading {file_path}: {e}")
-                self._logger.error(f"Permission denied reading {file_path}: {e}")
-            except Exception as e:
-                blockers.append(f"Cannot read {file_path}: {type(e).__name__}: {e}")
-                self._logger.error(f"Error reading {file_path}: {type(e).__name__}: {e}")
+            if file_parts:
+                cm.messages.append({"role": "user", "content": "Files provided:\n" + "\n".join(file_parts)})
 
-        return file_contents, blockers
+        # Add task description
+        cm.messages.append({"role": "user", "content": f"Task: {task}"})
 
-    async def _analyze_files(self, python_files: list[str]) -> tuple[dict[str, str], list[str]]:
-        """Analyze Python files for function information.
-
-        Args:
-            python_files: List of Python file paths to analyze.
-
-        Returns:
-            Tuple of (python_analysis dict, blockers list).
-        """
-        python_analysis: dict[str, str] = {}
-        blockers: list[str] = []
-
-        for file_path in python_files:
-            try:
-                analysis = await analyze_functions.execute(file_path=file_path, format="yaml")
-                python_analysis[file_path] = analysis
-            except FileNotFoundError:
-                blockers.append(f"File not found for analysis: {file_path}")
-                self._logger.error(f"File not found for analysis: {file_path}")
-            except Exception as e:
-                blockers.append(f"Cannot analyze {file_path}: {type(e).__name__}: {e}")
-                self._logger.error(f"Error analyzing {file_path}: {type(e).__name__}: {e}")
-
-        return python_analysis, blockers
-
-    def _build_llm_prompt(
-        self,
-        task: str,
-        file_contents: dict[str, str],
-        python_analysis: dict[str, str],
-        context: dict[str, Any],
-    ) -> str:
-        """Build the LLM prompt for code-writer.
-
-        Args:
-            task: The task description.
-            file_contents: Dict mapping file paths to their contents.
-            python_analysis: Dict mapping Python file paths to function analysis.
-            context: Additional context from the request.
-
-        Returns:
-            The formatted prompt string.
-        """
-        parts = [
-            f"Task: {task}",
-            "",
-            "Files to modify:",
-        ]
-
-        for path, content in file_contents.items():
-            parts.append(f"\n--- {path} ---\n{content[:2000]}...")  # Truncate large files
-
-        # Include Python function analysis for surgical editing
-        if python_analysis:
-            parts.extend(["", "Python file function analysis (for surgical editing):"])
-            for path, analysis in python_analysis.items():
-                parts.append(f"\n--- {path} ---\n{analysis}")
-
+        # Add context constraints if provided
         if context.get("patterns"):
-            parts.extend(["", "Patterns to follow:", *context["patterns"]])
-
+            cm.messages.append({"role": "user", "content": "Patterns to follow:\n" + "\n".join(context["patterns"])})
         if context.get("constraints"):
-            parts.extend(["", "Constraints:", *context["constraints"]])
+            cm.messages.append({"role": "user", "content": "Constraints:\n" + "\n".join(context["constraints"])})
 
-        parts.extend(
-            [
-                "",
-                "For Python files, use surgical editing format:",
-                "FILE: path/to/file.py",
-                "FUNCTION: function_name",
-                "NEW:",
-                "<complete new function implementation>",
-                "---",
-                "",
-                "For non-Python files, use standard format:",
-                "FILE: path/to/file",
-                "OLD:",
-                "<exact text to replace>",
-                "NEW:",
-                "<new text>",
-                "---",
-            ]
-        )
+        return cm
 
-        return "\n".join(parts)
-
-    def _parse_edits(self, plan: str) -> list[dict[str, Any]]:
-        """Parse edit blocks from LLM response.
-
-        Supports two formats:
-        1. Surgical: FILE: path\nFUNCTION: name\nNEW: ... (for Python functions)
-        2. Standard: FILE: path\nOLD: ...\nNEW: ... (for any file type)
-
-        Args:
-            plan: The LLM response text containing edit instructions.
-
-        Returns:
-            List of edit dictionaries.
-
-        Raises:
-            ParseError: If the edit format is invalid.
-        """
-        edits: list[dict[str, Any]] = []
+    async def _call_llm(self, context_manager: ContextManager) -> TurnResult:
+        """Call the LLM and return the turn result."""
+        tools_schema = self.tool_registry.all_schema()
 
         try:
-            # Pattern for surgical Python edits
-            surgical_pattern = r"FILE:\s*(.+?)\nFUNCTION:\s*(.+?)\nNEW:\n(.*?)(?=\n---|\Z)"
-            for match in re.finditer(surgical_pattern, plan, re.DOTALL):
-                file_path = match.group(1).strip()
-                function_name = match.group(2).strip()
-                new_text = match.group(3).rstrip("\n")
-                if file_path and function_name:
-                    edits.append(
-                        {
-                            "file": file_path,
-                            "function_name": function_name,
-                            "old": "",
-                            "new": new_text,
-                        }
-                    )
-
-            # Pattern for standard edits
-            standard_pattern = r"FILE:\s*(.+?)\nOLD:\n(.*?)(?=\nNEW:)\nNEW:\n(.*?)(?=\n---|\Z)"
-            for match in re.finditer(standard_pattern, plan, re.DOTALL):
-                file_path = match.group(1).strip()
-                old_text = match.group(2).rstrip("\n")
-                new_text = match.group(3).rstrip("\n")
-                if file_path and old_text:
-                    edits.append({"file": file_path, "old": old_text, "new": new_text})
-
-        except re.error as e:
-            raise ParseError(f"Regex error parsing edits: {e}") from e
+            turn = await self.llm.complete(
+                context_manager.get_messages_for_api(),
+                tools=tools_schema if tools_schema else None,
+            )
         except Exception as e:
-            raise ParseError(f"Error parsing edits: {e}") from e
+            raise LLMCallError(f"LLM call failed: {e}") from e
 
-        self._logger.debug(f"[PARSE] Found {len(edits)} edits")
-        return edits
+        # Append assistant response to context
+        context_manager.append_assistant(turn.text, None, turn.reasoning)
 
-    async def _apply_edits(self, edits: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
-        """Apply edits to files.
+        return turn
 
-        Args:
-            edits: List of edit dictionaries with file, old, new, and optionally function_name.
+    async def _execute_tool_calls(self, tool_calls: list[Any], context_manager: ContextManager) -> list[Any]:
+        """Execute tool calls and append results to context."""
+        executor = self.tool_executor
+        results = []
 
-        Returns:
-            Tuple of (changes list, blockers list).
-        """
-        changes: list[dict[str, Any]] = []
-        blockers: list[str] = []
-
-        for edit in edits:
-            file_path = edit.get("file", "")
-            old_string = edit.get("old", "")
-            new_string = edit.get("new", "")
-
-            # Validate edit
-            if not file_path:
-                blockers.append("Missing file path in edit")
-                continue
-
-            # Check if this is a file creation (file doesn't exist or placeholder old_string)
-            file_exists = Path(file_path).exists()
-            is_creation = not file_exists or old_string in ("<file does not exist>", "", "\n")
-
+        for tool_call in tool_calls:
             try:
-                if is_creation:
-                    # Use write tool for new files
-                    await self.write_tool.execute(
-                        file_path=file_path,
-                        content=new_string,
-                    )
-                    changes.append(
-                        {
-                            "action": "created",
-                            "file": file_path,
-                            "description": f"Created {file_path}",
-                        }
-                    )
-                elif file_path.endswith(".py") and edit.get("function_name"):
-                    # Use surgical editing for Python functions
-                    await replace_function.execute(
-                        file_path=file_path,
-                        function_name=edit["function_name"],
-                        new_function=new_string,
-                    )
-                    changes.append(
-                        {
-                            "action": "edited",
-                            "file": file_path,
-                            "function": edit["function_name"],
-                            "description": f"Replaced function {edit['function_name']} in {file_path}",
-                        }
-                    )
-                else:
-                    # Use edit tool for existing files
-                    await self.edit_tool.execute(
-                        file_path=file_path,
-                        old_string=old_string,
-                        new_string=new_string,
-                    )
-                    changes.append(
-                        {
-                            "action": "edited",
-                            "file": file_path,
-                            "description": f"Modified {file_path}",
-                        }
-                    )
-            except FileNotFoundError:
-                blockers.append(f"File not found: {file_path}")
-                self._logger.error(f"File not found during edit: {file_path}")
-            except ValueError as e:
-                blockers.append(f"Edit mismatch in {file_path}: {e}")
-                self._logger.error(f"Edit mismatch in {file_path}: {e}")
-            except PermissionError as e:
-                blockers.append(f"Permission denied: {file_path}")
-                self._logger.error(f"Permission denied editing {file_path}: {e}")
+                result = await executor.execute(tool_call)
+
+                # Append result to context
+                context_manager.append_tool_result(result.tool_call_id, result.name, result.content)
+
+                # Emit tool result event if we have an event bus (for logging/UI)
+                # Note: CodeWriter doesn't have direct event bus access, so we skip UI events
+
+                results.append(result)
+
             except Exception as e:
-                blockers.append(f"Failed to edit {file_path}: {type(e).__name__}: {e}")
-                self._logger.error(f"Failed to edit {file_path}: {type(e).__name__}: {e}")
+                # Create error result
+                import json
 
-        return changes, blockers
+                error_content = json.dumps({"error": f"Tool execution failed: {e}"})
+                error_result = type(
+                    "FallbackToolResult",
+                    (),
+                    {
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.name,
+                        "content": error_content,
+                    },
+                )()
+                results.append(error_result)
 
-    async def _run_ruff(self, file_path: str) -> dict[str, Any]:
-        """Run ruff check and format on a file.
-
-        Args:
-            file_path: Path to the file to lint/format.
-
-        Returns:
-            Dict with check_result, format_result, and any errors.
-        """
-        results: dict[str, Any] = {"check_result": None, "format_result": None, "errors": []}
-
-        try:
-            check_result = await self.bash_tool.execute(
-                command=f"ruff check --fix {file_path}",
-                description=f"Run ruff check on {file_path}",
-            )
-            results["check_result"] = check_result
-        except Exception as e:
-            results["errors"].append(f"ruff check failed: {e}")
-            self._logger.warning(f"[RUFF] ruff check failed for {file_path}: {e}")
-
-        try:
-            format_result = await self.bash_tool.execute(
-                command=f"ruff format {file_path}",
-                description=f"Run ruff format on {file_path}",
-            )
-            results["format_result"] = format_result
-        except Exception as e:
-            results["errors"].append(f"ruff format failed: {e}")
-            self._logger.warning(f"[RUFF] ruff format failed for {file_path}: {e}")
-
-        if results["errors"]:
-            self._logger.debug(f"[RUFF] Errors in {file_path}: {results['errors']}")
+                # Append error to context for self-correction
+                context_manager.append_tool_result(tool_call.id, tool_call.name, error_content)
 
         return results
+
+    def _extract_summary(self, text: str) -> str:
+        """Extract a summary from the LLM's final text response."""
+        # Look for common summary patterns
+        if "Summary:" in text:
+            return text[text.index("Summary:") + len("Summary:") :].strip()
+        if "summary:" in text.lower():
+            idx = text.lower().index("summary:")
+            return text[idx + len("summary:") :].strip()
+        return text[:500] if text else "No summary provided"
+
+    def _extract_change_info(self, result: Any) -> dict[str, Any] | None:
+        """Extract change information from a tool result."""
+        try:
+            content = json.loads(result.content)
+        except (json.JSONDecodeError, AttributeError):
+            return None
+
+        if not isinstance(content, dict):
+            return None
+
+        # Track successful writes and edits
+        if content.get("success") and result.name in ("write_file", "write", "edit_function", "replace_function"):
+            return {
+                "action": "edited" if result.name in ("edit_function", "replace_function") else "created",
+                "file": content.get("file", ""),
+                "function": content.get("function", content.get("replaced", "")),
+                "description": content.get("file", ""),
+            }
+
+        if content.get("success") and result.name == "edit":
+            return {
+                "action": "edited",
+                "file": content.get("file", ""),
+                "description": f"Modified {content.get('file', '')}",
+            }
+
+        return None
+
+    @staticmethod
+    def _is_tool_error(result: Any) -> bool:
+        """Check if a tool result indicates an error."""
+        try:
+            content = json.loads(result.content)
+            return isinstance(content, dict) and "error" in content
+        except (json.JSONDecodeError, AttributeError):
+            return "error" in str(result.content).lower()

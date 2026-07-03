@@ -124,7 +124,6 @@ class ContextManager:
             if len(self._read_file_hashes) > 500:
                 self._read_file_hashes.pop(next(iter(self._read_file_hashes)), None)
 
-
         msg = make_tool_result_message(tool_call_id, name, content)
         self.messages.append(msg)
         self.token_count += count_tokens(content) + 4
@@ -231,7 +230,7 @@ class ContextManager:
         import os
 
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
-            from dendrophis.session.session import _tool_log
+            from dendrophis.session.chat import _tool_log
 
             _tool_log("=== CONTEXT MANAGER - GET MESSAGES FOR API ===")
             _tool_log(f"Total messages in context: {len(self.messages)}")

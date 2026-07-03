@@ -42,13 +42,17 @@ class ToolRegistry:
 
     def all(self) -> list[BaseTool]:
         """Return all registered tool instances, ordered by preference."""
-        # Preferred order: glob, ripgrep, read, edit, write, bash
+        # Preferred order: investigation tools, then editing, then execution
         preferred_order = [
             ToolName.GLOB,
             ToolName.RIPGREP,
             ToolName.READ,
+            ToolName.READ_FILE,
+            ToolName.LIST_DIR,
             ToolName.EDIT,
+            ToolName.EDIT_FUNCTION,
             ToolName.WRITE,
+            ToolName.WRITE_FILE,
             ToolName.BASH,
         ]
 
@@ -69,13 +73,17 @@ class ToolRegistry:
 
     def all_schema(self) -> list[dict[str, Any]]:
         """Return list of all tool schemas for OpenAI, ordered by preference."""
-        # Preferred order: glob, ripgrep, read, edit, write, bash
+        # Preferred order: investigation tools, then editing, then execution
         preferred_order = [
             ToolName.GLOB,
             ToolName.RIPGREP,
             ToolName.READ,
+            ToolName.READ_FILE,
+            ToolName.LIST_DIR,
             ToolName.EDIT,
+            ToolName.EDIT_FUNCTION,
             ToolName.WRITE,
+            ToolName.WRITE_FILE,
             ToolName.BASH,
         ]
 

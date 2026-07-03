@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dendrophis.events import EventBus, StatsUpdatedEvent
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class TokensPanel(BasePanel):
+class TokensPanel(TextPanel):
     """Panel showing token usage statistics."""
 
     def __init__(self, session: Session, event_bus: EventBus) -> None:

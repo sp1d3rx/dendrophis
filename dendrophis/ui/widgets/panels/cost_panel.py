@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dendrophis.events import EventBus, ModelSwitchedEvent, StatsUpdatedEvent
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class CostPanel(BasePanel):
+class CostPanel(TextPanel):
     """Panel showing cumulative session cost and model pricing."""
 
     def __init__(self, session: Session, event_bus: EventBus) -> None:

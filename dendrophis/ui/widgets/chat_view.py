@@ -38,7 +38,7 @@ _TOOL_TAG_PAIRS: list[tuple[str, str]] = [
 
 
 def _clean_latex_shorthand(text: str) -> str:
-    """Replace common LaTeX symbols with plain text/unicode equivalents."""
+    """Replace common LaTeX symbols and non-standard dashes with plain text equivalents."""
     # Pattern to match optional dollar signs and whitespace around common symbols
     replacements = {
         r"\$?\s*\\rightarrow\s*\$?": "→",
@@ -53,6 +53,14 @@ def _clean_latex_shorthand(text: str) -> str:
         r"\$?\s*\\quad\s*\$?": "  ",
         r"\$?\s*\\qquad\s*\$?": "    ",
         r"\\text\{([^}]*)\}": r"\1",
+        r"\\xrightarrow(?:\[([^\]]*)\])?\{([^}]*)\}": lambda match: (
+            f" → ({match.group(2)} / {match.group(1)}) "
+            if match.group(1)
+            else (f" → ({match.group(2)}) " if match.group(2) else " → ")
+        ),
+        r"\$\$": "",
+        "\u2014": "-",
+        "\u2013": "-",
     }
     cleaned = text
     for pattern, replacement in replacements.items():
@@ -100,7 +108,18 @@ def _format_tool_args(tool_name: str, arguments: str) -> str:
                 task = task[:47] + "…"
             return f" [cyan]{escape(agent)}[/cyan] [dim]{escape(task)}[/dim]"
 
-        if tool_name in ("read", "edit", "write", "analyze_functions", "get_function", "replace_function"):
+        if tool_name in (
+            "read",
+            "edit",
+            "write",
+            "analyze_functions",
+            "get_function",
+            "replace_function",
+            "read_file",
+            "write_file",
+            "edit_function",
+            "list_dir",
+        ):
             path = args.get("file_path", "")
             try:
                 rel = str(Path(path).relative_to(Path.cwd()))
@@ -440,7 +459,7 @@ class AssistantMessage(Vertical):
 
     def _render_clean(self) -> None:
         """Render accumulated text for the current segment to markdown."""
-        self._markdown.update("".join(self._clean_parts))
+        self._markdown.update(_clean_latex_shorthand("".join(self._clean_parts)))
 
     def _schedule_render(self) -> None:
         """Schedule a markdown render, throttled to every 50 ms."""
@@ -457,8 +476,6 @@ class AssistantMessage(Vertical):
     def append_delta(self, delta: str) -> None:
         """Route an incoming text delta through the think-tag state machine."""
         self.remove_loading()
-        # Clean LaTeX shorthand before processing
-        delta = _clean_latex_shorthand(delta)
         self._process_delta(delta)
 
     def _process_delta(self, delta: str) -> None:
@@ -704,7 +721,7 @@ class AssistantMessage(Vertical):
         """Flush pending text into the active markdown and reset the part buffer."""
         current = "".join(self._clean_parts).strip()
         if current:
-            self._markdown.update(current)
+            self._markdown.update(_clean_latex_shorthand(current))
         self._clean_parts = []
 
     def add_tool_placeholder(self, index: int, tool_name: str, tool_call_id: str | None = None) -> None:
@@ -833,18 +850,15 @@ class AssistantMessage(Vertical):
         if self._active_thought_bubble and not self._active_thought_bubble._collapsed:
             self._active_thought_bubble.collapse()
 
-        has_tools_or_status = any(
-            isinstance(child, (InlineToolStatus, ToolResultMessage))
-            for child in self.children
-        )
+        has_tools_or_status = any(isinstance(child, (InlineToolStatus, ToolResultMessage)) for child in self.children)
         if not self._all_parts and not self._has_reasoning and not has_tools_or_status:
             self.remove()
             return
 
         # Full text across all segments (for copy-all via AssistantLabel)
-        self._clean_text = "".join(self._all_parts).strip()
+        self._clean_text = _clean_latex_shorthand("".join(self._all_parts)).strip()
         # Remaining text for the last segment
-        remaining = "".join(self._clean_parts).strip()
+        remaining = _clean_latex_shorthand("".join(self._clean_parts)).strip()
 
         async def _update_and_inject() -> None:
             if remaining:

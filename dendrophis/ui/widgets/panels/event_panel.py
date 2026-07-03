@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dendrophis.ui.widgets.panels.base import PanelBase
+from dendrophis.ui.widgets.panels.base import Panel
 
 
-class EventPanel(PanelBase):
+class EventPanel(Panel):
     """Base class for event-driven panels with custom composition.
 
-    Unlike ``BasePanel``, panels that subclass ``EventPanel`` manage
+    Unlike ``TextPanel``, panels that subclass ``EventPanel`` manage
     their own internal widget tree via ``compose()`` and update
     themselves in response to events rather than having their content
     replaced by ``render_value()``.

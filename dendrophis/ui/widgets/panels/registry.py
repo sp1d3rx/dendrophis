@@ -1,6 +1,6 @@
 """Auto-discovery registry for sidebar panels.
 
-Scans the panels/ directory for subclasses of BasePanel and
+Scans the panels/ directory for subclasses of Panel and
 registers them so they can be discovered at runtime.
 """
 
@@ -11,7 +11,7 @@ import importlib
 import pkgutil
 from typing import ClassVar
 
-from dendrophis.ui.widgets.panels.base import PanelBase
+from dendrophis.ui.widgets.panels.base import Panel
 
 
 class PanelRegistry:
@@ -21,23 +21,23 @@ class PanelRegistry:
     panels package for modules and imports them.
     """
 
-    _panels: ClassVar[dict[str, type[PanelBase]]] = {}
+    _panels: ClassVar[dict[str, type[Panel]]] = {}
 
     def __init__(self) -> None:
         raise NotImplementedError("Use class methods, do not instantiate.")
 
     @classmethod
-    def register(cls, panel_class: type[PanelBase]) -> None:
+    def register(cls, panel_class: type[Panel]) -> None:
         """Register a panel class by its panel_id."""
         cls._panels.setdefault(panel_class.panel_id, panel_class)
 
     @classmethod
-    def get(cls, panel_id: str) -> type[PanelBase] | None:
+    def get(cls, panel_id: str) -> type[Panel] | None:
         """Look up a panel class by id. Returns None if not found."""
         return cls._panels.get(panel_id)
 
     @classmethod
-    def all(cls) -> dict[str, type[PanelBase]]:
+    def all(cls) -> dict[str, type[Panel]]:
         """Return a copy of all registered panels."""
         return dict(cls._panels)
 
@@ -58,7 +58,7 @@ class PanelRegistry:
         This populates the registry by importing each module, which in turn
         triggers the definition of panel subclasses.
         """
-        from dendrophis.ui.widgets.panels.base import BasePanel
+        from dendrophis.ui.widgets.panels.base import Panel, TextPanel
         from dendrophis.ui.widgets.panels.event_panel import EventPanel
 
         panels_pkg = importlib.import_module("dendrophis.ui.widgets.panels")
@@ -68,9 +68,5 @@ class PanelRegistry:
             with contextlib.suppress(ImportError):
                 mod = importlib.import_module(modname)
                 for obj in mod.__dict__.values():
-                    if (
-                        isinstance(obj, type)
-                        and issubclass(obj, PanelBase)
-                        and obj not in (PanelBase, BasePanel, EventPanel)
-                    ):
+                    if isinstance(obj, type) and issubclass(obj, Panel) and obj not in (Panel, TextPanel, EventPanel):
                         cls.register(obj)

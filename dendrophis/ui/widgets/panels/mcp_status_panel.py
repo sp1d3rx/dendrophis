@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dendrophis.events import ConfigReloadedEvent, EventBus
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class McpStatusPanel(BasePanel):
+class McpStatusPanel(TextPanel):
     """Panel showing active MCP server statuses."""
 
     REFRESH_INTERVAL = 2.0

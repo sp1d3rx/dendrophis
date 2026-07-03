@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING
 from textual.message import Message
 
 from dendrophis.events import EventBus, ModelSwitchedEvent
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class ModelPanel(BasePanel):
+class ModelPanel(TextPanel):
     """Panel showing current model with switch capability."""
 
     class Switched(Message):

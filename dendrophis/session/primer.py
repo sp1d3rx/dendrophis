@@ -177,7 +177,7 @@ class PrimerManager:
         Returns:
             Dict with 'injected' (count) and 'total' (file count).
         """
-        result: dict[str, Any] = {"injected": 0, "total": 0}
+        result: dict[str, Any] = {"injected": 0, "total": 0, "injected_files": []}
 
         try:
             root = detect_project_root()
@@ -201,6 +201,7 @@ class PrimerManager:
                     text = full_path.read_text(errors="replace")
                     self._context.append_file(entry.path, text)
                     result["injected"] += 1
+                    result["injected_files"].append(entry.path)
                 except Exception:
                     pass
 

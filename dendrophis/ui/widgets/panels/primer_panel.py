@@ -11,13 +11,13 @@ from dendrophis.events import (
     PrimerScreenRequest,
     UnderstandingStatsUpdatedEvent,
 )
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class PrimerPanel(BasePanel):
+class PrimerPanel(TextPanel):
     """Panel showing project primer status and understanding phase detection."""
 
     REFRESH_INTERVAL = 5.0  # Re-check every 5s (faster so understanding status feels responsive)

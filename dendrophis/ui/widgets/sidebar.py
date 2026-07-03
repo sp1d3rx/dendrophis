@@ -9,7 +9,7 @@ from textual.containers import VerticalScroll
 
 from dendrophis.events import EventBus
 from dendrophis.ui.widgets.panels import PanelRegistry
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import Panel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
@@ -77,5 +77,5 @@ class Sidebar(VerticalScroll):
 
     def refresh_all(self) -> None:
         """Trigger a manual refresh of all child panels."""
-        for panel in self.query(BasePanel):
+        for panel in self.query(Panel):
             panel.update_value()

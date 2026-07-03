@@ -1,8 +1,8 @@
-"""Tool executor — runs tool calls from the LLM."""
-
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -29,14 +29,30 @@ class ToolExecutor:
     async def execute(self, tool_call: Any) -> ToolResult:
         """Execute a tool call and return its result."""
         # Log tool execution
-        import os
+        import sys
 
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
-            from dendrophis.session.session import _tool_log
+            from dendrophis.session.chat import _tool_log
 
             _tool_log("=== TOOL EXECUTOR EXECUTE ===")
             _tool_log(f"Executing tool: {tool_call.name}(id={tool_call.id})")
-            _tool_log(f"Arguments: {tool_call.arguments!r}")
+            _tool_log(f"    Arguments: {tool_call.arguments!r}")
+
+        # --- Safety: Automatic Backup ---
+        try:
+            args = json.loads(tool_call.arguments) if tool_call.arguments and tool_call.arguments.strip() else {}
+            file_path = args.get("file_path")
+
+            destructive_patterns = ["write", "edit", "replace", "delete", "remove"]
+            if file_path and any(p in tool_call.name.lower() for p in destructive_patterns):
+                from pathlib import Path
+
+                target = Path(file_path)
+                if target.exists() and target.suffix != ".bak":
+                    shutil.copy2(target, target.with_suffix(target.suffix + ".bak"))
+        except Exception as error:
+            print(f"[WARNING] Failed to create backup: {error}", file=sys.stderr)
+        # ---------------------------------
 
         tool = self._registry.get(tool_call.name)
         if not tool:

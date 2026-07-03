@@ -24,7 +24,6 @@ from dendrophis.events import (
     PythonExecProposalEvent,
     ReasoningDeltaEvent,
     RetryEvent,
-    SessionResetRequest,
     StatsUpdatedEvent,
     StreamingFinishedEvent,
     StreamingStartedEvent,
@@ -126,6 +125,9 @@ class MainScreen(Screen):
             parts = [f"Project primer loaded: [bold]{info['project_name']}[/bold] ({info['file_count']} files)"]
             if inj_result["injected"]:
                 parts.append(f"[green]  {inj_result['injected']} file(s) injected into context[/green]")
+                injected_files = inj_result.get("injected_files", [])
+                if injected_files:
+                    parts.append(f"  [dim]Files: {', '.join(injected_files)}[/dim]")
             if info["understanding"]:
                 parts.append(f"  {info['understanding']}")
 
@@ -704,23 +706,54 @@ class MainScreen(Screen):
 
     def action_clear_chat(self) -> None:
         self.query_one(ChatView).clear()
-        # Publish reset request - Session will handle the actual reset
-        self._event_bus.publish(SessionResetRequest())
+        # Synchronously reset session state
+        self._session.reset()
         # Re-inject primer files so the fresh context has project knowledge
         inj_result = self._session.inject_primer_files()
+
+        # Publish events to update panels/stats
+        from dendrophis.events import ContextUpdatedEvent
+
+        self._event_bus.publish(
+            ContextUpdatedEvent(
+                token_count=self._session.context.token_count,
+                token_pct=self._session.context.token_pct,
+                turn_count=self._session.context.get_turn_count(),
+                full_chat_restored=False,
+            )
+        )
+        self._event_bus.publish(
+            StatsUpdatedEvent(
+                prompt_tokens=self._session.stats.prompt_tokens,
+                completion_tokens=self._session.stats.completion_tokens,
+                total_cost_usd=self._session.stats.total_cost_usd,
+                tokens_per_sec=0.0,
+                time_to_first_token=0.0,
+            )
+        )
+
         chat = self.query_one(ChatView)
         if inj_result["injected"]:
-            chat.add_system_message(f"Project primer re-loaded: {inj_result['injected']} file(s) injected")
+            injected_files = inj_result.get("injected_files", [])
+            files_str = f" ({', '.join(injected_files)})" if injected_files else ""
+            chat.add_system_message(f"Project primer re-loaded: {inj_result['injected']} file(s) injected{files_str}")
         # Always show help so available commands are visible
         self._show_help()
 
     def _fresh_chat(self) -> None:
         """Clear chat without injecting primer — truly fresh start."""
         self.query_one(ChatView).clear()
-        self._session.context.reset()
-        self._session.stats.reset()
-        self._session._understanding_detector.reset()
-        self._session.context.update_system_prompt_caching(self._session.is_caching_enabled())
+        self._session.reset()
+        from dendrophis.events import ContextUpdatedEvent
+
+        self._event_bus.publish(
+            ContextUpdatedEvent(
+                token_count=self._session.context.token_count,
+                token_pct=self._session.context.token_pct,
+                turn_count=self._session.context.get_turn_count(),
+                full_chat_restored=False,
+            )
+        )
         self._event_bus.publish(
             StatsUpdatedEvent(
                 prompt_tokens=0,

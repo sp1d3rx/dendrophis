@@ -130,15 +130,7 @@ class SessionEventHandler:
 
     def _on_session_reset_request(self, event: SessionResetRequest) -> None:
         """Handle session reset request from UI."""
-        self._context.reset()
-        self._stats.reset()
-        self._understanding_detector.reset()
-        config = self._config_loader.config
-        self._context.update_system_prompt_caching(config.caching.enabled and supports_caching_by_id(config.llm.model))
-
-        # Regenerate prompt_cache_key for fresh start
-        if supports_prompt_cache_key_by_id(config.llm.model):
-            config.llm.prompt_cache_key = f"dendrophis-{uuid.uuid4().hex[:16]}"
+        self._session.reset()
 
         self._emit(
             ContextUpdatedEvent(

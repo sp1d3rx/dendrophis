@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dendrophis.events import EventBus, ReasoningEffortChangedEvent, ReasoningEffortChangeRequest
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
@@ -24,7 +24,7 @@ LABELS = {
 }
 
 
-class ReasoningPanel(BasePanel):
+class ReasoningPanel(TextPanel):
     """Panel showing reasoning effort. Click to cycle through levels."""
 
     def __init__(self, session: Session, event_bus: EventBus) -> None:

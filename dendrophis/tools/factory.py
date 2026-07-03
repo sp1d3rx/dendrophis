@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dendrophis.tools.builtins.filesystem import get_filesystem_tools
+from dendrophis.tools.builtins.filesystem import get_agent_tools, get_filesystem_tools
 from dendrophis.tools.builtins.function_analyzer import FunctionAnalyzerTool
 from dendrophis.tools.builtins.function_tools import GetFunctionTool, ReplaceFunctionTool
 from dendrophis.tools.builtins.interaction import AskMultipleChoiceTool
@@ -58,6 +58,10 @@ def create_builtin_registry(
         filesystem_tools.append(write_tool)
 
     for tool in filesystem_tools:
+        registry.add(tool)
+
+    # Add agent-friendly tools (read_file, write_file, edit_function, list_dir)
+    for tool in get_agent_tools():
         registry.add(tool)
 
     # Add interaction tools (requires event bus)

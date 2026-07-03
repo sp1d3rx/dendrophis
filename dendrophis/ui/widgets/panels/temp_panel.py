@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dendrophis.events import EventBus, TemperatureChangedEvent, TemperatureChangeRequest
-from dendrophis.ui.widgets.panels.base import BasePanel
+from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 TEMPERATURES = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 
-class TempPanel(BasePanel):
+class TempPanel(TextPanel):
     """Panel showing LLM temperature. Click to cycle."""
 
     DEFAULT_CSS = """

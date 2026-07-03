@@ -11,13 +11,13 @@ from textual.widgets import Checkbox, Input, Label
 
 from dendrophis.events import EventBus
 from dendrophis.events.types import TodoRequestEvent, TodoUpdatedEvent
-from dendrophis.ui.widgets.panels.base import PanelBase
+from dendrophis.ui.widgets.panels.event_panel import EventPanel
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class TodoPanel(PanelBase):
+class TodoPanel(EventPanel):
     """A sidebar panel for managing and viewing todos."""
 
     DEFAULT_CSS = """

@@ -339,7 +339,9 @@ class Session:
         if not self.config.caching.pr_enabled:
             return {"injected": 0, "total": 0}
         if self._primer_manager:
-            return self._primer_manager.inject_primer_files()
+            result = self._primer_manager.inject_primer_files()
+            self._publish_primer_loaded()
+            return result
         return {"injected": 0, "total": 0}
 
     def track_file(self, path: str) -> bool:
@@ -395,7 +397,20 @@ class Session:
 
     # =========================================================================
     # Configuration & Cleanup
-    # =========================================================================
+    def reset(self) -> None:
+        """Synchronously reset the session context, stats, and understanding detector."""
+        import uuid
+        from dendrophis.llm.models import supports_caching_by_id, supports_prompt_cache_key_by_id
+
+        self.context.reset()
+        self.stats.reset()
+        self._understanding_detector.reset()
+        self.context.update_system_prompt_caching(
+            self.config.caching.enabled and supports_caching_by_id(self.config.llm.model)
+        )
+
+        if supports_prompt_cache_key_by_id(self.config.llm.model):
+            self.config.llm.prompt_cache_key = f"dendrophis-{uuid.uuid4().hex[:16]}"
 
     def reload_config(self) -> None:
         """Re-read config from disk and reinitialise the LLM client."""
