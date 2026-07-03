@@ -363,6 +363,60 @@ class LLMClient:
 
     # -- Message sanitization ------------------------------------------------
 
+    def _coalesce_consecutive_messages(self, messages_to_coalesce: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Merge consecutive messages of the same role into a single message."""
+        coalesced_messages: list[dict[str, Any]] = []
+        for message_dict in messages_to_coalesce:
+            if not message_dict:
+                continue
+            role = message_dict.get("role")
+            content = message_dict.get("content")
+
+            text_content = ""
+            if isinstance(content, str):
+                text_content = content
+            elif isinstance(content, list):
+                content_parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        content_parts.append(item.get("text", ""))
+                    else:
+                        content_parts.append(str(item))
+                text_content = "\n".join(filter(None, content_parts))
+            elif content is not None:
+                text_content = str(content)
+
+            if coalesced_messages and coalesced_messages[-1].get("role") == role:
+                previous_message = coalesced_messages[-1]
+                previous_content = previous_message.get("content")
+
+                previous_text = ""
+                if isinstance(previous_content, str):
+                    previous_text = previous_content
+                elif isinstance(previous_content, list):
+                    content_parts = []
+                    for item in previous_content:
+                        if isinstance(item, dict):
+                            content_parts.append(item.get("text", ""))
+                        else:
+                            content_parts.append(str(item))
+                    previous_text = "\n".join(filter(None, content_parts))
+                elif previous_content is not None:
+                    previous_text = str(previous_content)
+
+                merged_text = (previous_text + "\n\n" + text_content).strip()
+                previous_message["content"] = merged_text
+
+                if "tool_calls" in message_dict:
+                    existing_calls = previous_message.setdefault("tool_calls", [])
+                    existing_calls.extend(message_dict["tool_calls"])
+            else:
+                new_message = {key: value for key, value in message_dict.items() if key != "content"}
+                new_message["content"] = text_content
+                coalesced_messages.append(new_message)
+
+        return coalesced_messages
+
     def _sanitize_messages(
         self,
         messages: list[dict[str, Any]],
@@ -420,11 +474,14 @@ class LLMClient:
                         continue
                 validated.append({key: value for key, value in msg.items() if key not in strip_keys})
                 msg_idx += 1
-            return validated
+            return self._coalesce_consecutive_messages(validated)
 
         if not strip_keys:
-            return messages
-        return [{key: value for key, value in msg.items() if key not in strip_keys} for msg in messages]
+            return self._coalesce_consecutive_messages(messages)
+        sanitized = [
+            {key: value for key, value in message_dict.items() if key not in strip_keys} for message_dict in messages
+        ]
+        return self._coalesce_consecutive_messages(sanitized)
 
     # -- Payload construction ------------------------------------------------
 
@@ -477,17 +534,16 @@ class LLMClient:
         if self._config.stop:
             payload["stop"] = self._config.stop
 
-        if not provider_context.is_local:
-            if self._config.top_k is not None:
-                payload["top_k"] = self._config.top_k
-            if self._config.min_p is not None:
-                payload["min_p"] = self._config.min_p
-            if self._config.repetition_penalty is not None:
-                payload["repetition_penalty"] = self._config.repetition_penalty
-            if self._config.presence_penalty != 0.0:
-                payload["presence_penalty"] = self._config.presence_penalty
-            if self._config.frequency_penalty != 0.0:
-                payload["frequency_penalty"] = self._config.frequency_penalty
+        if self._config.top_k is not None:
+            payload["top_k"] = self._config.top_k
+        if self._config.min_p is not None:
+            payload["min_p"] = self._config.min_p
+        if self._config.repetition_penalty is not None:
+            payload["repetition_penalty"] = self._config.repetition_penalty
+        if self._config.presence_penalty != 0.0:
+            payload["presence_penalty"] = self._config.presence_penalty
+        if self._config.frequency_penalty != 0.0:
+            payload["frequency_penalty"] = self._config.frequency_penalty
 
         # OpenRouter Responses API: rename keys and enable reasoning
         if provider_context.is_openrouter and provider_context.use_responses_api:

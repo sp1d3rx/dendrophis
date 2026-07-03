@@ -16,6 +16,8 @@ from dendrophis.tools.builtins.memory import (
 )
 from dendrophis.tools.builtins.python_exec import execute_code
 from dendrophis.tools.builtins.subagents import InvokeSubagentTool
+from dendrophis.tools.builtins.todo import TodoTool
+from dendrophis.tools.builtins.todo_manager import TodoManager
 from dendrophis.tools.interactive.edit import InteractiveEditTool
 from dendrophis.tools.interactive.python_exec import InteractivePythonExecTool
 from dendrophis.tools.interactive.write import InteractiveWriteTool
@@ -63,6 +65,10 @@ def create_builtin_registry(
 
     # Add subagent tool
     registry.add(InvokeSubagentTool())
+
+    # Add todo manager and tool
+    todo_manager = TodoManager(event_bus)
+    registry.add(TodoTool(todo_manager))
 
     # Add memory tools if memory_store is provided
     if memory_store is not None:

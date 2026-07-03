@@ -333,6 +333,29 @@ class WaitingForInputEvent(SessionEvent):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class TodoRequestEvent(RequestEvent):
+    """Request a todo action (add, toggle, remove, list)."""
+
+    action: str  # "add" | "toggle" | "remove" | "list"
+    text: str | None = None
+    todo_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TodoUpdatedEvent(SessionEvent):
+    """The todo list has changed. Contains the full list of current todos."""
+
+    todos: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class TodoChangedEvent(SessionEvent):
+    """The todo list has changed."""
+
+    todos: list[dict[str, Any]]
+
+
 # =============================================================================
 # Confirmation Events
 # =============================================================================
