@@ -70,6 +70,7 @@ class InvokeSubagentTool(BaseTool):
                 "agent": agent,
                 "result": result.response.result,
                 "status": result.response.status,
+                "clarification": result.response.clarification,
             }
         # Extract error from response.result if available
         response_error = None
@@ -97,3 +98,51 @@ class InvokeSubagentTool(BaseTool):
             }
         # Default: pass task through
         return {"task": task, **context}
+
+
+class ClarifyTool(BaseTool):
+    """Tool for the code-writer to ask the orchestrator for clarification.
+
+    Use this when you lack sufficient context to proceed. Provide specific,
+    numbered questions that the orchestrator can answer one-by-one.
+    """
+
+    @property
+    def name(self) -> str:
+        return "clarify"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Ask the orchestrator for clarification. Use when you need information "
+            "that is not available in the codebase. Provide specific numbered questions. "
+            "When invoked, the code-writer pauses and returns the questions to the "
+            "orchestrator for answers."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Numbered list of specific questions asking for clarification",
+                },
+            },
+            "required": ["questions"],
+        }
+
+    async def execute(self, questions: list[str]) -> dict[str, Any]:
+        """Execute the clarify tool.
+
+        This doesn't do work itself — it signals that the code-writer needs
+        answers to the questions before it can proceed.
+        """
+        return {
+            "success": True,
+            "tool": "clarify",
+            "questions": questions,
+            "message": "Clarification requested — awaiting answers from orchestrator.",
+        }

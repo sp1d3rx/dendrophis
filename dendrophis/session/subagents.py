@@ -78,12 +78,16 @@ class SubagentBootstrapper:
         )
 
         if result.success and result.response:
-            return {
+            response = {
                 "success": True,
                 "agent": agent,
                 "status": result.response.status,
                 "result": result.response.result,
             }
+            # Pass clarification questions through if present
+            if result.response.clarification:
+                response["clarification"] = result.response.clarification
+            return response
         return {
             "success": False,
             "agent": agent,

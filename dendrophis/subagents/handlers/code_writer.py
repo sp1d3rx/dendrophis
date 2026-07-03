@@ -36,7 +36,7 @@ Rules:
 - Verify after editing: read_file to confirm changes took effect
 - Run ruff check and ruff format via bash after any Python edits
 - If a tool call fails, read the error and retry with corrections
-- If you are stuck or ambiguous, report the blocker — do not guess
+- **If you lack sufficient information to proceed, call the `clarify` tool** — do not guess or hallucinate
 - Make minimal, targeted changes. Change only what is needed.
 - Follow existing code style and patterns in the files you read
 
@@ -49,6 +49,7 @@ Tool usage:
 - glob(pattern, path=".") — find files by pattern
 - ripgrep(pattern, path, include) — search file contents
 - bash(command, description) — run shell commands (use for ruff, pytest, etc.)
+- clarify(questions) — ask the orchestrator for clarification (use when stuck or missing info)
 
 When you are done, output a final summary message describing what you changed.
 """
@@ -144,11 +145,13 @@ class CodeWriterHandler:
             self._tool_registry = ToolRegistry()
             from dendrophis.tools.builtins.filesystem import get_agent_tools
             from dendrophis.tools.builtins.filesystem.bash import BashTool
+            from dendrophis.tools.builtins.subagents import ClarifyTool
             from dendrophis.tools.executor import ToolExecutor
 
             for tool in get_agent_tools():
                 self._tool_registry.add(tool)
             self._tool_registry.add(BashTool())
+            self._tool_registry.add(ClarifyTool())
 
             self._tool_executor = ToolExecutor(self._tool_registry)
         return self._tool_registry
@@ -221,6 +224,27 @@ class CodeWriterHandler:
 
                 # Execute tool calls
                 tool_results = await self._execute_tool_calls(turn.tool_calls, context_manager)
+
+                # Check if the code-writer called the clarify tool
+                clarify_results = [r for r in tool_results if r.name == "clarify"]
+                if clarify_results:
+                    questions = []
+                    for result in clarify_results:
+                        try:
+                            content = json.loads(result.content)
+                            questions.extend(content.get("questions", []))
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    self._logger.info(f"[CODE-WRITER] Clarification requested: {len(questions)} questions")
+                    return SubagentResponse(
+                        agent="code-writer",
+                        task_id=request.task_id,
+                        status="needs_clarification",
+                        result={
+                            "changes": changes,
+                        },
+                        clarification=questions,
+                    )
 
                 # Track changes from successful tool executions
                 changes.extend(info for result in tool_results if (info := self._extract_change_info(result)))

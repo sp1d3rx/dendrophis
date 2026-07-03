@@ -30,3 +30,4 @@ class SubagentResponse:
     status: Literal["success", "failure", "needs_clarification"]
     result: dict[str, Any]
     logs: list[str] = field(default_factory=list)
+    clarification: list[str] = field(default_factory=list)

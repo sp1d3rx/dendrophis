@@ -53,4 +53,5 @@ def get_agent_tools() -> list[BaseTool]:
         WriteFileTool(),
         EditFunctionTool(),
         ListDirTool(),
+        EditTool(),
     ]
