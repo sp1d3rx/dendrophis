@@ -39,6 +39,15 @@ Rules:
 - **If you lack sufficient information to proceed, call the `clarify` tool** — do not guess or hallucinate
 - Make minimal, targeted changes. Change only what is needed.
 - Follow existing code style and patterns in the files you read
+- Python Coding Style:
+  * Write clean, elegant, readable, and pythonic code in the style of Raymond Hettinger.
+    Prioritize simplicity, clarity, and PEP 8 compliance.
+  * Use built-ins and standard library modules effectively (e.g. `collections`, `itertools`,
+    generator expressions).
+  * **Strict Variable Naming Rule**: DO NOT use any single-letter variable names under any
+    circumstances (including loops, list comprehensions, exceptions, etc.). All variables
+    must be named appropriately, with the name chosen carefully. For example, use `datum`
+    for singular, `data` for plural, `index` for list iteration, etc.
 
 Tool usage:
 - list_dir(path=".") — explore directory structure
@@ -145,6 +154,8 @@ class CodeWriterHandler:
             self._tool_registry = ToolRegistry()
             from dendrophis.tools.builtins.filesystem import get_agent_tools
             from dendrophis.tools.builtins.filesystem.bash import BashTool
+            from dendrophis.tools.builtins.filesystem.glob import GlobTool
+            from dendrophis.tools.builtins.filesystem.ripgrep import RipgrepTool
             from dendrophis.tools.builtins.subagents import ClarifyTool
             from dendrophis.tools.executor import ToolExecutor
 
@@ -152,6 +163,8 @@ class CodeWriterHandler:
                 self._tool_registry.add(tool)
             self._tool_registry.add(BashTool())
             self._tool_registry.add(ClarifyTool())
+            self._tool_registry.add(GlobTool())
+            self._tool_registry.add(RipgrepTool())
 
             self._tool_executor = ToolExecutor(self._tool_registry)
         return self._tool_registry
@@ -220,13 +233,14 @@ class CodeWriterHandler:
                 if not turn.tool_calls:
                     # No tool calls — LLM is done
                     self._logger.debug(f"[CODE-WRITER] Done after {iteration} iterations")
+                    blockers = []  # Clear blockers since LLM decided it is successfully done
                     break
 
                 # Execute tool calls
                 tool_results = await self._execute_tool_calls(turn.tool_calls, context_manager)
 
                 # Check if the code-writer called the clarify tool
-                clarify_results = [r for r in tool_results if r.name == "clarify"]
+                clarify_results = [result for result in tool_results if result.name == "clarify"]
                 if clarify_results:
                     questions = []
                     for result in clarify_results:
@@ -284,29 +298,29 @@ class CodeWriterHandler:
                 },
             )
 
-        except LLMCallError as e:
-            self._logger.error(f"LLM call error: {e}")
+        except LLMCallError as llm_error:
+            self._logger.error(f"LLM call error: {llm_error}")
             return SubagentResponse(
                 agent="code-writer",
                 task_id=request.task_id,
                 status="failure",
-                result={"error": str(e)},
+                result={"error": str(llm_error)},
             )
-        except ToolExecutionError as e:
-            self._logger.error(f"Tool execution error: {e}")
+        except ToolExecutionError as tool_error:
+            self._logger.error(f"Tool execution error: {tool_error}")
             return SubagentResponse(
                 agent="code-writer",
                 task_id=request.task_id,
                 status="failure",
-                result={"error": str(e)},
+                result={"error": str(tool_error)},
             )
-        except Exception as e:
-            self._logger.error(f"Unexpected error in code-writer: {e}", exc_info=True)
+        except Exception as unexpected_error:
+            self._logger.error(f"Unexpected error in code-writer: {unexpected_error}", exc_info=True)
             return SubagentResponse(
                 agent="code-writer",
                 task_id=request.task_id,
                 status="failure",
-                result={"error": str(e)},
+                result={"error": str(unexpected_error)},
             )
 
     def _build_isolated_context(self, task: str, files: list[str], context: dict[str, Any]) -> ContextManager:
@@ -320,14 +334,14 @@ class CodeWriterHandler:
         # Add files to context if provided
         if files:
             file_parts = []
-            for f in files:
-                path = Path(f)
+            for file_path in files:
+                path = Path(file_path)
                 if path.exists():
                     try:
                         content = path.read_text(encoding="utf-8")[:5000]  # Limit file size
-                        file_parts.append(f"\n--- {f} ---\n{content}...")
-                    except Exception as e:
-                        file_parts.append(f"\n--- {f} ---\n[Error reading: {e}]")
+                        file_parts.append(f"\n--- {file_path} ---\n{content}...")
+                    except Exception as read_error:
+                        file_parts.append(f"\n--- {file_path} ---\n[Error reading: {read_error}]")
 
             if file_parts:
                 cm.messages.append({"role": "user", "content": "Files provided:\n" + "\n".join(file_parts)})
@@ -352,8 +366,8 @@ class CodeWriterHandler:
                 context_manager.get_messages_for_api(),
                 tools=tools_schema if tools_schema else None,
             )
-        except Exception as e:
-            raise LLMCallError(f"LLM call failed: {e}") from e
+        except Exception as llm_error:
+            raise LLMCallError(f"LLM call failed: {llm_error}") from llm_error
 
         # Append assistant response to context
         context_manager.append_assistant(turn.text, None, turn.reasoning)
@@ -377,11 +391,11 @@ class CodeWriterHandler:
 
                 results.append(result)
 
-            except Exception as e:
+            except Exception as execution_error:
                 # Create error result
                 import json
 
-                error_content = json.dumps({"error": f"Tool execution failed: {e}"})
+                error_content = json.dumps({"error": f"Tool execution failed: {execution_error}"})
                 error_result = type(
                     "FallbackToolResult",
                     (),

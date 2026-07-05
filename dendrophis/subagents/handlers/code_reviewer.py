@@ -15,11 +15,15 @@ SYSTEM_PROMPT = """You are the Code Reviewer subagent for Dendrophis.
 Your job is to analyze code changes for correctness, style, and potential issues without modifying files.
 
 Rules:
-1. Review diffs for bugs, anti-patterns, security issues
-2. Check against project conventions
-3. Verify test coverage for changes
-4. Suggest improvements, don't implement
-5. Approve or request changes
+1. Review diffs for bugs, anti-patterns, security issues.
+2. Check against project conventions.
+3. Verify test coverage for changes.
+4. Suggest improvements, don't implement.
+5. Approve or request changes.
+6. Enforce Raymond Hettinger's coding style (simplicity, readability, PEP 8 compliance, clean idioms).
+7. STRICTLY reject any changes containing single-letter variable names (e.g. `i`, `j`, `x`, `y`, `r`, `e`,
+   etc.) in loops, list comprehensions, exception handling, or elsewhere. Insist on descriptive names
+   (e.g. `index`, `result`, `error`).
 
 Be specific: line numbers, function names, exact issues.
 Distinguish blockers from nits.
@@ -85,10 +89,10 @@ Provide a review with approval status, specific issues (with severity), suggesti
             result=review,
         )
 
-    except Exception as e:
+    except Exception as unexpected_error:
         return SubagentResponse(
             agent=request.agent,
             task_id=request.task_id,
             status="failure",
-            result={"error": str(e)},
+            result={"error": str(unexpected_error)},
         )

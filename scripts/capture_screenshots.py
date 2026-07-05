@@ -52,14 +52,8 @@ DEMO_API_KEY = "sk-or-v1-demo-key-for-screenshots-only"
 
 # Demo conversation for the main_chat scenario
 DEMO_MESSAGES = [
-    {
-        "role": "system",
-        "content": "You are Dex, an agentic coding assistant. Be concise, helpful, and direct."
-    },
-    {
-        "role": "user",
-        "content": "Create a Python function to calculate fibonacci numbers efficiently"
-    },
+    {"role": "system", "content": "You are Dex, an agentic coding assistant. Be concise, helpful, and direct."},
+    {"role": "user", "content": "Create a Python function to calculate fibonacci numbers efficiently"},
     {
         "role": "assistant",
         "content": """Here's an efficient Fibonacci implementation using memoization:
@@ -83,12 +77,9 @@ if __name__ == "__main__":
         print(f"F({i}) = {fibonacci(i)}")
 ```
 
-This runs in O(n) time due to memoization, avoiding the exponential complexity of naive recursion."""
+This runs in O(n) time due to memoization, avoiding the exponential complexity of naive recursion.""",
     },
-    {
-        "role": "user",
-        "content": "Can you also write a CLI for this that accepts user input?"
-    },
+    {"role": "user", "content": "Can you also write a CLI for this that accepts user input?"},
     {
         "role": "assistant",
         "content": """I'll create a CLI version with argument parsing.
@@ -128,8 +119,8 @@ if __name__ == "__main__":
     main()
 ```
 
-Save it and run: `python fib_cli.py 10 --range`"""
-    }
+Save it and run: `python fib_cli.py 10 --range`""",
+    },
 ]
 
 
@@ -144,9 +135,9 @@ def setup_demo_config(demo_api_key: bool = False) -> Path:
     """Create a temporary config based on openrouter.yaml."""
     config_dir = Path(tempfile.mkdtemp(prefix="dendrophis_screenshots_"))
     config_path = config_dir / "config.yaml"
-    
+
     config_content = read_openrouter_config()
-    
+
     if demo_api_key:
         # Replace API key with demo key for safety during screenshots
         import re
@@ -155,7 +146,7 @@ def setup_demo_config(demo_api_key: bool = False) -> Path:
             f'api_key: "{DEMO_API_KEY}"',
             config_content,
         )
-    
+
     config_path.write_text(config_content)
     return config_path
 
@@ -170,38 +161,29 @@ def setup_demo_session() -> Path:
         "timestamp": "2026-06-06T20:00:00",
         "model": "google/gemma-4-31b-it",
         "messages": DEMO_MESSAGES,
-        "metadata": {
-            "total_tokens": 1247,
-            "prompt_tokens": 89,
-            "completion_tokens": 1158,
-            "estimated_cost": 0.0012
-        }
+        "metadata": {"total_tokens": 1247, "prompt_tokens": 89, "completion_tokens": 1158, "estimated_cost": 0.0012},
     }
 
     session_path.write_text(json.dumps(session_data, indent=2))
     return session_path
 
 
-def launch_dendrophis(
-    config_path: Path,
-    session_path: Path = None,
-    scenario: str = "main_chat"
-) -> subprocess.Popen:
+def launch_dendrophis(config_path: Path, session_path: Path = None, scenario: str = "main_chat") -> subprocess.Popen:
     """Launch dendrophis with the specified configuration."""
     env = os.environ.copy()
     env["DENDROPHIS_CONFIG"] = str(config_path)
-    
+
     cmd = ["uv", "run", "dendrophis"]
     if session_path:
         cmd.extend(["--session", str(session_path)])
-    
+
     print("Launching dendrophis...")
     print(f"Config: {config_path}")
     if session_path:
         print(f"Session: {session_path}")
     print(f"Scenario: {scenario}")
     print()
-    
+
     return subprocess.Popen(cmd, cwd=PROJECT_ROOT, env=env)
 
 
@@ -294,7 +276,7 @@ def capture_manual_instructions(scenario: str) -> str:
 │  3. Capture showing the dialog with options                 │
 │  4. Recommended filename: tool_confirm.png                  │
 └─────────────────────────────────────────────────────────────┘
-"""
+""",
     }
     return instructions.get(scenario, instructions["main_chat"])
 
@@ -320,9 +302,9 @@ def capture_with_asciinema(scenario: str, demo_api_key: bool = False, output_dir
         cmd.append("uv run dendrophis")
     cmd.append(str(cast_path))
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Recording '{scenario}' with asciinema...")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(capture_manual_instructions(scenario))
     print(f"\nOutput will be saved to: {cast_path}")
     print("\nINSTRUCTIONS:")
@@ -330,7 +312,7 @@ def capture_with_asciinema(scenario: str, demo_api_key: bool = False, output_dir
     print("2. Interact with it to showcase the feature")
     print("3. Type 'exit' or press Ctrl+D to end recording")
     print("4. Convert to GIF: asciicast2gif", cast_path, f"{scenario}.gif")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     result = subprocess.run(cmd, env=env, cwd=PROJECT_ROOT)
     return result.returncode
@@ -341,37 +323,37 @@ def launch_for_capture(scenario: str, demo_api_key: bool = False, output_dir: Pa
     if output_dir is None:
         output_dir = SCREENSHOTS_DIR
     output_dir.mkdir(exist_ok=True)
-    
+
     config_path = setup_demo_config(demo_api_key=demo_api_key)
-    
+
     # For main_chat and scenarios needing conversation history
     session_path = None
     if scenario in ("main_chat", "sidebar", "all"):
         session_path = setup_demo_session()
-    
-    print(f"\n{'='*60}")
+
+    print(f"\n{'=' * 60}")
     print(f"DENDROPHIS SCREENSHOT CAPTURE: {scenario.upper()}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(capture_manual_instructions(scenario))
-    
+
     print(f"\nSAVING SCREENSHOTS TO: {output_dir}")
-    print(f"{'='*60}\n")
-    
+    print(f"{'=' * 60}\n")
+
     # Launch dendrophis
     process = launch_dendrophis(config_path, session_path, scenario)
-    
+
     print("\nDendrophis is now running. Press Ctrl+C when done capturing.\n")
-    
+
     try:
         process.wait()
     except KeyboardInterrupt:
         print("\nShutting down dendrophis...")
         process.terminate()
         process.wait()
-    
-    print(f"\n{'='*60}")
+
+    print(f"\n{'=' * 60}")
     print("CAPTURE SESSION ENDED")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Remember to save your screenshots to: {output_dir}")
     print("\nSuggested files to create:")
     print(f"  - {output_dir}/main_chat.png")
@@ -380,7 +362,7 @@ def launch_for_capture(scenario: str, demo_api_key: bool = False, output_dir: Pa
     print(f"  - {output_dir}/model_switcher.png")
     print(f"  - {output_dir}/help.png")
     print(f"  - {output_dir}/tool_confirm.png")
-    
+
     return 0
 
 
@@ -389,44 +371,49 @@ def create_tmux_session(scenario: str, demo_api_key: bool = False, output_dir: P
     if output_dir is None:
         output_dir = SCREENSHOTS_DIR
     output_dir.mkdir(exist_ok=True)
-    
+
     config_path = setup_demo_config(demo_api_key=demo_api_key)
     session_path = setup_demo_session() if scenario == "main_chat" else None
-    
+
     session_name = f"dendrophis-{scenario}"
-    
+
     # Build environment setup
     env_setup = f"export DENDROPHIS_CONFIG={config_path}"
-    
+
     # Build launch command
     launch_cmd = "uv run dendrophis"
     if session_path:
         launch_cmd += f" --session {session_path}"
-    
+
     # Kill existing session if present
     subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
-    
+
     # Create new tmux session
     tmux_cmd = [
-        "tmux", "new-session", "-d", "-s", session_name,
-        "-c", str(PROJECT_ROOT),
-        f"{env_setup} && {launch_cmd}"
+        "tmux",
+        "new-session",
+        "-d",
+        "-s",
+        session_name,
+        "-c",
+        str(PROJECT_ROOT),
+        f"{env_setup} && {launch_cmd}",
     ]
-    
+
     result = subprocess.run(tmux_cmd)
-    
+
     if result.returncode == 0:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"TMUX SESSION CREATED: {session_name}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print("\nTo attach and capture:")
         print(f"  tmux attach -t {session_name}")
         print(f"\nScenario: {scenario}")
         print(capture_manual_instructions(scenario))
         print("\nTo kill session when done:")
         print(f"  tmux kill-session -t {session_name}")
-        print(f"{'='*60}")
-    
+        print(f"{'=' * 60}")
+
     return result.returncode
 
 
@@ -454,30 +441,28 @@ Recommended workflow:
   3. Use --scenario tool_confirm and trigger a file write
   4. Save all screenshots to the screenshots/ directory
   5. Add them to your README.md with ![](screenshots/main_chat.png)
-        """
+        """,
     )
     parser.add_argument(
         "--method",
         choices=["manual", "asciinema", "tmux"],
         default="manual",
-        help="Screenshot capture method (default: manual)"
+        help="Screenshot capture method (default: manual)",
     )
     parser.add_argument(
         "--scenario",
         choices=["main_chat", "sidebar", "settings", "model_switcher", "help", "tool_confirm", "all"],
         default="main_chat",
-        help="Which UI scenario to capture (default: main_chat)"
+        help="Which UI scenario to capture (default: main_chat)",
     )
     parser.add_argument(
-        "--demo-api-key",
-        action="store_true",
-        help="Replace API key with demo key in config (safer for screenshots)"
+        "--demo-api-key", action="store_true", help="Replace API key with demo key in config (safer for screenshots)"
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=SCREENSHOTS_DIR,
-        help=f"Output directory for screenshots (default: {SCREENSHOTS_DIR})"
+        help=f"Output directory for screenshots (default: {SCREENSHOTS_DIR})",
     )
 
     args = parser.parse_args()
@@ -493,21 +478,21 @@ Recommended workflow:
     print(f"Method: {args.method}")
     print(f"Scenario: {args.scenario}")
     print("=" * 60)
-    
+
     if args.method == "asciinema":
         if args.scenario == "all":
             for scenario in ["main_chat", "settings", "model_switcher"]:
                 capture_with_asciinema(scenario, args.demo_api_key, screenshots_dir)
         else:
             return capture_with_asciinema(args.scenario, args.demo_api_key, screenshots_dir)
-    
+
     elif args.method == "tmux":
         if args.scenario == "all":
             for scenario in ["main_chat", "sidebar", "settings", "model_switcher", "help"]:
                 create_tmux_session(scenario, args.demo_api_key, screenshots_dir)
         else:
             return create_tmux_session(args.scenario, args.demo_api_key, screenshots_dir)
-    
+
     else:  # manual
         return launch_for_capture(args.scenario, args.demo_api_key, screenshots_dir)
 

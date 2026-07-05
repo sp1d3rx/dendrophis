@@ -300,7 +300,11 @@ class SessionToolExecutor:
         """
         tool_obj = self._tool_registry.get(tool_call.name) if self._tool_registry else None
         if tool_obj is None:
-            if self._tool_registry and getattr(self._tool_registry, "is_disabled", None) and self._tool_registry.is_disabled(tool_call.name):
+            if (
+                self._tool_registry
+                and getattr(self._tool_registry, "is_disabled", None)
+                and self._tool_registry.is_disabled(tool_call.name)
+            ):
                 return f"Tool '{tool_call.name}' is currently disabled and is not available."
             return f"Unknown tool: '{tool_call.name}'"
 

@@ -8,9 +8,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 from ruamel.yaml import YAML
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
+from textual.reactive import reactive
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
@@ -164,13 +168,15 @@ class McpServerEntryRow(Vertical):
         arguments: list[str],
         env_vars: dict[str, str] | None,
         enabled: bool,
+        url: str | None = None,
     ) -> None:
         super().__init__()
         self._initial_name = server_name
-        self._initial_command = command
+        self._initial_command = command or ""
         self._initial_args = arguments
         self._initial_env = env_vars or {}
         self._initial_enabled = enabled
+        self._initial_url = url or ""
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="mcp-header-row"):
@@ -183,6 +189,10 @@ class McpServerEntryRow(Vertical):
             with Vertical(classes="mcp-field-col"):
                 yield Label("Command", classes="mcp-label")
                 yield Input(value=self._initial_command, placeholder="e.g. npx", classes="mcp-input mcp-command")
+
+            with Vertical(classes="mcp-field-col"):
+                yield Label("URL (SSE)", classes="mcp-label")
+                yield Input(value=self._initial_url, placeholder="e.g. http://...", classes="mcp-input mcp-url")
 
             with Vertical(classes="mcp-field-col"):
                 yield Label("Arguments (comma-separated)", classes="mcp-label")
@@ -207,13 +217,13 @@ class McpServerEntryRow(Vertical):
             self.remove()
 
     def get_data(self) -> dict:
-        inputs = self.query(Input)
         switch = self.query_one(Switch)
 
-        server_name = inputs[0].value.strip()
-        command = inputs[1].value.strip()
-        args_str = inputs[2].value
-        env_str = inputs[3].value
+        server_name = self.query_one(".mcp-name-input", Input).value.strip()
+        command = self.query_one(".mcp-command", Input).value.strip()
+        url = self.query_one(".mcp-url", Input).value.strip()
+        args_str = self.query_one(".mcp-args", Input).value
+        env_str = self.query_one(".mcp-env", Input).value
         enabled = switch.value
 
         arguments_list = []
@@ -230,14 +240,21 @@ class McpServerEntryRow(Vertical):
                     env_key, env_value = part.split("=", 1)
                     env_dict[env_key.strip()] = env_value.strip()
 
+        config = {
+            "enabled": enabled,
+        }
+        if command:
+            config["command"] = command
+        if arguments_list:
+            config["args"] = arguments_list
+        if env_dict:
+            config["env"] = env_dict
+        if url:
+            config["url"] = url
+
         return {
             "name": server_name,
-            "config": {
-                "command": command,
-                "args": arguments_list,
-                "env": env_dict if env_dict else None,
-                "enabled": enabled,
-            },
+            "config": config,
         }
 
 
@@ -273,12 +290,13 @@ class McpServerListEditor(Vertical):
                 enabled = (
                     server_config.enabled if hasattr(server_config, "enabled") else server_config.get("enabled", True)
                 )
-                yield McpServerEntryRow(server_name, command, args, env, enabled)
+                url = server_config.url if hasattr(server_config, "url") else server_config.get("url", "")
+                yield McpServerEntryRow(server_name, command, args, env, enabled, url)
         yield Button("+ Add MCP Server", classes="add-mcp-btn", variant="success")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.has_class("add-mcp-btn"):
-            self.query_one("#mcp-container").mount(McpServerEntryRow("", "", [], {}, True))
+            self.query_one("#mcp-container").mount(McpServerEntryRow("", "", [], {}, True, ""))
 
     def get_servers_dict(self) -> dict[str, dict]:
         servers_dictionary = {}
@@ -288,6 +306,110 @@ class McpServerListEditor(Vertical):
             if name:
                 servers_dictionary[name] = data["config"]
         return servers_dictionary
+
+
+class Slider(Widget, can_focus=True):
+    """A custom slider widget for numerical values, snapping to 32k detents."""
+
+    DEFAULT_CSS = """
+    Slider {
+        width: 100%;
+        height: 3;
+        background: $surface;
+        border: tall transparent;
+        padding: 0 1;
+        align: left middle;
+    }
+    Slider:focus {
+        border: tall $accent;
+    }
+    """
+
+    value = reactive(0)
+
+    class Changed(Message):
+        """Emitted when the slider value changes."""
+
+        def __init__(self, value: int) -> None:
+            super().__init__()
+            self.value = value
+
+    def __init__(
+        self,
+        value: int,
+        min_value: int,
+        max_value: int,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.min_value = min_value
+        self.max_value = max_value
+
+        # Generate detents every 32k (32768) starting from min_value
+        detents_list = [self.min_value]
+        step_size = 32768
+        current_step = step_size
+        while current_step <= self.max_value:
+            if current_step > self.min_value:
+                detents_list.append(current_step)
+            current_step += step_size
+
+        if self.max_value not in detents_list:
+            detents_list.append(self.max_value)
+
+        self.detents = sorted(set(detents_list))
+
+        # Ensure starting value is snapped to the nearest detent
+        self.value = min(self.detents, key=lambda detent: abs(detent - value))
+
+    def render(self) -> str:
+        # Calculate visual progress based on detent index
+        total_detents = len(self.detents)
+        current_index = self.detents.index(self.value)
+
+        track_width = self.size.width - 20  # Reserve space for the value label
+        if track_width <= 0:
+            track_width = 20
+
+        progress_ratio = current_index / (total_detents - 1) if total_detents > 1 else 0.0
+
+        pointer_position = int(progress_ratio * track_width)
+        pointer_position = max(0, min(pointer_position, track_width))
+
+        completed_track = "█" * pointer_position
+        slider_pointer = "●"
+        remaining_track = "░" * max(0, track_width - pointer_position - 1)
+
+        # Format label (e.g. 32k, 64k)
+        display_label = f"{self.value // 1024}k" if self.value >= 1024 else str(self.value)
+
+        return f"[{completed_track}{slider_pointer}{remaining_track}] {display_label}"
+
+    def key_left(self) -> None:
+        current_index = self.detents.index(self.value)
+        self.value = self.detents[max(0, current_index - 1)]
+        self.post_message(self.Changed(self.value))
+
+    def key_right(self) -> None:
+        current_index = self.detents.index(self.value)
+        self.value = self.detents[min(len(self.detents) - 1, current_index + 1)]
+        self.post_message(self.Changed(self.value))
+
+    def on_click(self, click_event: events.Click) -> None:
+        self.focus()
+        track_width = self.size.width - 20
+        if track_width <= 0:
+            return
+
+        # Estimate the detent target from click position
+        relative_click_x = click_event.x - 2  # Account for border/padding
+        progress_ratio = relative_click_x / track_width
+        progress_ratio = max(0.0, min(progress_ratio, 1.0))
+
+        target_value = self.min_value + progress_ratio * (self.max_value - self.min_value)
+        self.value = min(self.detents, key=lambda detent: abs(detent - target_value))
+        self.post_message(self.Changed(self.value))
 
 
 class SettingsScreen(Screen):
@@ -444,6 +566,16 @@ class SettingsScreen(Screen):
         self._last_tab = "tab-llm"
 
     def compose(self) -> ComposeResult:
+        # Determine maximum context window from model list or fallback to 128000
+        active_model = self._cfg.llm.model
+        max_context = max(self._cfg.llm.context_limit, 128000)
+        if hasattr(self._session, "models") and self._session.models:
+            for model_info in self._session.models:
+                if model_info.id == active_model:
+                    if model_info.context_window > 0:
+                        max_context = model_info.context_window
+                    break
+
         yield Header()
         with Vertical(id="settings-container"):
             yield Label(f"Config: {self._session.config_loader.path}", classes="settings-section")
@@ -536,8 +668,8 @@ class SettingsScreen(Screen):
                                 yield self._make_input("llm.top_k", "Top K (optional)", str(self._cfg.llm.top_k or ""))
                                 yield self._make_input("llm.min_p", "Min P (optional)", str(self._cfg.llm.min_p or ""))
                             with Vertical():
-                                yield self._make_input(
-                                    "llm.context_limit", "Context Limit", str(self._cfg.llm.context_limit)
+                                yield self._make_context_slider(
+                                    "llm.context_limit", "Context Limit", self._cfg.llm.context_limit, max_context
                                 )
                                 yield self._make_input("llm.timeout", "Timeout", str(self._cfg.llm.timeout))
                                 yield self._make_input(
@@ -813,6 +945,19 @@ class SettingsScreen(Screen):
             classes="settings-row",
         )
 
+    def _make_context_slider(self, id: str, label: str, value: int, max_context: int) -> Horizontal:
+        slider = Slider(
+            value=value,
+            min_value=4096,
+            max_value=max_context,
+            id=id.replace(".", "_"),
+        )
+        return Horizontal(
+            Label(label, classes="settings-label"),
+            slider,
+            classes="settings-row",
+        )
+
     def _make_switch(self, id: str, label: str, value: bool) -> Horizontal:
         return Horizontal(
             Label(label, classes="switch-label"), Switch(value=value, id=id.replace(".", "_")), classes="switch-row"
@@ -872,7 +1017,9 @@ class SettingsScreen(Screen):
                 self.dismiss()
                 return
             except Exception as save_exception:
-                error_label.update(f"[red]YAML Error: {save_exception}[/red]")
+                from rich.markup import escape
+
+                error_label.update(f"[red]YAML Error: {escape(str(save_exception))}[/red]")
                 return
 
         try:
@@ -1028,7 +1175,9 @@ class SettingsScreen(Screen):
             error_label.update("")
             self.dismiss()
         except (ValueError, ValidationError, Exception) as save_exception:
-            error_label.update(f"[red]Error: {save_exception}[/red]")
+            from rich.markup import escape
+
+            error_label.update(f"[red]Error: {escape(str(save_exception))}[/red]")
 
     def _save_permissions(self, raw: dict) -> None:
         from dendrophis.tools.bash_sandbox import CommandCategory

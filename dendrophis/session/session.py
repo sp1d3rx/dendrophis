@@ -194,9 +194,10 @@ class Session:
 
         active = self.models_by_id.get(self.config.llm.model)
         if active and active.context_window > 0:
-            self.config.llm.context_limit = active.context_window
+            if self.config.llm.context_limit <= 0 or self.config.llm.context_limit > active.context_window:
+                self.config.llm.context_limit = active.context_window
             self.context._config = self.config
-            self._emit(ModelSwitchedEvent(model_id=active.id, context_window=active.context_window))
+            self._emit(ModelSwitchedEvent(model_id=active.id, context_window=self.config.llm.context_limit))
         # Update system prompt caching based on model support
         if self._chat:
             self.context.update_system_prompt_caching(self._chat.is_caching_enabled())
@@ -212,9 +213,10 @@ class Session:
 
         active = self.models_by_id.get(model_id)
         if active and active.context_window > 0:
-            self.config.llm.context_limit = active.context_window
+            if self.config.llm.context_limit <= 0 or self.config.llm.context_limit > active.context_window:
+                self.config.llm.context_limit = active.context_window
             self.context._config = self.config
-            context_window = active.context_window
+            context_window = self.config.llm.context_limit
         else:
             context_window = self.config.llm.context_limit
 
@@ -400,6 +402,7 @@ class Session:
     def reset(self) -> None:
         """Synchronously reset the session context, stats, and understanding detector."""
         import uuid
+
         from dendrophis.llm.models import supports_caching_by_id, supports_prompt_cache_key_by_id
 
         self.context.reset()
@@ -417,6 +420,7 @@ class Session:
         self.config_loader.reload()
         self.config = self.config_loader.config
         self.llm = LLMClient(self.config.llm)
+        self.context._config = self.config
 
         if getattr(self, "mcp_manager", None):
             import asyncio

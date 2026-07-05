@@ -79,12 +79,16 @@ class SessionFactory:
 
         # 4. Tools
         tool_registry = create_builtin_registry(
-            bus, interactive=True, memory_store=memory_store, no_interactive=no_interactive,
+            bus,
+            interactive=True,
+            memory_store=memory_store,
+            no_interactive=no_interactive,
         )
         tool_executor = ToolExecutor(tool_registry)
 
         # 4c. MCP Manager
         from dendrophis.tools.mcp import MCPManager
+
         mcp_manager = MCPManager(config, tool_registry, debug_logger)
 
         # 4b. Subagent Bootstrapper

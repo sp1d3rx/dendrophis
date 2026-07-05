@@ -233,6 +233,8 @@ class ChatOrchestrator:
 
     def current_model_supports_tools(self) -> bool:
         """Return True if the active model supports tool/function calling."""
+        if self.config.llm.tool_mode in ("xml", "auto"):
+            return True
         current_id = self.config.llm.model
         model_info = self.models_by_id.get(current_id)
         if model_info:

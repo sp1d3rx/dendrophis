@@ -94,6 +94,8 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
         start = 0
 
     tail_count = TAIL_TURNS * 2
+    if len(messages) - start <= tail_count:
+        tail_count = max(2, len(messages) - start - 2)
     end = max(start, len(messages) - tail_count)
 
     # Snap end back to the nearest user-message boundary so we never leave

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,7 +34,6 @@ from dendrophis.events import (
     UntrackFileRequest,
 )
 from dendrophis.llm.client import LLMClient
-from dendrophis.llm.models import supports_caching_by_id, supports_prompt_cache_key_by_id
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session, SessionStats

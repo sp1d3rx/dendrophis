@@ -262,6 +262,7 @@ class ModelInfo:
             or data.get("context_res")
             or data.get("max_position_embeddings")
             or data.get("max_context_length")
+            or data.get("max_model_len")
             or 0
         )
         return cls(
@@ -348,7 +349,15 @@ class LLMClient:
             is_thinking_model = "thinking" in model_name_lower or "reasoning" in model_name_lower
             sse_start_mode = "thinking" if is_thinking_model else "text"
         tool_mode = self._config.tool_mode
-        use_xml_tools = tool_mode == "xml"
+        if tool_mode == "auto":
+            if is_local:
+                from dendrophis.llm.models import supports_tools_by_id
+
+                use_xml_tools = not supports_tools_by_id(self._config.model)
+            else:
+                use_xml_tools = False
+        else:
+            use_xml_tools = tool_mode == "xml"
 
         return _ProviderContext(
             is_local=is_local,
@@ -562,7 +571,11 @@ class LLMClient:
                 tool_section = (
                     "\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n"
                     "You are provided with function signatures within <tools></tools> XML tags:\n"
-                    f"<tools>\n{tool_defs}\n</tools>"
+                    f"<tools>\n{tool_defs}\n</tools>\n\n"
+                    "To call a function, you must output a tool call using the following format:\n"
+                    "<tool_call>\n"
+                    '{"name": "function_name", "arguments": {"arg1": "value1"}}\n'
+                    "</tool_call>"
                 )
                 payload_messages = payload.get("messages", [])
                 injected = False
