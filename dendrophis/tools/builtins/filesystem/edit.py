@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint
 from dendrophis.tools.names import ToolName
 
 
@@ -93,10 +93,17 @@ class EditTool(BaseTool):
             new_content = content.replace(old_string, new_string, 1)
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
-            return {
+            # Run auto-linting
+            lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
+
+            result = {
                 "success": True,
                 "file": str(path),
                 "replaced": (old_string[:100] + "..." if len(old_string) > 100 else old_string),
             }
+            if lint_errors:
+                result["lint_errors"] = lint_errors
+                result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
+            return result
         except Exception as exception_error:
             return {"error": str(exception_error)}

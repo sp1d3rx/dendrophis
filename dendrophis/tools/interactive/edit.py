@@ -13,6 +13,7 @@ from dendrophis.events.types import (
     EditProposalEvent,
 )
 from dendrophis.tools.builtins.filesystem import EditTool
+from dendrophis.tools.builtins.filesystem.utils import run_auto_lint
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -75,12 +76,17 @@ class InteractiveEditTool(InteractiveBaseTool):
                     1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
                 )
                 await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
-                return {
+                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
+                result = {
                     "success": True,
                     "file": str(path),
                     "lines_added": added,
                     "lines_removed": removed,
                 }
+                if lint_errors:
+                    result["lint_errors"] = lint_errors
+                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
+                return result
 
             # Propose via event bus and wait for human approval
             request_id = str(uuid.uuid4())
@@ -98,11 +104,16 @@ class InteractiveEditTool(InteractiveBaseTool):
 
             if approved:
                 await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
-                return {
+                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
+                result = {
                     "success": True,
                     "file": str(path),
                     "replaced": (old_string[:100] + "..." if len(old_string) > 100 else old_string),
                 }
+                if lint_errors:
+                    result["lint_errors"] = lint_errors
+                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
+                return result
             return {"error": "Edit denied by user"}
 
         except Exception as exception_error:

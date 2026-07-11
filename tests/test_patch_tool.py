@@ -152,3 +152,30 @@ def test_dynamic_discovery_and_di() -> None:
     empty_dependencies: dict[str, Any] = {}
     failed_instance = resolve_dependencies_and_instantiate(save_memory_class, empty_dependencies)
     assert failed_instance is None
+
+
+@pytest.mark.anyio
+async def test_patch_tool_auto_lint(local_tmp_dir) -> None:
+    sample_file_path = local_tmp_dir / "test_file.py"
+    initial_content = "import os\n\ndef foo():\n    x  =  1\n    return x\n"
+    sample_file_path.write_text(initial_content, encoding="utf-8")
+
+    patch_tool_instance = PatchTool()
+
+    edit_list = [
+        {"search": "x  =  1", "replace": "x  =  2"},
+    ]
+
+    relative_path = sample_file_path.relative_to(Path.cwd())
+    execution_result = await patch_tool_instance.execute(
+        file_path=str(relative_path),
+        edits=edit_list,
+    )
+
+    assert execution_result.get("success") is True
+
+    # Verify formatting and unused import were fixed by Ruff auto-linting
+    updated_content = sample_file_path.read_text(encoding="utf-8")
+    assert "import os" not in updated_content
+    assert "x = 2" in updated_content
+

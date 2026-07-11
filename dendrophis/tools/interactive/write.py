@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from dendrophis.events.types import WriteApprovalEvent, WriteProposalEvent
 from dendrophis.tools.builtins.filesystem import WriteTool
+from dendrophis.tools.builtins.filesystem.utils import run_auto_lint
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -42,12 +43,17 @@ class InteractiveWriteTool(InteractiveBaseTool):
                 # Auto-approved: write immediately, return stats
                 path.parent.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(path.write_text, content, encoding="utf-8")
-                return {
+                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
+                result = {
                     "success": True,
                     "file": str(path),
                     "lines_written": len(content.splitlines()),
                     "written_bytes": len(content.encode("utf-8")),
                 }
+                if lint_errors:
+                    result["lint_errors"] = lint_errors
+                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
+                return result
 
             # Propose via event bus and wait for human approval
             request_id = str(uuid.uuid4())
@@ -65,12 +71,17 @@ class InteractiveWriteTool(InteractiveBaseTool):
             if approved:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(path.write_text, content, encoding="utf-8")
-                return {
+                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
+                result = {
                     "success": True,
                     "file": str(path),
                     "lines_written": len(content.splitlines()),
                     "written_bytes": len(content.encode("utf-8")),
                 }
+                if lint_errors:
+                    result["lint_errors"] = lint_errors
+                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
+                return result
             return {"error": "Write denied by user"}
 
         except Exception as error:

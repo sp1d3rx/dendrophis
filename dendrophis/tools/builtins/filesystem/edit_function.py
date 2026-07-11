@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint
 from dendrophis.tools.names import ToolName
 
 
@@ -125,12 +125,19 @@ class EditFunctionTool(BaseTool):
             # Write back in thread
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
-            return {
+            # Run auto-linting
+            lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
+
+            result = {
                 "success": True,
                 "file": str(path),
                 "function": function_name,
                 "replaced_lines": f"{start_line}-{end_line}",
             }
+            if lint_errors:
+                result["lint_errors"] = lint_errors
+                result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
+            return result
         except Exception as exc:
             return {"error": str(exc)}
 
