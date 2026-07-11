@@ -88,8 +88,12 @@ class MemoryStore:
     def _connect(self):
         """Get a thread-local SQLite connection with auto-commit."""
         conn = sqlite3.connect(str(self._db_path), timeout=3.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
         conn.row_factory = sqlite3.Row
         try:
             yield conn
