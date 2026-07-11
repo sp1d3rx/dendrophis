@@ -103,48 +103,52 @@ class MemoryStore:
     def _init_db(self) -> None:
         """Create tables and indexes if they don't exist."""
         with self._connect() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS memories (
-                    id TEXT PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    summary TEXT NOT NULL DEFAULT '',
-                    embedding BLOB,
-                    tags TEXT NOT NULL DEFAULT '[]',
-                    source TEXT NOT NULL DEFAULT 'auto',
-                    project_id TEXT,
-                    session_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    score REAL NOT NULL DEFAULT 0.0
-                );
-            """)
-            # Migration: add summary column if it doesn't exist (legacy DBs)
-            with contextlib.suppress(sqlite3.OperationalError):
-                conn.execute("ALTER TABLE memories ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
+            cursor = conn.cursor()
+            try:
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS memories (
+                        id TEXT PRIMARY KEY,
+                        content TEXT NOT NULL,
+                        summary TEXT NOT NULL DEFAULT '',
+                        embedding BLOB,
+                        tags TEXT NOT NULL DEFAULT '[]',
+                        source TEXT NOT NULL DEFAULT 'auto',
+                        project_id TEXT,
+                        session_id TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        score REAL NOT NULL DEFAULT 0.0
+                    );
+                """)
+                # Migration: add summary column if it doesn't exist (legacy DBs)
+                with contextlib.suppress(sqlite3.OperationalError):
+                    cursor.execute("ALTER TABLE memories ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
 
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS tags (
-                    name TEXT PRIMARY KEY,
-                    memory_count INTEGER NOT NULL DEFAULT 0
-                );
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS tags (
+                        name TEXT PRIMARY KEY,
+                        memory_count INTEGER NOT NULL DEFAULT 0
+                    );
 
-                CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
-                CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source);
-                CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
-                CREATE INDEX IF NOT EXISTS idx_memories_score ON memories(score);
-                CREATE INDEX IF NOT EXISTS idx_memories_project_created ON memories(project_id, created_at);
+                    CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
+                    CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source);
+                    CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+                    CREATE INDEX IF NOT EXISTS idx_memories_score ON memories(score);
+                    CREATE INDEX IF NOT EXISTS idx_memories_project_created ON memories(project_id, created_at);
 
-                CREATE TABLE IF NOT EXISTS tag_memories (
-                    tag_name TEXT NOT NULL,
-                    memory_id TEXT NOT NULL,
-                    PRIMARY KEY (tag_name, memory_id),
-                    FOREIGN KEY (tag_name) REFERENCES tags(name) ON DELETE CASCADE,
-                    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-                );
+                    CREATE TABLE IF NOT EXISTS tag_memories (
+                        tag_name TEXT NOT NULL,
+                        memory_id TEXT NOT NULL,
+                        PRIMARY KEY (tag_name, memory_id),
+                        FOREIGN KEY (tag_name) REFERENCES tags(name) ON DELETE CASCADE,
+                        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+                    );
 
-                CREATE INDEX IF NOT EXISTS idx_tag_memories_tag ON tag_memories(tag_name);
-                CREATE INDEX IF NOT EXISTS idx_tag_memories_memory ON tag_memories(memory_id);
-            """)
+                    CREATE INDEX IF NOT EXISTS idx_tag_memories_tag ON tag_memories(tag_name);
+                    CREATE INDEX IF NOT EXISTS idx_tag_memories_memory ON tag_memories(memory_id);
+                """)
+            finally:
+                cursor.close()
 
     # ------------------------------------------------------------------
     # CRUD
@@ -200,55 +204,60 @@ class MemoryStore:
                 embedding = self.compute_embedding(content)
 
             with self._lock, self._connect() as conn:
-                # EAFP: Handle database operation errors gracefully
+                cursor = conn.cursor()
                 try:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO memories"
-                        " (id,content,summary,embedding,tags,source,project_id,session_id,created_at,updated_at,score)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            entry_id,
-                            content,
-                            "",  # summary - empty by default, can be updated later
-                            _vector_to_blob(embedding) if embedding is not None else None,
-                            json.dumps(tags),
-                            source,
-                            project_id,
-                            session_id,
-                            now,
-                            now,
-                            0.0,
-                        ),
-                    )
-                except sqlite3.Error as db_error:
-                    raise RuntimeError(f"Failed to save memory to database: {db_error!s}") from db_error
-
-                # Upsert tags with error handling
-                for tag in tags:
+                    # EAFP: Handle database operation errors gracefully
                     try:
-                        if not isinstance(tag, str):
-                            continue  # Skip invalid tags
-                        conn.execute(
-                            """INSERT INTO tags (name, memory_count) VALUES (?, 1)
-                                   ON CONFLICT(name) DO UPDATE SET memory_count = memory_count + 1""",
-                            (tag,),
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO memories"
+                            " (id,content,summary,embedding,tags,source,"
+                            "project_id,session_id,created_at,updated_at,score)"
+                            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (
+                                entry_id,
+                                content,
+                                "",  # summary - empty by default, can be updated later
+                                _vector_to_blob(embedding) if embedding is not None else None,
+                                json.dumps(tags),
+                                source,
+                                project_id,
+                                session_id,
+                                now,
+                                now,
+                                0.0,
+                            ),
                         )
-                    except sqlite3.Error:
-                        # Log but don't fail for individual tag errors
-                        continue
+                    except sqlite3.Error as db_error:
+                        raise RuntimeError(f"Failed to save memory to database: {db_error!s}") from db_error
 
-                # Link tag -> memory with error handling
-                for tag in tags:
-                    try:
-                        if not isinstance(tag, str):
-                            continue  # Skip invalid tags
-                        conn.execute(
-                            "INSERT OR IGNORE INTO tag_memories (tag_name, memory_id) VALUES (?, ?)",
-                            (tag, entry_id),
-                        )
-                    except sqlite3.Error:
-                        # Log but don't fail for individual link errors
-                        continue
+                    # Upsert tags with error handling
+                    for tag in tags:
+                        try:
+                            if not isinstance(tag, str):
+                                continue  # Skip invalid tags
+                            cursor.execute(
+                                """INSERT INTO tags (name, memory_count) VALUES (?, 1)
+                                       ON CONFLICT(name) DO UPDATE SET memory_count = memory_count + 1""",
+                                (tag,),
+                            )
+                        except sqlite3.Error:
+                            # Log but don't fail for individual tag errors
+                            continue
+
+                    # Link tag -> memory with error handling
+                    for tag in tags:
+                        try:
+                            if not isinstance(tag, str):
+                                continue  # Skip invalid tags
+                            cursor.execute(
+                                "INSERT OR IGNORE INTO tag_memories (tag_name, memory_id) VALUES (?, ?)",
+                                (tag, entry_id),
+                            )
+                        except sqlite3.Error:
+                            # Log but don't fail for individual link errors
+                            continue
+                finally:
+                    cursor.close()
 
             with contextlib.suppress(Exception):
                 self.increment_score(entry_id)
@@ -277,10 +286,13 @@ class MemoryStore:
         try:
             with self._connect() as conn:
                 # EAFP: Handle database query errors gracefully
+                cursor = conn.cursor()
                 try:
-                    row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                    row = cursor.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
                 except sqlite3.Error as db_error:
                     raise RuntimeError(f"Database query failed: {db_error!s}") from db_error
+                finally:
+                    cursor.close()
 
                 if row is None:
                     return None
@@ -300,63 +312,67 @@ class MemoryStore:
         now = datetime.now().isoformat()
 
         with self._lock, self._connect() as conn:
-            # Handle tags within the same connection for atomicity
-            if "tags" in fields:
-                old_tags = self._get_memory_tags(memory_id, conn=conn)
-                new_tags = fields["tags"]
-                for tag in old_tags:
-                    if tag not in new_tags:
-                        self._decrement_tag_count(tag, conn=conn)
-                for tag in new_tags:
-                    if tag not in old_tags:
-                        self._increment_tag_count(tag, conn=conn)
-                fields["tags"] = json.dumps(new_tags)
+            cursor = conn.cursor()
+            try:
+                # Handle tags within the same connection for atomicity
+                if "tags" in fields:
+                    old_tags = self._get_memory_tags(memory_id, conn=conn)
+                    new_tags = fields["tags"]
+                    for tag in old_tags:
+                        if tag not in new_tags:
+                            self._decrement_tag_count(tag, conn=conn)
+                    for tag in new_tags:
+                        if tag not in old_tags:
+                            self._increment_tag_count(tag, conn=conn)
+                    fields["tags"] = json.dumps(new_tags)
 
-            updates: list[tuple[str, Any]] = []
-            params: list[Any] = []
+                updates: list[tuple[str, Any]] = []
+                params: list[Any] = []
 
-            for key, value in fields.items():
-                if key == "tags":
-                    updates.append(("tags = ?", value))
-                elif key == "content":
-                    updates.append(("content = ?", value))
-                elif key == "score":
-                    updates.append(("score = score + ?", value))
-                else:
-                    updates.append((f"{key} = ?", value))
-                params.append(value)
+                for key, value in fields.items():
+                    if key == "tags":
+                        updates.append(("tags = ?", value))
+                    elif key == "content":
+                        updates.append(("content = ?", value))
+                    elif key == "score":
+                        updates.append(("score = score + ?", value))
+                    else:
+                        updates.append((f"{key} = ?", value))
+                    params.append(value)
 
-            if not updates:
-                return self.get_memory(memory_id)
+                if not updates:
+                    return self.get_memory(memory_id)
 
-            updates.append(("updated_at = ?", now))
-            params.append(now)
-            params.append(memory_id)
+                updates.append(("updated_at = ?", now))
+                params.append(now)
+                params.append(memory_id)
 
-            conn.execute(
-                f"UPDATE memories SET {', '.join(u[0] for u in updates)} WHERE id = ?",
-                params,
-            )
+                cursor.execute(
+                    f"UPDATE memories SET {', '.join(u[0] for u in updates)} WHERE id = ?",
+                    params,
+                )
+            finally:
+                cursor.close()
 
         return self.get_memory(memory_id)
 
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory. Returns True if it existed."""
         with self._lock, self._connect() as conn:
-            cursor = conn.execute("SELECT tags FROM memories WHERE id = ?", (memory_id,))
+            cursor = conn.cursor()
             try:
+                cursor.execute("SELECT tags FROM memories WHERE id = ?", (memory_id,))
                 row = cursor.fetchone()
+                if row is None:
+                    return False
+                tags = json.loads(row["tags"])
+                cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+                cursor.execute("DELETE FROM tag_memories WHERE memory_id = ?", (memory_id,))
+                # Clean up tag counts
+                for tag in tags:
+                    self._decrement_tag_count(tag, conn=conn)
             finally:
                 cursor.close()
-
-            if row is None:
-                return False
-            tags = json.loads(row["tags"])
-            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-            conn.execute("DELETE FROM tag_memories WHERE memory_id = ?", (memory_id,))
-            # Clean up tag counts
-            for tag in tags:
-                self._decrement_tag_count(tag, conn=conn)
         return True
 
     def list_memories(
@@ -399,19 +415,27 @@ class MemoryStore:
         """Return aggregate memory statistics."""
         stats = MemoryStats()
         with self._connect() as conn:
-            stats.total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-            stats.total_projects = conn.execute(
-                "SELECT COUNT(DISTINCT project_id) FROM memories WHERE project_id != ''"
-            ).fetchone()[0]
-            stats.total_tags = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+            cursor = conn.cursor()
+            try:
+                stats.total_memories = cursor.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+                stats.total_projects = cursor.execute(
+                    "SELECT COUNT(DISTINCT project_id) FROM memories WHERE project_id != ''"
+                ).fetchone()[0]
+                stats.total_tags = cursor.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
 
-            # Memories by source
-            rows = conn.execute("SELECT source, COUNT(*) as cnt FROM memories GROUP BY source").fetchall()
-            stats.memories_by_source = {row["source"]: row["cnt"] for row in rows}
+                # Memories by source
+                rows = cursor.execute(
+                    "SELECT source, COUNT(*) as cnt FROM memories GROUP BY source"
+                ).fetchall()
+                stats.memories_by_source = {row["source"]: row["cnt"] for row in rows}
 
-            # Top tags
-            rows = conn.execute("SELECT name, memory_count FROM tags ORDER BY memory_count DESC LIMIT 20").fetchall()
-            stats.top_tags = [(row["name"], row["memory_count"]) for row in rows]
+                # Top tags
+                rows = cursor.execute(
+                    "SELECT name, memory_count FROM tags ORDER BY memory_count DESC LIMIT 20"
+                ).fetchall()
+                stats.top_tags = [(row["name"], row["memory_count"]) for row in rows]
+            finally:
+                cursor.close()
         return stats
 
     # ------------------------------------------------------------------
@@ -420,40 +444,68 @@ class MemoryStore:
 
     def _get_memory_tags(self, memory_id: str, conn: sqlite3.Connection | None = None) -> list[str]:
         if conn:
-            rows = conn.execute("SELECT tag_name FROM tag_memories WHERE memory_id = ?", (memory_id,)).fetchall()
-            return [row["tag_name"] for row in rows]
+            cursor = conn.cursor()
+            try:
+                rows = cursor.execute("SELECT tag_name FROM tag_memories WHERE memory_id = ?", (memory_id,)).fetchall()
+                return [row["tag_name"] for row in rows]
+            finally:
+                cursor.close()
         with self._connect() as conn:
-            rows = conn.execute("SELECT tag_name FROM tag_memories WHERE memory_id = ?", (memory_id,)).fetchall()
-            return [row["tag_name"] for row in rows]
+            cursor = conn.cursor()
+            try:
+                rows = cursor.execute("SELECT tag_name FROM tag_memories WHERE memory_id = ?", (memory_id,)).fetchall()
+                return [row["tag_name"] for row in rows]
+            finally:
+                cursor.close()
 
     def _increment_tag_count(self, tag: str, conn: sqlite3.Connection | None = None) -> None:
         if conn:
-            conn.execute(
-                """INSERT INTO tags (name, memory_count) VALUES (?, 1)
-                   ON CONFLICT(name) DO UPDATE SET memory_count = memory_count + 1""",
-                (tag,),
-            )
-        else:
-            with self._connect() as conn:
-                conn.execute(
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
                     """INSERT INTO tags (name, memory_count) VALUES (?, 1)
                        ON CONFLICT(name) DO UPDATE SET memory_count = memory_count + 1""",
                     (tag,),
                 )
+            finally:
+                cursor.close()
+        else:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        """INSERT INTO tags (name, memory_count) VALUES (?, 1)
+                           ON CONFLICT(name) DO UPDATE SET memory_count = memory_count + 1""",
+                        (tag,),
+                    )
+                finally:
+                    cursor.close()
 
     def _decrement_tag_count(self, tag: str, conn: sqlite3.Connection | None = None) -> None:
         if conn:
-            conn.execute("UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,))
-            conn.execute("DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,))
+            cursor = conn.cursor()
+            try:
+                cursor.execute("UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,))
+                cursor.execute("DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,))
+            finally:
+                cursor.close()
         else:
             with self._connect() as conn:
-                conn.execute("UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,))
-                conn.execute("DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,))
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,))
+                    cursor.execute("DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,))
+                finally:
+                    cursor.close()
 
     def increment_score(self, memory_id: str, amount: float = 1.0) -> None:
         """Increment the usage score of a memory (boosts it in search results)."""
         with self._lock, self._connect() as conn:
-            conn.execute("UPDATE memories SET score = score + ? WHERE id = ?", (amount, memory_id))
+            cursor = conn.cursor()
+            try:
+                cursor.execute("UPDATE memories SET score = score + ? WHERE id = ?", (amount, memory_id))
+            finally:
+                cursor.close()
 
     # ------------------------------------------------------------------
     # Row -> Entry conversion

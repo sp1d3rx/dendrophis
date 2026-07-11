@@ -186,8 +186,12 @@ class MemorySearcher:
         if not prefix:
             return self._store.get_stats().top_tags[:limit]
         with self._store._connect() as conn:
-            rows = conn.execute(
-                "SELECT name, memory_count FROM tags WHERE name LIKE ? ORDER BY memory_count DESC LIMIT ?",
-                (f"{prefix}%", limit),
-            ).fetchall()
-            return [(row["name"], row["memory_count"]) for row in rows]
+            cursor = conn.cursor()
+            try:
+                rows = cursor.execute(
+                    "SELECT name, memory_count FROM tags WHERE name LIKE ? ORDER BY memory_count DESC LIMIT ?",
+                    (f"{prefix}%", limit),
+                ).fetchall()
+                return [(row["name"], row["memory_count"]) for row in rows]
+            finally:
+                cursor.close()
