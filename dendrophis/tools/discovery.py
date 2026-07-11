@@ -75,15 +75,31 @@ def resolve_dependencies_and_instantiate(
                 continue
 
         parameter_annotation = parameter_object.annotation
-        if parameter_annotation is not inspect.Parameter.empty and isinstance(parameter_annotation, type):
-            resolved_successfully = False
-            for dependency_value in dependency_dictionary.values():
-                if dependency_value is not None and isinstance(dependency_value, parameter_annotation):
-                    argument_dictionary[parameter_name] = dependency_value
-                    resolved_successfully = True
-                    break
-            if resolved_successfully:
-                continue
+        if parameter_annotation is not inspect.Parameter.empty:
+            if isinstance(parameter_annotation, type):
+                resolved_successfully = False
+                for dependency_value in dependency_dictionary.values():
+                    if dependency_value is not None and isinstance(dependency_value, parameter_annotation):
+                        argument_dictionary[parameter_name] = dependency_value
+                        resolved_successfully = True
+                        break
+                if resolved_successfully:
+                    continue
+            elif isinstance(parameter_annotation, str):
+                class_name = parameter_annotation.split("|")[0].strip().split(".")[-1]
+                resolved_successfully = False
+                for dependency_value in dependency_dictionary.values():
+                    if dependency_value is not None:
+                        actual_class = dependency_value.__class__
+                        class_names = {actual_class.__name__}
+                        for base_class in actual_class.__mro__:
+                            class_names.add(base_class.__name__)
+                        if class_name in class_names:
+                            argument_dictionary[parameter_name] = dependency_value
+                            resolved_successfully = True
+                            break
+                if resolved_successfully:
+                    continue
 
         if parameter_object.default is not inspect.Parameter.empty:
             continue

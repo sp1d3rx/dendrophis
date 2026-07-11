@@ -40,6 +40,7 @@ def create_builtin_registry(
     dependency_dictionary = {
         "event_bus": event_bus,
         "memory_store": memory_store,
+        "store": memory_store,
         "todo_manager": todo_manager,
         "no_interactive": no_interactive,
     }

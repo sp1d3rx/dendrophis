@@ -153,6 +153,18 @@ def test_dynamic_discovery_and_di() -> None:
     failed_instance = resolve_dependencies_and_instantiate(save_memory_class, empty_dependencies)
     assert failed_instance is None
 
+    # SaveMemoryTool should resolve successfully when memory_store is provided (as string annotation)
+    from dendrophis.memory import MemoryStore
+    class DummyMemoryStore(MemoryStore):
+        def __init__(self) -> None:
+            pass
+    dummy_store = DummyMemoryStore()
+    memory_dependencies = {
+        "memory_store": dummy_store,
+    }
+    save_memory_instance = resolve_dependencies_and_instantiate(save_memory_class, memory_dependencies)
+    assert save_memory_instance is not None
+
 
 @pytest.mark.anyio
 async def test_patch_tool_auto_lint(local_tmp_dir) -> None:
