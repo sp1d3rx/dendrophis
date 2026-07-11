@@ -343,7 +343,12 @@ class MemoryStore:
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory. Returns True if it existed."""
         with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT tags FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            cursor = conn.execute("SELECT tags FROM memories WHERE id = ?", (memory_id,))
+            try:
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+
             if row is None:
                 return False
             tags = json.loads(row["tags"])
