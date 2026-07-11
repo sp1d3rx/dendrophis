@@ -1,27 +1,10 @@
-"""Factory for creating built-in tool registries."""
+"""Factory for creating built-in tool registries using dynamic discovery and Dependency Injection."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dendrophis.tools.builtins.filesystem import get_agent_tools, get_filesystem_tools
-from dendrophis.tools.builtins.function_analyzer import FunctionAnalyzerTool
-from dendrophis.tools.builtins.function_tools import GetFunctionTool, ReplaceFunctionTool
-from dendrophis.tools.builtins.interaction import AskMultipleChoiceTool
-from dendrophis.tools.builtins.memory import (
-    DeleteMemoryTool,
-    RecallMemoryTool,
-    SaveMemoryTool,
-    SearchMemoryTool,
-)
-from dendrophis.tools.builtins.python_exec import execute_code
-from dendrophis.tools.builtins.subagents import InvokeSubagentTool
-from dendrophis.tools.builtins.todo import TodoTool
-from dendrophis.tools.builtins.todo_manager import TodoManager
-from dendrophis.tools.interactive.edit import InteractiveEditTool
-from dendrophis.tools.interactive.python_exec import InteractivePythonExecTool
-from dendrophis.tools.interactive.write import InteractiveWriteTool
-from dendrophis.tools.names import ToolName
+from dendrophis.tools.discovery import discover_tool_classes, resolve_dependencies_and_instantiate
 from dendrophis.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
@@ -45,53 +28,64 @@ def create_builtin_registry(
     """
     registry = ToolRegistry()
 
-    # Add filesystem tools
-    filesystem_tools = get_filesystem_tools()
+    # Try to import and instantiate TodoManager safely
+    todo_manager = None
+    try:
+        from dendrophis.tools.builtins.todo_manager import TodoManager
+        todo_manager = TodoManager(event_bus)
+    except ImportError:
+        pass
+
+    # Build the dictionary of dependencies to inject
+    dependency_dictionary = {
+        "event_bus": event_bus,
+        "memory_store": memory_store,
+        "todo_manager": todo_manager,
+        "no_interactive": no_interactive,
+    }
+
+    # Discover and load tool classes dynamically from builtins and interactive packages
+    discovered_classes = discover_tool_classes([
+        "dendrophis.tools.builtins",
+        "dendrophis.tools.builtins.filesystem",
+        "dendrophis.tools.interactive",
+    ])
+
+    instantiated_tools = []
+    for tool_class in discovered_classes:
+        if tool_class.__name__ in ("InteractiveBaseTool", "BaseTool"):
+            continue
+        tool_instance = resolve_dependencies_and_instantiate(tool_class, dependency_dictionary)
+        if tool_instance is not None:
+            instantiated_tools.append(tool_instance)
+
+    # Separate interactive tools from base tools
+    from dendrophis.tools.interactive.base import InteractiveBaseTool
+
+    interactive_tools = [tool for tool in instantiated_tools if isinstance(tool, InteractiveBaseTool)]
+    base_tools = [tool for tool in instantiated_tools if not isinstance(tool, InteractiveBaseTool)]
+
     if interactive:
-        filesystem_tools = [tool for tool in filesystem_tools if tool.name not in (ToolName.EDIT, ToolName.WRITE)]
-        edit_tool = InteractiveEditTool(event_bus)
-        edit_tool.silent = True  # Auto-approve edits without confirmation
-        filesystem_tools.append(edit_tool)
+        # Enable silent mode for safe interactive tools
+        for tool in interactive_tools:
+            if tool.name in ("edit", "write", "patch"):
+                tool.silent = True
+            else:
+                tool.silent = False
 
-        write_tool = InteractiveWriteTool(event_bus)
-        write_tool.silent = True  # Auto-approve writes without confirmation
-        filesystem_tools.append(write_tool)
+        interactive_names = {tool.name for tool in interactive_tools}
 
-    for tool in filesystem_tools:
-        registry.add(tool)
+        # Register interactive versions first
+        for tool in interactive_tools:
+            registry.add(tool)
 
-    # Add agent-friendly tools (read_file, write_file, edit_function, list_dir)
-    for tool in get_agent_tools():
-        registry.add(tool)
-
-    # Add interaction tools (requires event bus)
-    registry.add(AskMultipleChoiceTool(event_bus))
-
-    # Add subagent tool
-    registry.add(InvokeSubagentTool())
-
-    # Add todo manager and tool
-    todo_manager = TodoManager(event_bus)
-    registry.add(TodoTool(todo_manager))
-
-    # Add memory tools if memory_store is provided
-    if memory_store is not None:
-        registry.add(SaveMemoryTool(memory_store))
-        registry.add(SearchMemoryTool(memory_store))
-        registry.add(RecallMemoryTool(memory_store))
-        registry.add(DeleteMemoryTool(memory_store))
-
-    # Add function analysis tools for surgical editing
-    registry.add(FunctionAnalyzerTool())
-    registry.add(GetFunctionTool())
-    registry.add(ReplaceFunctionTool())
-
-    # Add python execution tool
-    if interactive:
-        python_exec = InteractivePythonExecTool(event_bus, no_interactive=no_interactive)
-        python_exec.silent = False  # Always require confirmation for python exec (unless no_interactive)
-        registry.add(python_exec)
+        # Register non-interactive versions for tools that don't have interactive equivalents
+        for tool in base_tools:
+            if tool.name not in interactive_names:
+                registry.add(tool)
     else:
-        registry.add(execute_code)
+        # Register all non-interactive tools
+        for tool in base_tools:
+            registry.add(tool)
 
     return registry

@@ -10,6 +10,7 @@ class ToolName(StrEnum):
 
     BASH = "bash"
     EDIT = "edit"
+    PATCH = "patch"
     WRITE = "write"
     GLOB = "glob"
     RIPGREP = "ripgrep"

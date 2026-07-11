@@ -152,20 +152,43 @@ class CodeWriterHandler:
         if self._tool_registry is None:
             # Create a minimal registry with only agent-friendly tools
             self._tool_registry = ToolRegistry()
-            from dendrophis.tools.builtins.filesystem import get_agent_tools
-            from dendrophis.tools.builtins.filesystem.bash import BashTool
-            from dendrophis.tools.builtins.filesystem.glob import GlobTool
-            from dendrophis.tools.builtins.filesystem.ripgrep import RipgrepTool
-            from dendrophis.tools.builtins.subagents import ClarifyTool
+            try:
+                from dendrophis.tools.builtins.filesystem import get_agent_tools
+                if get_agent_tools is not None:
+                    for tool in get_agent_tools():
+                        self._tool_registry.add(tool)
+            except ImportError:
+                pass
+
+            try:
+                from dendrophis.tools.builtins.filesystem.bash import BashTool
+                if BashTool is not None:
+                    self._tool_registry.add(BashTool())
+            except ImportError:
+                pass
+
+            try:
+                from dendrophis.tools.builtins.subagents import ClarifyTool
+                if ClarifyTool is not None:
+                    self._tool_registry.add(ClarifyTool())
+            except ImportError:
+                pass
+
+            try:
+                from dendrophis.tools.builtins.filesystem.glob import GlobTool
+                if GlobTool is not None:
+                    self._tool_registry.add(GlobTool())
+            except ImportError:
+                pass
+
+            try:
+                from dendrophis.tools.builtins.filesystem.ripgrep import RipgrepTool
+                if RipgrepTool is not None:
+                    self._tool_registry.add(RipgrepTool())
+            except ImportError:
+                pass
+
             from dendrophis.tools.executor import ToolExecutor
-
-            for tool in get_agent_tools():
-                self._tool_registry.add(tool)
-            self._tool_registry.add(BashTool())
-            self._tool_registry.add(ClarifyTool())
-            self._tool_registry.add(GlobTool())
-            self._tool_registry.add(RipgrepTool())
-
             self._tool_executor = ToolExecutor(self._tool_registry)
         return self._tool_registry
 

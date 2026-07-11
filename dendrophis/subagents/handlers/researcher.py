@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from dendrophis.subagents.messages import SubagentRequest, SubagentResponse
-from dendrophis.tools.builtins.filesystem import GlobTool, ReadTool, RipgrepTool
+
+try:
+    from dendrophis.tools.builtins.filesystem import GlobTool, ReadTool, RipgrepTool
+except ImportError:
+    GlobTool = None
+    ReadTool = None
+    RipgrepTool = None
 
 if TYPE_CHECKING:
     from dendrophis.memory import MemoryStore
@@ -15,9 +21,9 @@ class ResearcherHandler:
     """Handler for researcher subagent."""
 
     def __init__(self, memory_store: MemoryStore | None = None) -> None:
-        self.glob_tool = GlobTool()
-        self.read_tool = ReadTool()
-        self.ripgrep_tool = RipgrepTool()
+        self.glob_tool = GlobTool() if GlobTool is not None else None
+        self.read_tool = ReadTool() if ReadTool is not None else None
+        self.ripgrep_tool = RipgrepTool() if RipgrepTool is not None else None
         self._memory_store = memory_store
 
     def _get_memory_tools(self):
@@ -85,28 +91,31 @@ class ResearcherHandler:
         findings = []
 
         # Use ripgrep for content search
-        try:
-            rg_result = await self.ripgrep_tool.execute(
-                pattern=query[:50],  # Truncate for regex safety
-                include="*.py",
-            )
-            if isinstance(rg_result, dict) and "matches" in rg_result:
-                findings.extend(
-                    [
-                        {
-                            "source": f"{match['file']}:{match['line']}",
-                            "relevance": 0.7,
-                            "summary": match["content"][:200],
-                            "type": "code",
-                        }
-                        for match in rg_result["matches"][:5]  # Limit initial matches
-                    ]
+        if self.ripgrep_tool is not None:
+            try:
+                rg_result = await self.ripgrep_tool.execute(
+                    pattern=query[:50],  # Truncate for regex safety
+                    include="*.py",
                 )
-        except Exception:
-            pass  # ripgrep might fail on complex patterns
+                if isinstance(rg_result, dict) and "matches" in rg_result:
+                    findings.extend(
+                        [
+                            {
+                                "source": f"{match['file']}:{match['line']}",
+                                "relevance": 0.7,
+                                "summary": match["content"][:200],
+                                "type": "code",
+                            }
+                            for match in rg_result["matches"][:5]  # Limit initial matches
+                        ]
+                    )
+            except Exception:
+                pass  # ripgrep might fail on complex patterns
 
         # Check specific files if provided
         for file_path in context.get("file_paths", []):
+            if self.read_tool is None:
+                continue
             try:
                 content = await self.read_tool.execute(file_path=file_path)
                 if isinstance(content, dict) and "content" in content:
