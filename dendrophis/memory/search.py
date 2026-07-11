@@ -76,12 +76,12 @@ class MemorySearcher:
 
             # Hybrid blend
             if query_vec is not None and entry.embedding_blob is not None:
-                # Vector-heavy when embeddings available
-                final_score = 0.50 * vec_score + 0.20 * ngram_score + 0.15 * recency_score + 0.15 * usage_score
+                # Vector-heavy when embeddings available (90% match relevance, 10% context)
+                final_score = 0.70 * vec_score + 0.20 * ngram_score + 0.05 * recency_score + 0.05 * usage_score
                 method = "hybrid"
             else:
-                # Ngram-only fallback
-                final_score = 0.60 * ngram_score + 0.25 * recency_score + 0.15 * usage_score
+                # Ngram-only fallback (90% match relevance, 10% context)
+                final_score = 0.90 * ngram_score + 0.07 * recency_score + 0.03 * usage_score
                 method = "ngram"
 
             if final_score >= min_score:
@@ -139,8 +139,14 @@ class MemorySearcher:
 
         Uses Jaccard-like normalization: intersection / union of n-gram sets.
         """
-        query_ngrams = Counter(MemorySearcher._token_ngrams(query, n))
-        content_ngrams = Counter(MemorySearcher._token_ngrams(content, n))
+        # If the query is shorter than n, fall back to unigrams (n=1) for both
+        query_tokens = re.findall(r"[a-z0-9]+", query.lower())
+        actual_n = n
+        if len(query_tokens) < n:
+            actual_n = 1
+
+        query_ngrams = Counter(MemorySearcher._token_ngrams(query, actual_n))
+        content_ngrams = Counter(MemorySearcher._token_ngrams(content, actual_n))
 
         if not query_ngrams or not content_ngrams:
             return 0.0
