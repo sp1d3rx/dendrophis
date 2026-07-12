@@ -34,7 +34,7 @@ Step into the canopy. Let Dendrophis help you code with clarity, speed, and a to
 - **Session save/load**: sessions auto-save on exit (lzma-compressed) and can be resumed by ID
 - **Project primer**: remembers your project across sessions — structure, key files, and understanding. Detects file changes on disk and flags stale entries
 - **Context management**: automatic compaction when approaching the context limit, with 3-tier prompt caching (system prompt, file blocks, project understanding)
-- **Tool use**: filesystem read/edit/write with configurable confirmation for destructive ops
+- **Tool use**: filesystem read/edit/write with configurable confirmation for destructive ops. Can inject tools via DI - just create a .py file following the ABC and your tool will show up for use in the next session.
 - **Hooks**: run shell commands before/after any tool call
 - **Configurable sidebar**: live panels for model, tokens, speed, context, cost, temperature, cache, reasoning, sysinfo, and primer status
 - **Reasoning effort**: click to cycle through reasoning levels for supported models
