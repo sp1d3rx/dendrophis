@@ -29,6 +29,7 @@ Step into the canopy. Let Dendrophis help you code with clarity, speed, and a to
 ## Features
 
 - **Context-efficient**: Avoids re-sending files into the context if it's already there (and hasn't changed), doesn't preserve thinking tokens in context, and the compaction is very efficient.
+- **Integrated Memory System**: Simple sqlite based memory, with tagging, searching, memory management, and auto-surfacing of relevant memories. Short summaries of memories with a link to the full memory is auto-injected about once every 10 turns, based on a relevancy score.
 - **OpenAI-compatible**: works with DeepInfra, OpenRouter, OpenAI, Ollama, Cloudflare Workers AI, or any OpenAI-compatible endpoint
 - **Session save/load**: sessions auto-save on exit (lzma-compressed) and can be resumed by ID
 - **Project primer**: remembers your project across sessions — structure, key files, and understanding. Detects file changes on disk and flags stale entries
