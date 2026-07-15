@@ -28,11 +28,13 @@ Step into the canopy. Let Dendrophis help you code with clarity, speed, and a to
 
 ## Features
 
+- **Context-efficient**: Avoids re-sending files into the context if it's already there (and hasn't changed), doesn't preserve thinking tokens in context, and the compaction is very efficient.
+- **Integrated Memory System**: Simple sqlite based memory, with tagging, searching, memory management, and auto-surfacing of relevant memories. Short summaries of memories with a link to the full memory is auto-injected about once every 10 turns, based on a relevancy score.
 - **OpenAI-compatible**: works with DeepInfra, OpenRouter, OpenAI, Ollama, Cloudflare Workers AI, or any OpenAI-compatible endpoint
 - **Session save/load**: sessions auto-save on exit (lzma-compressed) and can be resumed by ID
 - **Project primer**: remembers your project across sessions — structure, key files, and understanding. Detects file changes on disk and flags stale entries
 - **Context management**: automatic compaction when approaching the context limit, with 3-tier prompt caching (system prompt, file blocks, project understanding)
-- **Tool use**: filesystem read/edit/write with configurable confirmation for destructive ops
+- **Tool use**: filesystem read/edit/write with configurable confirmation for destructive ops. Can inject tools via DI - just create a .py file following the ABC and your tool will show up for use in the next session.
 - **Hooks**: run shell commands before/after any tool call
 - **Configurable sidebar**: live panels for model, tokens, speed, context, cost, temperature, cache, reasoning, sysinfo, and primer status
 - **Reasoning effort**: click to cycle through reasoning levels for supported models
