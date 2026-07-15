@@ -37,7 +37,9 @@ Step into the canopy. Let Dendrophis help you code with clarity, speed, and a to
 - **Configurable sidebar**: live panels for model, tokens, speed, context, cost, temperature, cache, reasoning, sysinfo, and primer status
 - **Reasoning effort**: click to cycle through reasoning levels for supported models
 - **Custom system prompt**: fully configurable per project
-- **Event-driven architecture**: decoupled event bus for clean separation between UI, LLM, and tools
+- **Event-driven architecture**: decoupled event bus with Subscription class and SubscriptionGroup for clean lifecycle management
+- **Config load result**: returns source info (system.md or default config)
+- **System prompt support**: custom system.md in project root for project-specific agent instructions
 
 ## Install
 
