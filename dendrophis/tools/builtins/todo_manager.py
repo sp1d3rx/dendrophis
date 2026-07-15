@@ -6,7 +6,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from dendrophis.events import EventBus, get_event_bus
+from dendrophis.events import EventBus, get_event_bus, listen
 from dendrophis.events.types import TodoRequestEvent, TodoUpdatedEvent, WaitingForInputEvent
 
 
@@ -27,9 +27,9 @@ class TodoManager:
         self._todos: list[TodoItem] = []
         self._event_bus = event_bus or get_event_bus()
         # Subscribe to requests and turn completion
-        self._event_bus.subscribe(TodoRequestEvent, self._handle_request)
-        self._event_bus.subscribe(WaitingForInputEvent, self._handle_waiting_input)
+        self._events = self._event_bus.bind(self)
 
+    @listen
     def _handle_request(self, event: TodoRequestEvent) -> None:
         """Handle incoming todo requests."""
         try:
@@ -52,6 +52,7 @@ class TodoManager:
             # In a real system, we might emit an error event
             pass
 
+    @listen
     def _handle_waiting_input(self, event: WaitingForInputEvent) -> None:
         """Called at the end of a turn when the system is waiting for input.
 

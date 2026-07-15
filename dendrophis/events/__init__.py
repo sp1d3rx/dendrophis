@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-from dendrophis.events.bus import EventBus, get_event_bus, publish, set_event_bus, subscribe
+from dendrophis.events.bus import (
+    EventBus,
+    Subscription,
+    SubscriptionGroup,
+    bind,
+    get_event_bus,
+    listen,
+    on,
+    publish,
+    set_event_bus,
+    subscribe,
+    unsubscribe,
+)
 from dendrophis.events.types import (
     AnyEvent,
     AuthFailedEvent,
@@ -96,6 +108,9 @@ __all__ = [
     "EditProposalEvent",
     "ErrorEvent",
     "EventBus",
+    "Subscription",
+    "SubscriptionGroup",
+    "bind",
     "MemoryAssociationEvent",
     "MemoryEvent",
     "MemorySavedEvent",
@@ -157,7 +172,10 @@ __all__ = [
     "WriteApprovalEvent",
     "WriteProposalEvent",
     "get_event_bus",
+    "listen",
+    "on",
     "publish",
     "set_event_bus",
     "subscribe",
+    "unsubscribe",
 ]

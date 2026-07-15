@@ -32,6 +32,7 @@ from dendrophis.events import (
     ToolConfirmationResponseEvent,
     TrackFileRequest,
     UntrackFileRequest,
+    listen,
 )
 from dendrophis.llm.client import LLMClient
 
@@ -74,22 +75,11 @@ class SessionEventHandler:
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to all request events from the event bus."""
-        self._event_bus.subscribe(ToolConfirmationResponseEvent, self._on_confirmation_response)
-        self._event_bus.subscribe(ModelSwitchRequest, self._on_model_switch_request)
-        self._event_bus.subscribe(TemperatureChangeRequest, self._on_temperature_change_request)
-        self._event_bus.subscribe(ReasoningEffortChangeRequest, self._on_reasoning_effort_change_request)
-        self._event_bus.subscribe(SessionResetRequest, self._on_session_reset_request)
-        self._event_bus.subscribe(SendMessageRequest, self._on_send_message_request)
-        self._event_bus.subscribe(SessionSaveRequest, self._on_session_save_request)
-        self._event_bus.subscribe(SessionLoadRequest, self._on_session_load_request)
-        self._event_bus.subscribe(CompactRequest, self._on_compact_request)
-        self._event_bus.subscribe(PrimerSaveRequest, self._on_primer_save_request)
-        self._event_bus.subscribe(PrimerLoadRequest, self._on_primer_load_request)
-        self._event_bus.subscribe(PrimerInjectRequest, self._on_primer_inject_request)
-        self._event_bus.subscribe(ConfigChangeRequest, self._on_config_change_request)
-        self._event_bus.subscribe(CancelStreamingRequest, self._on_cancel_streaming_request)
-        self._event_bus.subscribe(TrackFileRequest, self._on_track_file_request)
-        self._event_bus.subscribe(UntrackFileRequest, self._on_untrack_file_request)
+        self._events = self._event_bus.bind(self)
+
+    def close(self) -> None:
+        """Unsubscribe all event handlers to prevent memory leaks."""
+        self._events.unsubscribe_all()
 
     def _emit(self, event: Any) -> None:
         """Publish an event to the event bus."""
@@ -98,14 +88,17 @@ class SessionEventHandler:
 
     # -- Event handlers -----------------------------------------------------------
 
+    @listen
     def _on_confirmation_response(self, event: ToolConfirmationResponseEvent) -> None:
         """Handle human approval response."""
         self._confirmation_results[event.request_id] = event.approved
 
+    @listen
     def _on_model_switch_request(self, event: ModelSwitchRequest) -> None:
         """Handle model switch request from UI."""
         self._session.switch_model(event.model_id)
 
+    @listen
     def _on_temperature_change_request(self, event: TemperatureChangeRequest) -> None:
         """Handle temperature change request from UI."""
         config = self._config_loader.config
@@ -116,6 +109,7 @@ class SessionEventHandler:
             self._config_loader.save()
         self._emit(TemperatureChangedEvent(temperature=event.temperature))
 
+    @listen
     def _on_reasoning_effort_change_request(self, event: ReasoningEffortChangeRequest) -> None:
         """Handle reasoning effort change request from UI."""
         config = self._config_loader.config
@@ -126,6 +120,7 @@ class SessionEventHandler:
             self._config_loader.save()
         self._emit(ReasoningEffortChangedEvent(reasoning_effort=event.reasoning_effort))
 
+    @listen
     def _on_session_reset_request(self, event: SessionResetRequest) -> None:
         """Handle session reset request from UI."""
         self._session.reset()
@@ -148,36 +143,44 @@ class SessionEventHandler:
             )
         )
 
+    @listen
     async def _on_send_message_request(self, event: SendMessageRequest) -> None:
         """Handle send message request from UI."""
         await self._session.send_message(event.text)
 
+    @listen
     def _on_session_save_request(self, event: SessionSaveRequest) -> None:
         """Handle session save request from UI."""
         if event.path:
             self._session._session_file = Path(event.path)
         self._session.save_session()
 
+    @listen
     def _on_session_load_request(self, event: SessionLoadRequest) -> None:
         """Handle session load request from UI."""
         self._session.load_session(event.path)
 
+    @listen
     async def _on_compact_request(self, event: CompactRequest) -> None:
         """Handle compaction request from UI."""
         await self._session.compact()
 
+    @listen
     def _on_primer_save_request(self, event: PrimerSaveRequest) -> None:
         """Handle primer save request from UI."""
         self._session.save_project_primer()
 
+    @listen
     def _on_primer_load_request(self, event: PrimerLoadRequest) -> None:
         """Handle primer load request from UI."""
         self._session.load_project_primer()
 
+    @listen
     def _on_primer_inject_request(self, event: PrimerInjectRequest) -> None:
         """Handle primer inject request from UI."""
         self._session.inject_primer_files()
 
+    @listen
     def _on_config_change_request(self, event: ConfigChangeRequest) -> None:
         """Handle generic config change request from UI."""
         if "llm" not in self._config_loader._raw:
@@ -185,14 +188,17 @@ class SessionEventHandler:
         self._config_loader._raw["llm"][event.key] = event.value
         self._config_loader.save()
 
+    @listen
     def _on_cancel_streaming_request(self, event: CancelStreamingRequest) -> None:
         """Handle cancel streaming request from UI."""
         self._session.cancel_streaming()
 
+    @listen
     def _on_track_file_request(self, event: TrackFileRequest) -> None:
         """Handle track file request from UI."""
         self._session.track_file(event.path)
 
+    @listen
     def _on_untrack_file_request(self, event: UntrackFileRequest) -> None:
         """Handle untrack file request from UI."""
         self._session.untrack_file(event.path)

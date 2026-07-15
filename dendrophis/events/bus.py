@@ -37,6 +37,103 @@ class EventMetadata:
     timestamp: float = field(default_factory=time.monotonic)
 
 
+@dataclass(frozen=True, slots=True)
+class Subscription:
+    """A token representing an active subscription that can be disposed of or used as a context manager."""
+
+    event_bus: EventBus
+    event_type: type[AnyEvent]
+    handler: EventHandler | AsyncEventHandler
+    priority: int
+    insertion_order: int
+    context: contextvars.Context
+    is_async: bool = False
+
+    def unsubscribe(self) -> None:
+        """Unsubscribe the handler from the event bus."""
+        self.event_bus.unsubscribe(self)
+
+    def __lt__(self, other: Subscription) -> bool:
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.insertion_order < other.insertion_order
+
+    def __enter__(self) -> Subscription:
+        return self
+
+    def __exit__(self, exception_type: Any, exception_value: Any, traceback: Any) -> None:
+        self.unsubscribe()
+
+
+class SubscriptionGroup:
+    """Manages a collection of active subscriptions for bulk cleanup."""
+
+    def __init__(self, event_bus: EventBus) -> None:
+        self.event_bus = event_bus
+        self._subscriptions: list[Subscription] = []
+
+    def subscribe(
+        self,
+        event_type: type[AnyEvent],
+        handler: EventHandler | AsyncEventHandler,
+        *,
+        priority: int = 0,
+    ) -> Subscription:
+        """Subscribe a handler and register it for group cleanup."""
+        subscription = self.event_bus.subscribe(event_type, handler, priority=priority)
+        self._subscriptions.append(subscription)
+        return subscription
+
+    def unsubscribe_all(self) -> None:
+        """Dispose of all subscriptions tracked by this group."""
+        for subscription in self._subscriptions:
+            subscription.unsubscribe()
+        self._subscriptions.clear()
+
+    def __enter__(self) -> SubscriptionGroup:
+        return self
+
+    def __exit__(self, exception_type: Any, exception_value: Any, traceback: Any) -> None:
+        self.unsubscribe_all()
+
+
+def resolve_event_type_from_signature(handler: Callable[..., Any], parameter_index: int = 0) -> type[AnyEvent]:
+    """Extract the annotated event type from a handler's signature."""
+    import typing
+
+    try:
+        type_hints = typing.get_type_hints(handler)
+    except Exception:
+        type_hints = {}
+
+    signature = inspect.signature(handler)
+    parameters = list(signature.parameters.values())
+    if len(parameters) <= parameter_index:
+        raise ValueError(f"Handler function {handler.__name__} must accept at least {parameter_index + 1} argument(s).")
+
+    event_parameter = parameters[parameter_index]
+    parameter_name = event_parameter.name
+
+    resolved_type = type_hints.get(parameter_name)
+    if resolved_type is not None:
+        return resolved_type
+
+    annotation = event_parameter.annotation
+    if annotation is inspect.Parameter.empty:
+        raise ValueError(
+            f"Could not auto-detect event type for {handler.__name__}. "
+            f"Please provide a type hint for the event argument."
+        )
+
+    if isinstance(annotation, str):
+        raise ValueError(
+            f"Type hint for parameter '{parameter_name}' in {handler.__name__} is a string ('{annotation}') "
+            f"and could not be resolved. Please ensure the event class is imported and defined."
+        )
+
+    return annotation
+
+
 class EventBus(IEventBus):
     """Thread-safe event bus for publishing and subscribing to events.
 
@@ -58,12 +155,8 @@ class EventBus(IEventBus):
     )
 
     def __init__(self, max_workers: int = 4) -> None:
-        self._subscribers: dict[
-            type[AnyEvent], list[tuple[int, int, EventHandler | AsyncEventHandler, contextvars.Context, bool]]
-        ] = defaultdict(list)
-        self._sorted_handlers_cache: dict[
-            type[AnyEvent], list[tuple[int, int, EventHandler | AsyncEventHandler, contextvars.Context, bool]]
-        ] = {}
+        self._subscribers: dict[type[AnyEvent], list[Subscription]] = defaultdict(list)
+        self._sorted_handlers_cache: dict[type[AnyEvent], list[Subscription]] = {}
         self._lock = threading.RLock()
         self._thread_pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="event-bus")
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -83,40 +176,66 @@ class EventBus(IEventBus):
         handler: EventHandler | AsyncEventHandler,
         *,
         priority: int = 0,
-    ) -> None:
+    ) -> Subscription:
         """Subscribe to an event type.
 
         Args:
             event_type: The type of event to subscribe to.
             handler: A callable that accepts the event as its only argument.
             priority: Lower values fire first. Default 0.
+
+        Returns:
+            A Subscription object that can be used to unsubscribe.
         """
-        ctx = contextvars.copy_context()
+        context = contextvars.copy_context()
         is_async = inspect.iscoroutinefunction(handler)
         with self._lock:
-            # Insert in sorted order using bisect (O(n) insertion but maintains sorted list)
-            # Tuple: (priority, insertion_counter, handler, context, is_async)
-            # insertion_counter ensures stable sorting when priorities are equal
-            subscribers = self._subscribers[event_type]
             self._insertion_counter += 1
-            bisect.insort(subscribers, (priority, self._insertion_counter, handler, ctx, is_async))
+            subscription = Subscription(
+                event_bus=self,
+                event_type=event_type,
+                handler=handler,
+                priority=priority,
+                insertion_order=self._insertion_counter,
+                context=context,
+                is_async=is_async,
+            )
+            subscribers = self._subscribers[event_type]
+            bisect.insort(subscribers, subscription)
             self._invalidate_cache(event_type)
+            return subscription
 
     def unsubscribe(
         self,
-        event_type: type[EventType],
-        handler: EventHandler | AsyncEventHandler,
+        subscription_or_event_type: Subscription | type[AnyEvent],
+        handler: EventHandler | AsyncEventHandler | None = None,
     ) -> None:
-        """Unsubscribe from an event type."""
+        """Unsubscribe a subscriber.
+
+        Can accept either a Subscription object or the (event_type, handler) pair.
+        """
         with self._lock:
-            self._subscribers[event_type] = [
-                (prio, ins_cnt, h_ctx, ctx, is_async)
-                for prio, ins_cnt, h_ctx, ctx, is_async in self._subscribers[event_type]
-                if h_ctx is not handler
-            ]
-            if not self._subscribers[event_type]:
-                del self._subscribers[event_type]
-            self._invalidate_cache(event_type)
+            if isinstance(subscription_or_event_type, Subscription):
+                subscription = subscription_or_event_type
+                event_type = subscription.event_type
+                if event_type in self._subscribers:
+                    self._subscribers[event_type] = [
+                        sub for sub in self._subscribers[event_type] if sub is not subscription
+                    ]
+                    if not self._subscribers[event_type]:
+                        del self._subscribers[event_type]
+                    self._invalidate_cache(event_type)
+            else:
+                event_type = subscription_or_event_type
+                if handler is None:
+                    raise ValueError("handler must be provided when event_type is passed.")
+                if event_type in self._subscribers:
+                    self._subscribers[event_type] = [
+                        sub for sub in self._subscribers[event_type] if sub.handler is not handler
+                    ]
+                    if not self._subscribers[event_type]:
+                        del self._subscribers[event_type]
+                    self._invalidate_cache(event_type)
 
     def unsubscribe_all(self, event_type: type[AnyEvent]) -> None:
         """Remove all subscribers for an event type."""
@@ -126,15 +245,12 @@ class EventBus(IEventBus):
 
     def _invalidate_cache(self, event_type: type[AnyEvent]) -> None:
         """Invalidate the sorted handlers cache for an event type and its subclasses."""
-        # Invalidate cache for this type and all its base classes
         types_to_invalidate = [event_type]
         types_to_invalidate.extend(base_type for base_type in event_type.__mro__[1:] if base_type is not object)
-        for t in types_to_invalidate:
-            self._sorted_handlers_cache.pop(t, None)
+        for invalidated_type in types_to_invalidate:
+            self._sorted_handlers_cache.pop(invalidated_type, None)
 
-    def _sorted_handlers(
-        self, event_type: type[AnyEvent]
-    ) -> list[tuple[int, EventHandler | AsyncEventHandler, contextvars.Context, bool]]:
+    def _sorted_handlers(self, event_type: type[AnyEvent]) -> list[Subscription]:
         """Get handlers sorted by priority (lower = first). Uses cache and heapq.merge for performance."""
         # Check cache first
         if event_type in self._sorted_handlers_cache:
@@ -142,9 +258,7 @@ class EventBus(IEventBus):
 
         with self._lock:
             # Collect all sorted lists (each is already sorted by priority via bisect.insort)
-            # Tuples in _subscribers are (priority, insertion_counter, handler, ctx, is_async)
-            # We need to strip insertion_counter for the return value
-            sorted_lists: list[list[tuple[int, int, EventHandler | AsyncEventHandler, contextvars.Context, bool]]] = []
+            sorted_lists: list[list[Subscription]] = []
             if event_type in self._subscribers:
                 sorted_lists.append(self._subscribers[event_type])
             sorted_lists.extend(
@@ -159,11 +273,8 @@ class EventBus(IEventBus):
                 merged = sorted_lists[0]
             else:
                 merged = list(heapq.merge(*sorted_lists))
-            # Strip insertion_counter (index 1) from tuples:
-            # (prio, ins_cnt, handler, ctx, is_async) -> (prio, handler, ctx, is_async)
-            merged_stripped = [(t[0], t[2], t[3], t[4]) for t in merged]
-            self._sorted_handlers_cache[event_type] = merged_stripped
-        return merged_stripped
+            self._sorted_handlers_cache[event_type] = merged
+        return merged
 
     def publish(self, event: AnyEvent) -> None:
         """Publish an event to all subscribers.
@@ -174,28 +285,27 @@ class EventBus(IEventBus):
         if self._shutdown:
             return
 
-        # Cache event type lookup
         event_type = type(event)
-        handlers = self._sorted_handlers(event_type)
-        loop_and_not_closed = self._loop_and_not_closed
+        subscriptions = self._sorted_handlers(event_type)
         loop = self._loop
-        for _prio, handler, ctx, is_async in handlers:
-            # Inlined dispatch for performance
-            if is_async:
+        loop_and_not_closed = loop is not None and not loop.is_closed()
+        for subscription in subscriptions:
+            handler = subscription.handler
+            if subscription.is_async:
                 if loop_and_not_closed:
 
-                    def _create_and_run(h=handler, e=event):
-                        task = loop.create_task(h(e))
+                    def _create_and_run(handler_func=handler, event_obj=event) -> None:
+                        task = loop.create_task(handler_func(event_obj))
                         task.add_done_callback(self._async_safe_call)
 
-                    loop.call_soon_threadsafe(ctx.run, _create_and_run)
+                    loop.call_soon_threadsafe(_create_and_run)
                 else:
                     logger.warning("No event loop set; dropping async handler for %s", type(event).__name__)
             else:
                 if loop_and_not_closed:
-                    loop.call_soon_threadsafe(ctx.run, self._safe_call, handler, event)
+                    loop.call_soon_threadsafe(self._safe_call, handler, event)
                 else:
-                    self._thread_pool.submit(ctx.run, self._safe_call, handler, event)
+                    self._thread_pool.submit(self._safe_call, handler, event)
 
     def _async_safe_call(self, task: asyncio.Task) -> None:
         """Handle exceptions from async event handlers."""
@@ -234,8 +344,99 @@ class EventBus(IEventBus):
     def __enter__(self) -> EventBus:
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(self, exception_type: Any, exception_value: Any, traceback: Any) -> None:
         self.shutdown(wait=True)
+
+    def on(
+        self,
+        event_type_or_handler: type[AnyEvent] | Callable[[AnyEvent], Any] | None = None,
+        *,
+        priority: int = 0,
+    ) -> Any:
+        """Decorator to subscribe to an event."""
+
+        def decorator(handler: Callable[[AnyEvent], Any]) -> Callable[[AnyEvent], Any]:
+            resolved_event_type = event_type_or_handler
+            if resolved_event_type is None or not isinstance(resolved_event_type, type):
+                resolved_event_type = resolve_event_type_from_signature(handler)
+
+            self.subscribe(resolved_event_type, handler, priority=priority)
+            return handler
+
+        if isinstance(event_type_or_handler, type):
+            return decorator
+        if callable(event_type_or_handler):
+            handler_func = event_type_or_handler
+            resolved_event_type = resolve_event_type_from_signature(handler_func)
+            self.subscribe(resolved_event_type, handler_func, priority=priority)
+            return handler_func
+        return decorator
+
+    def group(self) -> SubscriptionGroup:
+        """Create a new subscription group."""
+        return SubscriptionGroup(self)
+
+    def bind(self, instance: Any) -> SubscriptionGroup:
+        """Scan the instance for @listen decorated methods and subscribe them."""
+        group = self.group()
+        bound_names: set[str] = set()
+
+        for class_in_mro in type(instance).__mro__:
+            for name, value in class_in_mro.__dict__.items():
+                if name in bound_names:
+                    continue
+
+                func = value
+                if isinstance(func, (staticmethod, classmethod)):
+                    func = func.__func__
+                elif isinstance(func, property):
+                    func = func.fget
+
+                listeners = getattr(func, "_event_listeners", None)
+                if listeners:
+                    bound_names.add(name)
+                    member = getattr(instance, name)
+                    for event_type, priority in listeners:
+                        group.subscribe(event_type, member, priority=priority)
+        return group
+
+
+def on(
+    event_type_or_handler: type[AnyEvent] | Callable[[AnyEvent], Any] | None = None,
+    *,
+    priority: int = 0,
+) -> Any:
+    """Decorator to subscribe a handler to the global event bus."""
+    return get_event_bus().on(event_type_or_handler, priority=priority)
+
+
+def listen(
+    event_type_or_handler: type[AnyEvent] | Callable[..., Any] | None = None,
+    *,
+    priority: int = 0,
+) -> Any:
+    """Decorator to mark a class method as an event listener."""
+
+    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
+        resolved_event_type = event_type_or_handler
+        if resolved_event_type is None or not isinstance(resolved_event_type, type):
+            resolved_event_type = resolve_event_type_from_signature(method, parameter_index=1)
+
+        if not hasattr(method, "_event_listeners"):
+            method._event_listeners = []
+        method._event_listeners.append((resolved_event_type, priority))
+        return method
+
+    if isinstance(event_type_or_handler, type):
+        return decorator
+    if callable(event_type_or_handler):
+        return decorator(event_type_or_handler)
+    return decorator
+
+
+def bind(instance: Any) -> SubscriptionGroup:
+    """Scan the instance for @listen decorated methods and bind them to the global event bus."""
+    return get_event_bus().bind(instance)
 
 
 # Global event bus instance
@@ -266,6 +467,14 @@ def subscribe(
     handler: EventHandler | AsyncEventHandler,
     *,
     priority: int = 0,
-) -> None:
+) -> Subscription:
     """Subscribe to an event type on the global event bus."""
-    get_event_bus().subscribe(event_type, handler, priority=priority)
+    return get_event_bus().subscribe(event_type, handler, priority=priority)
+
+
+def unsubscribe(
+    subscription_or_event_type: Subscription | type[AnyEvent],
+    handler: EventHandler | AsyncEventHandler | None = None,
+) -> None:
+    """Unsubscribe from the global event bus."""
+    get_event_bus().unsubscribe(subscription_or_event_type, handler)

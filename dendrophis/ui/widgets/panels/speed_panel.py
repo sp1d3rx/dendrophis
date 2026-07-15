@@ -11,6 +11,7 @@ from dendrophis.events import (
     EventBus,
     StatsUpdatedEvent,
     StreamingStartedEvent,
+    listen,
 )
 from dendrophis.ui.widgets.panels.event_panel import EventPanel
 
@@ -46,12 +47,7 @@ class SpeedPanel(EventPanel):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._handlers = [
-            (StatsUpdatedEvent, self._on_stats_updated),
-            (StreamingStartedEvent, self._on_streaming_started),
-        ]
-        for event_type, handler in self._handlers:
-            self._event_bus.subscribe(event_type, handler)
+        self._events = self._event_bus.bind(self)
         # Initialize from current session state
         self._tokens_per_sec = self._session.stats.tokens_per_sec
         self._time_to_first_token = self._session.stats.time_to_first_token
@@ -59,15 +55,15 @@ class SpeedPanel(EventPanel):
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""
-        for event_type, handler in self._handlers:
-            self._event_bus.unsubscribe(event_type, handler)
-        self._handlers.clear()
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_streaming_started(self, event: StreamingStartedEvent) -> None:
         """Reset history when a new generation starts."""
         self._tps_history = []
         self._sparkline.data = [0.0]
 
+    @listen
     def _on_stats_updated(self, event: StatsUpdatedEvent) -> None:
         """Update history and display when stats change."""
         if event.tokens_per_sec > 0:
@@ -84,3 +80,7 @@ class SpeedPanel(EventPanel):
         self._label.update(
             f"TPS: [#f9e2af]{self._tokens_per_sec:.1f}[/]\nTTFT: [#f9e2af]{self._time_to_first_token:.2f}s[/]"
         )
+
+    def update_value(self, *args, **kwargs) -> None:
+        """Force a refresh of the panel's display."""
+        self.update_display()

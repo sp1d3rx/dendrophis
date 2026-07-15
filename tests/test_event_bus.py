@@ -152,10 +152,108 @@ def test_thread_safety():
     print("✓ Thread safety test passed")
 
 
+def test_on_decorator_type_inference():
+    """Test that @on decorator correctly infers event types from signature annotations."""
+    from dendrophis.events import EventBus
+
+    bus = EventBus()
+
+    @bus.on
+    def handle_dummy(event: DummyEvent) -> None:
+        pass
+
+    sorted_subs = bus._sorted_handlers(DummyEvent)
+    handlers = [sub.handler for sub in sorted_subs]
+    assert handlers == [handle_dummy]
+
+
+def test_on_decorator_with_priority():
+    """Test that @on decorator respects priority when registered."""
+    from dendrophis.events import EventBus
+
+    bus = EventBus()
+
+    @bus.on(priority=2)
+    def handle_dummy_low_priority(event: DummyEvent) -> None:
+        pass
+
+    @bus.on(priority=1)
+    def handle_dummy_high_priority(event: DummyEvent) -> None:
+        pass
+
+    sorted_subs = bus._sorted_handlers(DummyEvent)
+    handlers = [sub.handler for sub in sorted_subs]
+    assert handlers == [handle_dummy_high_priority, handle_dummy_low_priority]
+
+
+def test_subscription_context_manager():
+    """Test using subscribe as a context manager for automatic cleanup."""
+    from dendrophis.events import EventBus
+
+    bus = EventBus()
+
+    def handler(event: DummyEvent) -> None:
+        pass
+
+    with bus.subscribe(DummyEvent, handler):
+        assert len(bus._sorted_handlers(DummyEvent)) == 1
+
+    assert len(bus._sorted_handlers(DummyEvent)) == 0
+
+
+def test_subscription_group():
+    """Test that SubscriptionGroup aggregates subscriptions and cleans up correctly."""
+    from dendrophis.events import EventBus
+
+    bus = EventBus()
+
+    def handler_one(event: DummyEvent) -> None:
+        pass
+
+    def handler_two(event: DummyEvent) -> None:
+        pass
+
+    with bus.group() as group:
+        group.subscribe(DummyEvent, handler_one)
+        group.subscribe(DummyEvent, handler_two)
+        assert len(bus._sorted_handlers(DummyEvent)) == 2
+
+    assert len(bus._sorted_handlers(DummyEvent)) == 0
+
+
+def test_class_binding():
+    """Test that @listen and bind() automatically register and unregister instance methods."""
+    from dendrophis.events import EventBus, listen
+
+    bus = EventBus()
+
+    class MockService:
+        def __init__(self) -> None:
+            self.events = bus.bind(self)
+
+        @listen
+        def on_dummy_event(self, event: DummyEvent) -> None:
+            pass
+
+        def shutdown(self) -> None:
+            self.events.unsubscribe_all()
+
+    service = MockService()
+    assert len(bus._sorted_handlers(DummyEvent)) == 1
+
+    service.shutdown()
+    assert len(bus._sorted_handlers(DummyEvent)) == 0
+
+
 if __name__ == "__main__":
     test_basic_publish_subscribe()
     test_multiple_subscribers()
     asyncio.run(test_async_handler())
     test_inheritance()
     test_thread_safety()
+    test_on_decorator_type_inference()
+    test_on_decorator_with_priority()
+    test_subscription_context_manager()
+    test_subscription_group()
+    test_class_binding()
     print("\n✅ All tests passed!")

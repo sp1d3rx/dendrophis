@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.7.0",
+        version="%(prog)s 0.7.3",
     )
     return parser
 
@@ -288,7 +288,9 @@ def main() -> None:
         print("🔧 Parallel tool execution disabled")
 
     session_path = _resolve_session(args.session) if args.session else None
-    app = DendrophisApp(config_loader=loader, session_path=session_path)
+    app = DendrophisApp(
+        config_loader=loader, session_path=session_path, system_prompt_source=loader.system_prompt_source
+    )
     app.run()
 
     saved = app._session.save_session()

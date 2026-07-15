@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dendrophis.events import ConfigReloadedEvent, EventBus
+from dendrophis.events import ConfigReloadedEvent, EventBus, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
@@ -32,11 +32,12 @@ class McpStatusPanel(TextPanel):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._event_bus.subscribe(ConfigReloadedEvent, self._on_config_reloaded)
+        self._events = self._event_bus.bind(self)
 
     def on_unmount(self) -> None:
-        self._event_bus.unsubscribe(ConfigReloadedEvent, self._on_config_reloaded)
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_config_reloaded(self, event: ConfigReloadedEvent) -> None:
         self.update_value()
 

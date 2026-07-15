@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from textual.message import Message
 
-from dendrophis.events import EventBus, ModelSwitchedEvent
+from dendrophis.events import EventBus, ModelSwitchedEvent, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
@@ -26,12 +26,13 @@ class ModelPanel(TextPanel):
         self._model: str = session.config.llm.model
 
     def on_mount(self) -> None:
-        self._event_bus.subscribe(ModelSwitchedEvent, self._on_model_switched)
+        self._events = self._event_bus.bind(self)
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""
-        self._event_bus.unsubscribe(ModelSwitchedEvent, self._on_model_switched)
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_model_switched(self, event: ModelSwitchedEvent) -> None:
         """Update local model cache when model switches."""
         self._model = event.model_id

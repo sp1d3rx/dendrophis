@@ -434,3 +434,5 @@ class Session:
         if getattr(self, "mcp_manager", None):
             await self.mcp_manager.aclose()
         await self.llm.aclose()
+        if self._event_handler:
+            self._event_handler.close()

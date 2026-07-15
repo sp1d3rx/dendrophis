@@ -438,6 +438,25 @@ class LLMClient:
         use_xml_tools: bool = False,
     ) -> list[dict[str, Any]]:
         """Strip provider-incompatible fields and filter tool messages as needed."""
+        # Find the index of the last user message
+        last_user_index = -1
+        for index, msg in enumerate(messages):
+            if msg.get("role") == "user":
+                last_user_index = index
+
+        # Pre-sanitize to conditionally strip reasoning_content
+        pre_sanitized: list[dict[str, Any]] = []
+        mode = self._config.preserve_reasoning
+        for index, msg in enumerate(messages):
+            if msg.get("role") == "assistant":
+                if mode == "never" or (mode == "current" and index < last_user_index):
+                    msg_copy = {key: value for key, value in msg.items() if key != "reasoning_content"}
+                else:
+                    msg_copy = dict(msg)
+            else:
+                msg_copy = dict(msg)
+            pre_sanitized.append(msg_copy)
+
         strip_keys: set[str] = set()
         if use_xml_tools:
             # MLC returns 422/400 if tool_calls appear in history; tool intent
@@ -456,8 +475,8 @@ class LLMClient:
             # assistant message. Drop orphaned tool results and incomplete sequences.
             validated: list[dict[str, Any]] = []
             msg_idx = 0
-            while msg_idx < len(messages):
-                msg = messages[msg_idx]
+            while msg_idx < len(pre_sanitized):
+                msg = pre_sanitized[msg_idx]
                 role = msg.get("role")
 
                 if role == "tool":
@@ -468,13 +487,13 @@ class LLMClient:
                 if role == "assistant" and (msg.get("tool_calls") or "<tool_call>" in (msg.get("content") or "")):
                     expected = len(msg.get("tool_calls", []))
                     result_end = msg_idx + 1
-                    while result_end < len(messages) and messages[result_end].get("role") == "tool":
+                    while result_end < len(pre_sanitized) and pre_sanitized[result_end].get("role") == "tool":
                         result_end += 1
                     actual = result_end - (msg_idx + 1)
                     if expected > 0 and actual == expected:
                         validated.append({key: value for key, value in msg.items() if key not in strip_keys})
                         validated.extend(
-                            {key: value for key, value in messages[tool_idx].items() if key not in strip_keys}
+                            {key: value for key, value in pre_sanitized[tool_idx].items() if key not in strip_keys}
                             for tool_idx in range(msg_idx + 1, result_end)
                         )
                         msg_idx = result_end
@@ -486,9 +505,10 @@ class LLMClient:
             return self._coalesce_consecutive_messages(validated)
 
         if not strip_keys:
-            return self._coalesce_consecutive_messages(messages)
+            return self._coalesce_consecutive_messages(pre_sanitized)
         sanitized = [
-            {key: value for key, value in message_dict.items() if key not in strip_keys} for message_dict in messages
+            {key: value for key, value in message_dict.items() if key not in strip_keys}
+            for message_dict in pre_sanitized
         ]
         return self._coalesce_consecutive_messages(sanitized)
 

@@ -658,6 +658,20 @@ class SettingsScreen(Screen):
                                     ),
                                     classes="settings-row",
                                 )
+                                preserve_reasoning_opts = [
+                                    ("Always", "always"),
+                                    ("Current Turn Only", "current"),
+                                    ("Never", "never"),
+                                ]
+                                yield Horizontal(
+                                    Label("Preserve Reasoning in Context", classes="settings-label"),
+                                    Select(
+                                        preserve_reasoning_opts,
+                                        value=str(self._cfg.llm.preserve_reasoning),
+                                        id="llm_preserve_reasoning",
+                                    ),
+                                    classes="settings-row",
+                                )
 
                     with Vertical(classes="settings-group"):
                         yield Label("Generation Parameters", classes="settings-group-title")
@@ -841,7 +855,11 @@ class SettingsScreen(Screen):
                                 )
 
                     with Vertical(classes="settings-group"):
-                        yield Label("System Prompt (Instructions to Agent)", classes="settings-group-title")
+                        source = self._session.config_loader.system_prompt_source
+                        yield Label(
+                            f"System Prompt (Instructions to Agent — Loaded from {source})",
+                            classes="settings-group-title",
+                        )
                         yield TextArea(self._cfg.system_prompt, id="system_prompt")
 
                 with TabPane("MCP Servers", id="tab-mcp"), VerticalScroll():
@@ -1092,6 +1110,8 @@ class SettingsScreen(Screen):
                 set_nested(raw, ["llm", "use_responses_api"], False)
             else:
                 set_nested(raw, ["llm", "use_responses_api"], None)
+
+            set_nested(raw, ["llm", "preserve_reasoning"], self._get_val("llm_preserve_reasoning", "always"))
 
             # Save UI Config Settings
             set_nested(raw, ["ui", "theme"], self._get_val("ui_theme"))

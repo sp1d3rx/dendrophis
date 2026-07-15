@@ -10,6 +10,7 @@ from dendrophis.events import (
     PrimerLoadedEvent,
     PrimerScreenRequest,
     UnderstandingStatsUpdatedEvent,
+    listen,
 )
 from dendrophis.ui.widgets.panels.base import TextPanel
 
@@ -38,16 +39,12 @@ class PrimerPanel(TextPanel):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._event_bus.subscribe(ContextUpdatedEvent, self._on_context_updated)
-        self._event_bus.subscribe(UnderstandingStatsUpdatedEvent, self._on_understanding_updated)
-        self._event_bus.subscribe(PrimerLoadedEvent, self._on_primer_loaded)
+        self._events = self._event_bus.bind(self)
         # Initialize from current session state
         self._update_from_session()
 
     def on_unmount(self) -> None:
-        self._event_bus.unsubscribe(ContextUpdatedEvent, self._on_context_updated)
-        self._event_bus.unsubscribe(UnderstandingStatsUpdatedEvent, self._on_understanding_updated)
-        self._event_bus.unsubscribe(PrimerLoadedEvent, self._on_primer_loaded)
+        self._events.unsubscribe_all()
 
     def on_click(self) -> None:
         """Open the primer screen when clicked."""
@@ -73,11 +70,13 @@ class PrimerPanel(TextPanel):
             self._primer_file_count = 0
             self._primer_project_name = "?"
 
+    @listen
     def _on_context_updated(self, event: ContextUpdatedEvent) -> None:
         """Update turn count when context changes."""
         self._understanding_current_turn = event.turn_count
         self.update_value()
 
+    @listen
     def _on_understanding_updated(self, event: UnderstandingStatsUpdatedEvent) -> None:
         """Update understanding stats when they change."""
         self._understanding_established = event.established
@@ -86,6 +85,7 @@ class PrimerPanel(TextPanel):
         self._understanding_current_turn = event.current_turn
         self.update_value()
 
+    @listen
     def _on_primer_loaded(self, event: PrimerLoadedEvent) -> None:
         """Update primer info when primer is loaded."""
         self._primer_loaded = event.project_id is not None

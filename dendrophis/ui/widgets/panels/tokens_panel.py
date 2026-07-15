@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dendrophis.events import EventBus, StatsUpdatedEvent
+from dendrophis.events import EventBus, StatsUpdatedEvent, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
@@ -23,15 +23,16 @@ class TokensPanel(TextPanel):
         self._completion_tokens: int = 0
 
     def on_mount(self) -> None:
-        self._event_bus.subscribe(StatsUpdatedEvent, self._on_stats_updated)
+        self._events = self._event_bus.bind(self)
         # Initialize from current session state
         self._prompt_tokens = self._session.stats.prompt_tokens
         self._completion_tokens = self._session.stats.completion_tokens
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""
-        self._event_bus.unsubscribe(StatsUpdatedEvent, self._on_stats_updated)
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_stats_updated(self, event: StatsUpdatedEvent) -> None:
         """Update local cache when stats change."""
         self._prompt_tokens = event.prompt_tokens

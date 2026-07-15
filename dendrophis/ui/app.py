@@ -12,6 +12,7 @@ from dendrophis.events import (
     AuthFailedEvent,
     EventBus,
     ModelSwitchedEvent,
+    listen,
     set_event_bus,
 )
 from dendrophis.session.factory import SessionFactory
@@ -33,10 +34,16 @@ class DendrophisApp(App):
         ("ctrl+shift+d", "toggle_debug_log", "Debug Log"),
     ]
 
-    def __init__(self, config_loader: ConfigLoader, session_path: str | None = None) -> None:
+    def __init__(
+        self,
+        config_loader: ConfigLoader,
+        session_path: str | None = None,
+        system_prompt_source: str | None = None,
+    ) -> None:
         super().__init__()
         self._config_loader = config_loader
         self._session_path = session_path
+        self._system_prompt_source = system_prompt_source
 
         # Initialize the event bus
         self._event_bus = EventBus(max_workers=8)
@@ -82,6 +89,9 @@ class DendrophisApp(App):
         # Update title with session ID and model
         self._update_title()
 
+        # Show system prompt source toast
+        self._show_system_prompt_toast()
+
         # Fetch models and initialize MCP servers in background
         self.run_worker(self._session.fetch_models())
         if getattr(self._session, "mcp_manager", None):
@@ -111,14 +121,15 @@ class DendrophisApp(App):
 
     def _setup_event_handlers(self) -> None:
         """Subscribe UI components to event bus events."""
-        self._event_bus.subscribe(ModelSwitchedEvent, self._on_model_switched)
-        self._event_bus.subscribe(AuthFailedEvent, self._on_auth_failed)
+        self._events = self._event_bus.bind(self)
 
+    @listen
     def _on_model_switched(self, event: ModelSwitchedEvent) -> None:
         """Update title bar when model changes."""
         self._update_title()
         self.call_later(self._check_and_prompt_calibration, event.model_id)
 
+    @listen
     def _on_auth_failed(self, event: AuthFailedEvent) -> None:
         from dendrophis.ui.screens.api_key_prompt import ApiKeyPromptScreen
 
@@ -144,6 +155,13 @@ class DendrophisApp(App):
     async def on_unmount(self) -> None:
         await self._session.aclose()
         self._event_bus.shutdown(wait=False)
+
+    def _show_system_prompt_toast(self) -> None:
+        """Show toast notification about system prompt source."""
+        if self._system_prompt_source == "system.md":
+            self.notify("using system.md prompt", severity="information")
+        else:
+            self.notify("default system prompt loaded - create a system.md file to override", severity="information")
 
     def action_toggle_debug_log(self) -> None:
         """Toggle the debug log window."""

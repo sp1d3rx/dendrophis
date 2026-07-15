@@ -146,9 +146,6 @@ class SessionPersister:
 
             # Restore messages and sanitize
             loaded_messages = data.get("messages", [])
-            for msg in loaded_messages:
-                if msg.get("role") == "assistant":
-                    msg.pop("reasoning_content", None)
             loaded_messages = _sanitize_tool_messages(loaded_messages)
             self._context.messages = loaded_messages
             self._context.recalculate_tokens()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from ruamel.yaml import YAML
 
@@ -13,6 +13,16 @@ from dendrophis.config.schema import DendrophisConfig
 
 _yaml = YAML()
 _yaml.preserve_quotes = True
+
+
+class ConfigLoadResult(NamedTuple):
+    """Result of config loading with system prompt source info."""
+
+    loader: ConfigLoader
+    system_prompt_source: str  # 'system.md' or 'default'
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.loader, name)
 
 
 def _config_search_paths() -> list[Path]:
@@ -50,7 +60,13 @@ class ConfigLoader:
         self.config = config
 
     @classmethod
-    def load(cls, config_path: str | None = None) -> ConfigLoader:
+    def load(cls, config_path: str | None = None) -> ConfigLoadResult:
+        # Check for system.md first
+        system_prompt_source = "default"
+        system_md_path = Path("system.md")
+        if system_md_path.exists():
+            system_prompt_source = "system.md"
+
         paths = [Path(config_path)] if config_path else _config_search_paths()
 
         path: Path | None = None
@@ -67,7 +83,9 @@ class ConfigLoader:
         raw = _yaml.load(path.read_text()) or {}
         raw = _apply_env_overrides(raw)
         config = DendrophisConfig.model_validate(raw)
-        return cls(path=path, raw=raw, config=config)
+        return ConfigLoadResult(
+            loader=cls(path=path, raw=raw, config=config), system_prompt_source=system_prompt_source
+        )
 
     def save(self, new_yaml_text: str | None = None) -> None:
         """Persist current config to disk, optionally replacing from raw YAML text."""

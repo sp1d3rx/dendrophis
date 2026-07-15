@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dendrophis.events import EventBus, ModelSwitchedEvent, StatsUpdatedEvent
+from dendrophis.events import EventBus, ModelSwitchedEvent, StatsUpdatedEvent, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
@@ -25,8 +25,7 @@ class CostPanel(TextPanel):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._event_bus.subscribe(StatsUpdatedEvent, self._on_stats_updated)
-        self._event_bus.subscribe(ModelSwitchedEvent, self._on_model_switched)
+        self._events = self._event_bus.bind(self)
         # Initialize from current session state
         self._total_cost_usd = self._session.stats.total_cost_usd
         self._on_model_switched(
@@ -36,17 +35,18 @@ class CostPanel(TextPanel):
         )
 
     def on_unmount(self) -> None:
-        self._event_bus.unsubscribe(StatsUpdatedEvent, self._on_stats_updated)
-        self._event_bus.unsubscribe(ModelSwitchedEvent, self._on_model_switched)
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_stats_updated(self, event: StatsUpdatedEvent) -> None:
         """Update cost cache when stats change."""
         self._total_cost_usd = event.total_cost_usd
         self.update_value()
 
+    @listen
     def _on_model_switched(self, event: ModelSwitchedEvent) -> None:
         """Update model info cache when model switches."""
-        model = next((m for m in self._session.models if m.id == event.model_id), None)
+        model = next((model_item for model_item in self._session.models if model_item.id == event.model_id), None)
         if model:
             self._cost_per_million = model.cost_per_1m
             self._model_loaded = True

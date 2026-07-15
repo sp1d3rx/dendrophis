@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from dendrophis.events import ConfigReloadedEvent, EventBus, ModelSwitchedEvent, StatsUpdatedEvent
+from dendrophis.events import ConfigReloadedEvent, EventBus, ModelSwitchedEvent, StatsUpdatedEvent, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
@@ -25,9 +25,7 @@ class CachePanel(TextPanel):
         self._tier_str: str = self._build_tier_str(session.config.caching)
 
     def on_mount(self) -> None:
-        self._event_bus.subscribe(StatsUpdatedEvent, self._on_stats_updated)
-        self._event_bus.subscribe(ConfigReloadedEvent, self._on_config_reloaded)
-        self._event_bus.subscribe(ModelSwitchedEvent, self._on_model_switched)
+        self._events = self._event_bus.bind(self)
         # Initialize from current session state
         stats = self._session.stats
         self._cached_tokens = stats.cached_tokens
@@ -35,9 +33,7 @@ class CachePanel(TextPanel):
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""
-        self._event_bus.unsubscribe(StatsUpdatedEvent, self._on_stats_updated)
-        self._event_bus.unsubscribe(ConfigReloadedEvent, self._on_config_reloaded)
-        self._event_bus.unsubscribe(ModelSwitchedEvent, self._on_model_switched)
+        self._events.unsubscribe_all()
 
     def _build_tier_str(self, cfg: Any) -> str:
         """Build tier indicator string from config."""
@@ -50,18 +46,21 @@ class CachePanel(TextPanel):
             tiers.append("T3")
         return "[#94e2d5]" + "+".join(tiers) + "[/]"
 
+    @listen
     def _on_stats_updated(self, event: StatsUpdatedEvent) -> None:
         """Update local cache when stats change."""
         self._cached_tokens = event.cached_tokens if hasattr(event, "cached_tokens") else 0
         self._prompt_tokens = event.prompt_tokens
         self.update_value()
 
+    @listen
     def _on_config_reloaded(self, event: ConfigReloadedEvent) -> None:
         """Update config cache when config reloads."""
         self._caching_enabled = self._session.is_caching_enabled()
         self._tier_str = self._build_tier_str(self._session.config.caching)
         self.update_value()
 
+    @listen
     def _on_model_switched(self, event: ModelSwitchedEvent) -> None:
         """Update caching enabled when model switches."""
         self._caching_enabled = self._session.is_caching_enabled()

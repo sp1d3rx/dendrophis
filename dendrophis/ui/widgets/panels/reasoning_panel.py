@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dendrophis.events import EventBus, ReasoningEffortChangedEvent, ReasoningEffortChangeRequest
+from dendrophis.events import EventBus, ReasoningEffortChangedEvent, ReasoningEffortChangeRequest, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
@@ -33,9 +33,14 @@ class ReasoningPanel(TextPanel):
         self._event_bus = event_bus
         self._reasoning_effort: str | None = session.config.llm.reasoning_effort
 
-        # Subscribe to reasoning effort change events
-        self._event_bus.subscribe(ReasoningEffortChangedEvent, self._on_reasoning_effort_changed)
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._events = self._event_bus.bind(self)
 
+    def on_unmount(self) -> None:
+        self._events.unsubscribe_all()
+
+    @listen
     def _on_reasoning_effort_changed(self, event: ReasoningEffortChangedEvent) -> None:
         """Update local state when reasoning effort changes via event bus."""
         self._reasoning_effort = event.reasoning_effort

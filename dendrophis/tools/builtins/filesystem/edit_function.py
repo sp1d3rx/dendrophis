@@ -122,6 +122,21 @@ class EditFunctionTool(BaseTool):
             new_content_lines = lines[: start_line - 1] + new_lines + lines[end_line:]
             new_content = "".join(new_content_lines)
 
+            import difflib
+
+            diff_lines = list(
+                difflib.unified_diff(
+                    content.splitlines(keepends=True),
+                    new_content.splitlines(keepends=True),
+                    fromfile=f"a/{file_path}",
+                    tofile=f"b/{file_path}",
+                )
+            )
+            added = sum(1 for diff_line in diff_lines if diff_line.startswith("+") and not diff_line.startswith("+++"))
+            removed = sum(
+                1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
+            )
+
             # Write back in thread
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
@@ -133,13 +148,15 @@ class EditFunctionTool(BaseTool):
                 "file": str(path),
                 "function": function_name,
                 "replaced_lines": f"{start_line}-{end_line}",
+                "changes": f"+{added}/-{removed}",
+                "diff": "".join(diff_lines),
             }
             if lint_errors:
                 result["lint_errors"] = lint_errors
                 result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
             return result
-        except Exception as exc:
-            return {"error": str(exc)}
+        except Exception as exception_error:
+            return {"error": str(exception_error)}
 
     @staticmethod
     def _reindent(source: str, target_indent: int) -> list[str]:

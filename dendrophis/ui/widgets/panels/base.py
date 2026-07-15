@@ -61,6 +61,10 @@ class Panel(Static, ABC, metaclass=PanelMetaclass):
         """Called at REFRESH_INTERVAL. Subclasses override as needed."""
         pass
 
+    def update_value(self, *args, **kwargs) -> None:
+        """Force a refresh of the panel's state/display."""
+        self._on_refresh_tick()
+
 
 class TextPanel(Panel):
     """Simple panel that updates its content via a string return value.

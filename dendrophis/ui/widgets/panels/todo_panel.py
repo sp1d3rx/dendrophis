@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Checkbox, Input, Label
 
-from dendrophis.events import EventBus
+from dendrophis.events import EventBus, listen
 from dendrophis.events.types import TodoRequestEvent, TodoUpdatedEvent
 from dendrophis.ui.widgets.panels.event_panel import EventPanel
 
@@ -70,8 +70,9 @@ class TodoPanel(EventPanel):
         self._todos: list[dict[str, Any]] = []
 
     def on_unmount(self) -> None:
-        self._event_bus.unsubscribe(TodoUpdatedEvent, self._on_todo_updated)
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_todo_updated(self, event: TodoUpdatedEvent) -> None:
         """Handle todo list updates from the manager."""
         self._todos = event.todos
@@ -142,5 +143,9 @@ class TodoPanel(EventPanel):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._event_bus.subscribe(TodoUpdatedEvent, self._on_todo_updated)
+        self._events = self._event_bus.bind(self)
+        self.refresh_ui()
+
+    def update_value(self, *args, **kwargs) -> None:
+        """Force a refresh of the panel's display."""
         self.refresh_ui()

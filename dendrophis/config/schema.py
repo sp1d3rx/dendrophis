@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -53,6 +53,23 @@ class LLMConfig(BaseModel):
     #   "thinking" — start parsing as thinking/reasoning
     #   None       — auto-detect based on model name
     thinking_start_mode: Literal["text", "thinking"] | None = None
+    # How to preserve reasoning/thoughts (thinking blocks) in the conversation history
+    # sent back to the LLM:
+    #   "always"  — always preserve reasoning for all turns
+    #   "current" — preserve reasoning only for the current active turn
+    #   "never"   — never preserve reasoning in the context (e.g. for Gemini)
+    preserve_reasoning: Literal["always", "current", "never"] = "always"
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_preserve_reasoning(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            val = values.get("preserve_reasoning")
+            if val is True:
+                values["preserve_reasoning"] = "always"
+            elif val is False:
+                values["preserve_reasoning"] = "never"
+        return values
 
 
 class HookEntry(BaseModel):

@@ -111,4 +111,8 @@ def get_agent_tools() -> list[BaseTool]:
         agent_tools.append(EditTool())
     if PatchTool is not None:
         agent_tools.append(PatchTool())
+    if WriteTool is not None:
+        agent_tools.append(WriteTool())
+    if ReadTool is not None:
+        agent_tools.append(ReadTool())
     return agent_tools

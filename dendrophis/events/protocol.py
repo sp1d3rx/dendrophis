@@ -23,15 +23,15 @@ class IEventBus(ABC):
         handler: EventHandler | AsyncEventHandler,
         *,
         priority: int = 0,
-    ) -> None:
+    ) -> Any:
         """Subscribe to an event type."""
         ...
 
     @abstractmethod
     def unsubscribe(
         self,
-        event_type: type[EventType],
-        handler: EventHandler | AsyncEventHandler,
+        subscription_or_event_type: Any,
+        handler: EventHandler | AsyncEventHandler | None = None,
     ) -> None:
         """Unsubscribe from an event type."""
         ...

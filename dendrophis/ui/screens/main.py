@@ -36,6 +36,7 @@ from dendrophis.events import (
     ToolResultEvent,
     WaitingForInputEvent,
     WriteProposalEvent,
+    listen,
 )
 from dendrophis.ui.widgets.chat_view import ChatView
 from dendrophis.ui.widgets.debug_log import DebugLogWidget
@@ -143,54 +144,33 @@ class MainScreen(Screen):
 
     def _setup_event_handlers(self) -> None:
         """Subscribe this screen to relevant events."""
-        self._handlers = [
-            (TextDeltaEvent, self._on_text_delta),
-            (ReasoningDeltaEvent, self._on_reasoning_delta),
-            (ErrorEvent, self._on_error),
-            (RetryEvent, self._on_retry),
-            (ToolResultEvent, self._on_tool_result),
-            (StreamingStartedEvent, self._on_streaming_started),
-            (StreamingFinishedEvent, self._on_streaming_finished),
-            (ToolCallStartEvent, self._on_tool_call_start),
-            (ToolCallDeltaEvent, self._on_tool_call_delta),
-            (ToolExecutionStartedEvent, self._on_tool_execution_started),
-            (ToolExecutionFinishedEvent, self._on_tool_execution_finished),
-            (ToolConfirmationRequestEvent, self._on_tool_confirmation_request),
-            (MultipleChoiceRequestEvent, self._on_multiple_choice_request),
-            (ContextUpdatedEvent, self._on_context_updated),
-            (ModelSwitchedEvent, self._on_model_switched),
-            (ConfigReloadedEvent, self._on_config_reloaded),
-            (EditProposalEvent, self._on_edit_proposal),
-            (WriteProposalEvent, self._on_write_proposal),
-            (PythonExecProposalEvent, self._on_python_exec_proposal),
-            (PrimerScreenRequest, self._on_primer_screen_request),
-        ]
-
-        for event_type, handler in self._handlers:
-            self._event_bus.subscribe(event_type, handler)
+        self._events = self._event_bus.bind(self)
 
     def on_unmount(self) -> None:
         """Unsubscribe all event handlers to prevent memory leaks."""
-        for event_type, handler in self._handlers:
-            self._event_bus.unsubscribe(event_type, handler)
-        self._handlers.clear()
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_text_delta(self, event: TextDeltaEvent) -> None:
         """Handle text delta events."""
         self.query_one(ChatView).append_text_delta(event.delta)
 
+    @listen
     def _on_reasoning_delta(self, event: ReasoningDeltaEvent) -> None:
         """Handle reasoning delta events."""
         self.query_one(ChatView).append_reasoning_delta(event.delta)
 
+    @listen
     def _on_error(self, event: ErrorEvent) -> None:
         """Handle error events."""
         self.query_one(ChatView).add_error(event.message)
 
+    @listen
     def _on_retry(self, event: RetryEvent) -> None:
         """Handle retry events."""
         self.query_one(ChatView).show_retry_status(event.message, event.delay)
 
+    @listen
     def _on_tool_result(self, event: ToolResultEvent) -> None:
         """Handle tool result events."""
         self.query_one(ChatView).add_tool_result(
@@ -202,12 +182,14 @@ class MainScreen(Screen):
             tool_call_id=event.tool_call_id,
         )
 
+    @listen
     def _on_streaming_started(self, event: StreamingStartedEvent) -> None:
         """Handle streaming started events."""
         self._streaming = True
         model_id = self._session.config.llm.model
         self.query_one(ChatView).start_assistant_message(model_id=model_id)
 
+    @listen
     def _on_streaming_finished(self, event: StreamingFinishedEvent) -> None:
         """Handle streaming finished events."""
         self._streaming = False
@@ -228,22 +210,27 @@ class MainScreen(Screen):
             self.notify(msg, severity="information")
             self._process_input(next_event)
 
+    @listen
     def _on_tool_execution_started(self, event: ToolExecutionStartedEvent) -> None:
         self.query_one(ChatView).add_tool_status(
             event.tool_name, event.description, event.arguments, index=event.tool_call_index
         )
 
+    @listen
     def _on_tool_call_start(self, event: ToolCallStartEvent) -> None:
         self.query_one(ChatView).add_tool_placeholder(event.index, event.name, tool_call_id=event.id)
 
+    @listen
     def _on_tool_call_delta(self, event: ToolCallDeltaEvent) -> None:
         """Handle tool call delta events (streaming)."""
         pass
 
+    @listen
     def _on_tool_execution_finished(self, event: ToolExecutionFinishedEvent) -> None:
         """Handle tool execution finished events."""
         pass
 
+    @listen
     def _on_tool_confirmation_request(self, event: ToolConfirmationRequestEvent) -> None:
         """Handle human approval request for sensitive tools."""
 
@@ -257,6 +244,7 @@ class MainScreen(Screen):
         # Schedule on the UI thread to ensure proper app context
         self.call_later(show_confirmation)
 
+    @listen
     def _on_multiple_choice_request(self, event: MultipleChoiceRequestEvent) -> None:
         """Handle human multiple choice question request."""
 
@@ -268,6 +256,7 @@ class MainScreen(Screen):
         # Schedule on the UI thread to ensure proper app context
         self.call_later(show_mcq)
 
+    @listen
     def _on_edit_proposal(self, event: EditProposalEvent) -> None:
         """Handle request for file edit approval with diff."""
 
@@ -278,6 +267,7 @@ class MainScreen(Screen):
 
         self.call_later(show_edit_confirmation)
 
+    @listen
     def _on_write_proposal(self, event: WriteProposalEvent) -> None:
         """Handle request for new file write approval with content preview."""
 
@@ -288,6 +278,7 @@ class MainScreen(Screen):
 
         self.call_later(show_write_confirmation)
 
+    @listen
     def _on_python_exec_proposal(self, event: PythonExecProposalEvent) -> None:
         """Handle request for Python code execution approval with code preview."""
 
@@ -300,6 +291,7 @@ class MainScreen(Screen):
 
         self.call_later(show_python_exec_confirmation)
 
+    @listen
     def _on_primer_screen_request(self, event: PrimerScreenRequest) -> None:
         """Handle request to open the project primer screen."""
 
@@ -310,6 +302,7 @@ class MainScreen(Screen):
 
         self.call_later(show_primer_screen)
 
+    @listen
     def _on_context_updated(self, event: ContextUpdatedEvent) -> None:
         """Handle context updated events."""
         # Sidebar will refresh via StatsUpdatedEvent
@@ -331,7 +324,10 @@ class MainScreen(Screen):
                     if role == "user":
                         chat.add_user_message(content)
                     elif role == "assistant":
-                        chat.start_assistant_message()
+                        chat.start_assistant_message(loading=False)
+                        reasoning = msg.get("reasoning_content")
+                        if reasoning:
+                            chat.append_reasoning(reasoning)
                         if content:
                             chat.append_text_delta(content)
                         # Store tool calls to match with results later
@@ -370,6 +366,7 @@ class MainScreen(Screen):
                     self._debug_widget.write(f"TRACEBACK: {traceback.format_exc()}")
                 # Add handling for other roles if needed
 
+    @listen
     def _on_model_switched(self, event: ModelSwitchedEvent) -> None:
         """Handle model switched events."""
         self.query_one(ChatView).add_system_message(f"Model switched to {event.model_id}")
@@ -385,6 +382,7 @@ class MainScreen(Screen):
 
         self.call_later(focus_input)
 
+    @listen
     def _on_config_reloaded(self, event: ConfigReloadedEvent) -> None:
         """Rebuild the sidebar whenever the config is saved."""
         # Already on the event loop thread (event bus uses call_soon_threadsafe).

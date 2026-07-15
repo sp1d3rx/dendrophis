@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from textual.widgets import Static
 
-from dendrophis.events import EventBus, MemoryAssociationEvent
+from dendrophis.events import EventBus, MemoryAssociationEvent, listen
 from dendrophis.memory.association import MemoryAssociationGenerator
 from dendrophis.ui.widgets.panels.base import TextPanel
 
@@ -41,12 +41,13 @@ class MemoryAssociationPanel(TextPanel):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._event_bus.subscribe(MemoryAssociationEvent, self._on_association)
+        self._events = self._event_bus.bind(self)
         self.set_interval(self.REFRESH_INTERVAL, self._check_for_association)
 
     def on_unmount(self) -> None:
-        self._event_bus.unsubscribe(MemoryAssociationEvent, self._on_association)
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_association(self, event: MemoryAssociationEvent) -> None:
         """Handle a new memory association event."""
         self._current_association = event

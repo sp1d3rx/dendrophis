@@ -13,6 +13,7 @@ from dendrophis.events import (
     ToolExecutionFinishedEvent,
     ToolExecutionStartedEvent,
     WaitingForInputEvent,
+    listen,
 )
 from dendrophis.ui.widgets.panels.base import TextPanel
 
@@ -38,53 +39,48 @@ class StatusPanel(TextPanel):
 
     def on_mount(self) -> None:
         super().on_mount()  # Start refresh interval
-        self._handlers = [
-            (StreamingStartedEvent, self._on_streaming_started),
-            (TextDeltaEvent, self._on_text_delta),
-            (StreamingFinishedEvent, self._on_streaming_finished),
-            (ToolExecutionStartedEvent, self._on_tool_execution_started),
-            (ToolExecutionFinishedEvent, self._on_tool_execution_finished),
-            (MessageSentEvent, self._on_message_sent),
-            (WaitingForInputEvent, self._on_waiting_for_input),
-        ]
-        for event_type, handler in self._handlers:
-            self._event_bus.subscribe(event_type, handler)
+        self._events = self._event_bus.bind(self)
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""
-        for event_type, handler in self._handlers:
-            self._event_bus.unsubscribe(event_type, handler)
-        self._handlers.clear()
+        self._events.unsubscribe_all()
 
+    @listen
     def _on_streaming_started(self, event: StreamingStartedEvent) -> None:
         self._message_sent = True
         self._waiting_input = False
         self._tool_calling = False
         self.update_value()
 
+    @listen
     def _on_text_delta(self, event: TextDeltaEvent) -> None:
         self._streaming = True
         self.update_value()
 
+    @listen
     def _on_streaming_finished(self, event: StreamingFinishedEvent) -> None:
         self._streaming = False
         self.update_value()
 
+    @listen
     def _on_tool_execution_started(self, event: ToolExecutionStartedEvent) -> None:
         self._tool_calling = True
         self._waiting_input = False
         self.update_value()
 
+    @listen
     def _on_tool_execution_finished(self, event: ToolExecutionFinishedEvent) -> None:
         self._tool_calling = False
         self.update_value()
 
+    @listen
     def _on_message_sent(self, event: MessageSentEvent) -> None:
         self._message_sent = True
         self._waiting_input = False
         self._tool_calling = False
         self.update_value()
 
+    @listen
     def _on_waiting_for_input(self, event: WaitingForInputEvent) -> None:
         self._waiting_input = True
         self._message_sent = False

@@ -749,11 +749,13 @@ def parse_text_tool_calls(rawText: str) -> list[ToolCall]:
                 )
                 continue
 
-            # Format 2: JSON {"name": ..., "arguments": ...}
+            # Format 2: JSON {"name": ...} with optional "arguments"
             try:
                 decodedPayload = json.loads(matchedContent)
-                if isinstance(decodedPayload, dict) and "name" in decodedPayload and "arguments" in decodedPayload:
-                    arguments = decodedPayload["arguments"]
+                if isinstance(decodedPayload, dict) and "name" in decodedPayload:
+                    arguments = decodedPayload.get("arguments")
+                    if arguments is None:
+                        arguments = {key: value for key, value in decodedPayload.items() if key != "name"}
                     toolName = decodedPayload.get("name", "unknown")
                     results.append(
                         ToolCall(
@@ -763,6 +765,7 @@ def parse_text_tool_calls(rawText: str) -> list[ToolCall]:
                             arguments=json.dumps(arguments) if isinstance(arguments, dict) else str(arguments),
                         )
                     )
+                    continue
             except (json.JSONDecodeError, KeyError):
                 pass
 

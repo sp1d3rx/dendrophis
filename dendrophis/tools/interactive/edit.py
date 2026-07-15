@@ -67,14 +67,13 @@ class InteractiveEditTool(InteractiveBaseTool):
             if not diff_text:
                 return {"success": True, "message": "No changes detected."}
 
+            added = sum(1 for diff_line in diff_lines if diff_line.startswith("+") and not diff_line.startswith("+++"))
+            removed = sum(
+                1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
+            )
+
             if self.silent:
                 # Auto-approved: apply immediately, return diff stats
-                added = sum(
-                    1 for diff_line in diff_lines if diff_line.startswith("+") and not diff_line.startswith("+++")
-                )
-                removed = sum(
-                    1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
-                )
                 await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
                 lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
                 result = {
@@ -82,6 +81,8 @@ class InteractiveEditTool(InteractiveBaseTool):
                     "file": str(path),
                     "lines_added": added,
                     "lines_removed": removed,
+                    "changes": f"+{added}/-{removed}",
+                    "diff": diff_text,
                 }
                 if lint_errors:
                     result["lint_errors"] = lint_errors
@@ -109,6 +110,8 @@ class InteractiveEditTool(InteractiveBaseTool):
                     "success": True,
                     "file": str(path),
                     "replaced": (old_string[:100] + "..." if len(old_string) > 100 else old_string),
+                    "changes": f"+{added}/-{removed}",
+                    "diff": diff_text,
                 }
                 if lint_errors:
                     result["lint_errors"] = lint_errors

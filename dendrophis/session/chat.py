@@ -444,7 +444,7 @@ class ChatOrchestrator:
                             f"text_len={len(partial_text)}, "
                             f"reasoning_len={len(partial_reasoning)}"
                         )
-                        self.context.append_assistant(partial_text, None, None)
+                        self.context.append_assistant(partial_text, None, partial_reasoning or None)
                         self._emit(TextDeltaEvent(delta=" [response cancelled]"))
                     return
                 if isinstance(event, TurnResult):
@@ -526,7 +526,7 @@ class ChatOrchestrator:
                 tool_calls_payload = [tool_call_to_payload(tool_call) for tool_call in turn.tool_calls]
             else:
                 tool_calls_payload = None
-            self.context.append_assistant(assistant_text, tool_calls_payload, None)
+            self.context.append_assistant(assistant_text, tool_calls_payload, turn.reasoning or None)
             is_tool_finish = bool(turn.tool_calls) and turn.finish_reason in ("tool_calls", "stop")
             if not is_tool_finish:
                 self._log(f"Exiting: finish_reason={turn.finish_reason}, has_tools={bool(turn.tool_calls)}")

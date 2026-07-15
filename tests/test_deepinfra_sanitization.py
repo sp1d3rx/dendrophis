@@ -146,3 +146,93 @@ def test_sanitize_messages_mismatched_tool_counts_for_deepinfra(mock_deepinfra_c
     assert roles == ["system", "user", "assistant"]
     # The remaining assistant message should not contain tool_call
     assert "<tool_call>" not in sanitized[-1]["content"]
+
+
+def test_sanitize_messages_preserve_reasoning():
+    """Test that reasoning_content is preserved or stripped based on preserve_reasoning."""
+    from dendrophis.config.schema import LLMConfig
+
+    # With preserve_reasoning="always" (default)
+    config_preserve = LLMConfig(
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        model="gpt-4",
+        preserve_reasoning="always",
+    )
+    client_preserve = LLMClient(config_preserve)
+
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi", "reasoning_content": "Thinking process..."},
+    ]
+
+    ctx_preserve = client_preserve._make_provider_context()
+    sanitized_preserve = client_preserve._sanitize_messages(
+        messages,
+        is_local=ctx_preserve.is_local,
+        is_direct_anthropic=ctx_preserve.is_direct_anthropic,
+        is_openrouter=ctx_preserve.is_openrouter,
+        is_deepinfra=ctx_preserve.is_deepinfra,
+        use_responses_api=ctx_preserve.use_responses_api,
+    )
+    assert len(sanitized_preserve) == 3
+    assert sanitized_preserve[-1]["reasoning_content"] == "Thinking process..."
+
+    # With preserve_reasoning="never"
+    config_strip = LLMConfig(
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        model="gpt-4",
+        preserve_reasoning="never",
+    )
+    client_strip = LLMClient(config_strip)
+
+    ctx_strip = client_strip._make_provider_context()
+    sanitized_strip = client_strip._sanitize_messages(
+        messages,
+        is_local=ctx_strip.is_local,
+        is_direct_anthropic=ctx_strip.is_direct_anthropic,
+        is_openrouter=ctx_strip.is_openrouter,
+        is_deepinfra=ctx_strip.is_deepinfra,
+        use_responses_api=ctx_strip.use_responses_api,
+    )
+    assert len(sanitized_strip) == 3
+    assert "reasoning_content" not in sanitized_strip[-1]
+
+
+def test_sanitize_messages_strips_older_reasoning():
+    """Test that reasoning_content is stripped for older turns but kept for current turn."""
+    from dendrophis.config.schema import LLMConfig
+
+    config = LLMConfig(
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        model="gpt-4",
+        preserve_reasoning="current",
+    )
+    client = LLMClient(config)
+
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "First message"},
+        {"role": "assistant", "content": "First response", "reasoning_content": "Thinking 1"},
+        {"role": "user", "content": "Second message"},
+        {"role": "assistant", "content": "Second response", "reasoning_content": "Thinking 2"},
+    ]
+
+    ctx = client._make_provider_context()
+    sanitized = client._sanitize_messages(
+        messages,
+        is_local=ctx.is_local,
+        is_direct_anthropic=ctx.is_direct_anthropic,
+        is_openrouter=ctx.is_openrouter,
+        is_deepinfra=ctx.is_deepinfra,
+        use_responses_api=ctx.use_responses_api,
+    )
+
+    assert len(sanitized) == 5
+    # First response (before the last user message) should have its reasoning stripped
+    assert "reasoning_content" not in sanitized[2]
+    # Second response (after the last user message) should keep its reasoning
+    assert sanitized[4]["reasoning_content"] == "Thinking 2"

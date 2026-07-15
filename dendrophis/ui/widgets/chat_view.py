@@ -274,6 +274,16 @@ class ThoughtBubble(VerticalScroll):
         yield Static("🧠 [bold]Thought[/bold]", id="thought-header", markup=True)
         yield Static("", id="thought-text")
 
+    def on_mount(self) -> None:
+        if self._parts:
+            joined = "".join(self._parts)
+            self.query_one("#thought-header", Static).update("🧠 [bold]Thinking...[/bold]")
+            body = self.query_one("#thought-text", Static)
+            body.styles.display = "block"
+            body.update(escape(joined))
+            self.styles.display = "block"
+        self._update_display_state()
+
     def append_text(self, text: str) -> None:
         self._parts.append(text)
         joined = "".join(self._parts)
@@ -282,6 +292,9 @@ class ThoughtBubble(VerticalScroll):
 
         self.styles.display = "block"
         self._collapsed = False
+
+        if not self.is_mounted:
+            return
 
         self.query_one("#thought-header", Static).update("🧠 [bold]Thinking...[/bold]")
         body = self.query_one("#thought-text", Static)
@@ -309,6 +322,8 @@ class ThoughtBubble(VerticalScroll):
 
     def _update_display_state(self) -> None:
         """Update display heights and text based on collapsed state."""
+        if not self.is_mounted:
+            return
         header = self.query_one("#thought-header", Static)
         body = self.query_one("#thought-text", Static)
 
@@ -410,7 +425,7 @@ class AssistantMessage(Vertical):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, model_id: str = "", loading: bool = True) -> None:
         super().__init__()
         self._markdown = CustomMarkdown("")
         # All markdown segments (one per text chunk between tool calls)
@@ -420,9 +435,9 @@ class AssistantMessage(Vertical):
         # Text for the CURRENT segment only
         self._clean_parts: list[str] = []
         self._clean_text = ""
-        self._model_id = ""
+        self._model_id = model_id
         self._has_reasoning = False
-        self._loading = LoadingIndicator()
+        self._loading = LoadingIndicator() if loading else None
         self._thought_bubble = ThoughtBubble()
         self._active_thought_bubble: ThoughtBubble = self._thought_bubble
         self._text_since_last_thought: bool = False  # True once text arrives after a thought
@@ -446,7 +461,8 @@ class AssistantMessage(Vertical):
             model_short = self._model_id.split("/")[-1]
             label_text += f" [dim]({model_short})[/dim]"
         yield AssistantLabel(label_text)
-        yield self._loading
+        if self._loading:
+            yield self._loading
         yield self._thought_bubble
         yield self._markdown
 
@@ -795,10 +811,12 @@ class AssistantMessage(Vertical):
         msg = ToolResultMessage(tool_name, content, description, arguments, consecutive_failures)
 
         existing_status = self._tool_status_by_id.pop(tool_call_id, None) if tool_call_id else None
-        if existing_status is not None:
+        if existing_status is not None and existing_status.parent is not None:
             self.mount(msg, after=existing_status)
-        else:
+        elif self._markdown.parent is not None:
             self.mount(msg, before=self._markdown)
+        else:
+            self.mount(msg)
 
     # ── Finalise ──────────────────────────────────────────────────────────────
 
@@ -971,6 +989,15 @@ class ToolResultMessage(Vertical):
             if stderr:
                 combined.append(stderr)
             self._full_output_content = "\n".join(combined) if combined else (self._content or "")
+        elif self._tool_name in ("edit", "edit_function") and self._content:
+            try:
+                parsed_result = json.loads(self._content)
+                if isinstance(parsed_result, dict) and "diff" in parsed_result:
+                    self._full_output_content = parsed_result["diff"]
+                else:
+                    self._full_output_content = self._content
+            except Exception:
+                self._full_output_content = self._content
         else:
             self._full_output_content = self._content or ""
 
@@ -1113,10 +1140,9 @@ class ChatView(VerticalScroll):
         self._message_widgets.append(msg)
         self.scroll_end(animate=False)
 
-    def start_assistant_message(self, model_id: str = "") -> None:
+    def start_assistant_message(self, model_id: str = "", loading: bool = True) -> None:
         self.remove_retry_status()
-        bubble = AssistantMessage()
-        bubble._model_id = model_id
+        bubble = AssistantMessage(model_id=model_id, loading=loading)
         self._active_bubble = bubble
         self.mount(bubble)
         self._message_widgets.append(bubble)

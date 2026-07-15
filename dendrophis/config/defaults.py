@@ -37,6 +37,8 @@ llm:
   reasoning_effort: null
   # How the streaming parser starts ("text" for standard models, "thinking" for thinking models, null = auto)
   thinking_start_mode: null
+  # How to preserve reasoning/thoughts in context: "always" (all turns), "current" (current turn only), or "never"
+  preserve_reasoning: "always"
   # Mistral/Kimi prompt cache key (set to enable prompt caching for supported models)
   # Run `dendrophis --calibrate MODEL` to check if your model supports it
   # Requests with the same key and model share a KV cache, even if prompts differ slightly.

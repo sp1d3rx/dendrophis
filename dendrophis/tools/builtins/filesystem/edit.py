@@ -91,6 +91,22 @@ class EditTool(BaseTool):
                 }
 
             new_content = content.replace(old_string, new_string, 1)
+
+            import difflib
+
+            diff_lines = list(
+                difflib.unified_diff(
+                    content.splitlines(keepends=True),
+                    new_content.splitlines(keepends=True),
+                    fromfile=f"a/{file_path}",
+                    tofile=f"b/{file_path}",
+                )
+            )
+            added = sum(1 for diff_line in diff_lines if diff_line.startswith("+") and not diff_line.startswith("+++"))
+            removed = sum(
+                1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
+            )
+
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
             # Run auto-linting
@@ -100,6 +116,8 @@ class EditTool(BaseTool):
                 "success": True,
                 "file": str(path),
                 "replaced": (old_string[:100] + "..." if len(old_string) > 100 else old_string),
+                "changes": f"+{added}/-{removed}",
+                "diff": "".join(diff_lines),
             }
             if lint_errors:
                 result["lint_errors"] = lint_errors

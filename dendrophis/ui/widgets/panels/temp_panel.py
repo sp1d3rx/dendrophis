@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dendrophis.events import EventBus, TemperatureChangedEvent, TemperatureChangeRequest
+from dendrophis.events import EventBus, TemperatureChangedEvent, TemperatureChangeRequest, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
 if TYPE_CHECKING:
@@ -32,9 +32,14 @@ class TempPanel(TextPanel):
         self._event_bus = event_bus
         self._temperature: float = session.config.llm.temperature
 
-        # Subscribe to temperature change events
-        self._event_bus.subscribe(TemperatureChangedEvent, self._on_temperature_changed)
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._events = self._event_bus.bind(self)
 
+    def on_unmount(self) -> None:
+        self._events.unsubscribe_all()
+
+    @listen
     def _on_temperature_changed(self, event: TemperatureChangedEvent) -> None:
         """Update local state when temperature changes via event bus."""
         self._temperature = event.temperature
