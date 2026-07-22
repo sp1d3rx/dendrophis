@@ -99,17 +99,18 @@ class PatchTool(BaseTool):
                 if count > 1:
                     return {
                         "error": (
-                            f"Ambiguous edit at edit_index {edit_index}: "
-                            f"found {count} occurrences of the search block"
+                            f"Ambiguous edit at edit_index {edit_index}: found {count} occurrences of the search block"
                         ),
                         "hint": "Provide more context for this search block to make it unique",
                     }
 
                 new_content = new_content.replace(search_string, replace_string, 1)
-                applied_edits.append({
-                    "search": search_string[:50] + "..." if len(search_string) > 50 else search_string,
-                    "replace": replace_string[:50] + "..." if len(replace_string) > 50 else replace_string,
-                })
+                applied_edits.append(
+                    {
+                        "search": search_string[:50] + "..." if len(search_string) > 50 else search_string,
+                        "replace": replace_string[:50] + "..." if len(replace_string) > 50 else replace_string,
+                    }
+                )
 
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 

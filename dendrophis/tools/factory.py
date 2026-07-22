@@ -32,6 +32,7 @@ def create_builtin_registry(
     todo_manager = None
     try:
         from dendrophis.tools.builtins.todo_manager import TodoManager
+
         todo_manager = TodoManager(event_bus)
     except ImportError:
         pass
@@ -46,11 +47,13 @@ def create_builtin_registry(
     }
 
     # Discover and load tool classes dynamically from builtins and interactive packages
-    discovered_classes = discover_tool_classes([
-        "dendrophis.tools.builtins",
-        "dendrophis.tools.builtins.filesystem",
-        "dendrophis.tools.interactive",
-    ])
+    discovered_classes = discover_tool_classes(
+        [
+            "dendrophis.tools.builtins",
+            "dendrophis.tools.builtins.filesystem",
+            "dendrophis.tools.interactive",
+        ]
+    )
 
     instantiated_tools = []
     for tool_class in discovered_classes:

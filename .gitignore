@@ -76,3 +76,11 @@ benchmarks/baseline_*.txt
 LFM2.5-1.2B-*
 *.safetensors
 *.jsonl
+
+# agents and local cli tools
+.agents/
+.antigravitycli/
+.claude/
+.kilo/
+.venv_pypy/
+

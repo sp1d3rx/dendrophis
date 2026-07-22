@@ -164,6 +164,7 @@ class MainScreen(Screen):
     def _on_error(self, event: ErrorEvent) -> None:
         """Handle error events."""
         self.query_one(ChatView).add_error(event.message)
+        self.app.debug_log(f"[ERROR] {event.message}")
 
     @listen
     def _on_retry(self, event: RetryEvent) -> None:
@@ -684,8 +685,9 @@ class MainScreen(Screen):
         from textual.worker import WorkerState
 
         if event.state == WorkerState.ERROR and event.worker.error:
-            chat = self.query_one(ChatView)
-            chat.add_error(f"Worker error: {event.worker.error}")
+            chat_view = self.query_one(ChatView)
+            chat_view.add_error(f"Worker error: {event.worker.error}")
+            self.app.debug_log(f"[ERROR] Worker error: {event.worker.error}")
 
     def on_model_panel_switched(self, event: ModelPanel.Switched) -> None:
         """Handle click on model panel by opening the switcher."""

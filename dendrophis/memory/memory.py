@@ -428,9 +428,7 @@ class MemoryStore:
                 stats.total_tags = cursor.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
 
                 # Memories by source
-                rows = cursor.execute(
-                    "SELECT source, COUNT(*) as cnt FROM memories GROUP BY source"
-                ).fetchall()
+                rows = cursor.execute("SELECT source, COUNT(*) as cnt FROM memories GROUP BY source").fetchall()
                 stats.memories_by_source = {row["source"]: row["cnt"] for row in rows}
 
                 # Top tags

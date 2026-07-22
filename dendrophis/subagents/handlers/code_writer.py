@@ -154,6 +154,7 @@ class CodeWriterHandler:
             self._tool_registry = ToolRegistry()
             try:
                 from dendrophis.tools.builtins.filesystem import get_agent_tools
+
                 if get_agent_tools is not None:
                     for tool in get_agent_tools():
                         self._tool_registry.add(tool)
@@ -162,6 +163,7 @@ class CodeWriterHandler:
 
             try:
                 from dendrophis.tools.builtins.filesystem.bash import BashTool
+
                 if BashTool is not None:
                     self._tool_registry.add(BashTool())
             except ImportError:
@@ -169,6 +171,7 @@ class CodeWriterHandler:
 
             try:
                 from dendrophis.tools.builtins.subagents import ClarifyTool
+
                 if ClarifyTool is not None:
                     self._tool_registry.add(ClarifyTool())
             except ImportError:
@@ -176,6 +179,7 @@ class CodeWriterHandler:
 
             try:
                 from dendrophis.tools.builtins.filesystem.glob import GlobTool
+
                 if GlobTool is not None:
                     self._tool_registry.add(GlobTool())
             except ImportError:
@@ -183,12 +187,14 @@ class CodeWriterHandler:
 
             try:
                 from dendrophis.tools.builtins.filesystem.ripgrep import RipgrepTool
+
                 if RipgrepTool is not None:
                     self._tool_registry.add(RipgrepTool())
             except ImportError:
                 pass
 
             from dendrophis.tools.executor import ToolExecutor
+
             self._tool_executor = ToolExecutor(self._tool_registry)
         return self._tool_registry
 

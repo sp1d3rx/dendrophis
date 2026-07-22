@@ -141,6 +141,7 @@ def setup_demo_config(demo_api_key: bool = False) -> Path:
     if demo_api_key:
         # Replace API key with demo key for safety during screenshots
         import re
+
         config_content = re.sub(
             r'api_key:\s*"[^"]*"',
             f'api_key: "{DEMO_API_KEY}"',

@@ -10,17 +10,17 @@ if not matches:
 else:
     session_file = matches[0]
     print(f"Reading: {session_file}")
-    
+
     if session_file.suffix == ".xz":
         with lzma.open(session_file, "rt", encoding="utf-8") as f:
             data = json.load(f)
     else:
         with open(session_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-            
+
     messages = data.get("messages", [])
     print(f"Total messages: {len(messages)}")
-    
+
     # Print detail of assistant messages
     for i, msg in enumerate(messages):
         if msg.get("role") == "assistant":

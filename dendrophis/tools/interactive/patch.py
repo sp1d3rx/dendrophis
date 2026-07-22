@@ -66,8 +66,7 @@ class InteractivePatchTool(InteractiveBaseTool):
                 if count > 1:
                     return {
                         "error": (
-                            f"Ambiguous edit at edit_index {edit_index}: "
-                            f"found {count} occurrences of the search block"
+                            f"Ambiguous edit at edit_index {edit_index}: found {count} occurrences of the search block"
                         ),
                         "hint": "Provide more context for this search block to make it unique",
                     }
