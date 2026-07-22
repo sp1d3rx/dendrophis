@@ -62,6 +62,8 @@ AGENTS.md
 projects/
 .temp/
 test_*.py
+!dendrophis/**/test_*.py
+
 
 # os
 .DS_Store
