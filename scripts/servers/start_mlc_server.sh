@@ -1,8 +1,13 @@
 #!/bin/zsh
 
 # Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "$ROOT_DIR"
+
 MLC_MODELS_DIR="$HOME/.mlc-llm/models"
 PORT=8081  # Use 8081 to avoid conflict with MLX on 8080
+
 
 # 1. Find all MLC models
 echo "🔍 Scanning for local MLC models in $MLC_MODELS_DIR..."

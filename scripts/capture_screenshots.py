@@ -169,7 +169,9 @@ def setup_demo_session() -> Path:
     return session_path
 
 
-def launch_dendrophis(config_path: Path, session_path: Path = None, scenario: str = "main_chat") -> subprocess.Popen:
+def launch_dendrophis(
+    config_path: Path, session_path: Path | None = None, scenario: str = "main_chat"
+) -> subprocess.Popen:
     """Launch dendrophis with the specified configuration."""
     env = os.environ.copy()
     env["DENDROPHIS_CONFIG"] = str(config_path)
@@ -282,7 +284,7 @@ def capture_manual_instructions(scenario: str) -> str:
     return instructions.get(scenario, instructions["main_chat"])
 
 
-def capture_with_asciinema(scenario: str, demo_api_key: bool = False, output_dir: Path = None) -> int:
+def capture_with_asciinema(scenario: str, demo_api_key: bool = False, output_dir: Path | None = None) -> int:
     """Record terminal session with asciinema."""
     if output_dir is None:
         output_dir = SCREENSHOTS_DIR
@@ -319,7 +321,7 @@ def capture_with_asciinema(scenario: str, demo_api_key: bool = False, output_dir
     return result.returncode
 
 
-def launch_for_capture(scenario: str, demo_api_key: bool = False, output_dir: Path = None) -> int:
+def launch_for_capture(scenario: str, demo_api_key: bool = False, output_dir: Path | None = None) -> int:
     """Launch dendrophis for manual screenshot capture."""
     if output_dir is None:
         output_dir = SCREENSHOTS_DIR
@@ -367,7 +369,7 @@ def launch_for_capture(scenario: str, demo_api_key: bool = False, output_dir: Pa
     return 0
 
 
-def create_tmux_session(scenario: str, demo_api_key: bool = False, output_dir: Path = None) -> int:
+def create_tmux_session(scenario: str, demo_api_key: bool = False, output_dir: Path | None = None) -> int:
     """Create a tmux session prepped for screenshot capture."""
     if output_dir is None:
         output_dir = SCREENSHOTS_DIR
@@ -496,6 +498,8 @@ Recommended workflow:
 
     else:  # manual
         return launch_for_capture(args.scenario, args.demo_api_key, screenshots_dir)
+
+    return 0
 
 
 if __name__ == "__main__":

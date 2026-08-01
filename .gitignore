@@ -57,6 +57,9 @@ tool_log_*.txt
 VIBE.md
 STYLE.md
 AGENTS.md
+problem_report.md
+original_prompt.md
+
 
 # local experiments
 projects/

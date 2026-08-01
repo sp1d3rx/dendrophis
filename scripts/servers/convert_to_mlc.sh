@@ -1,14 +1,19 @@
 #!/bin/zsh
 
 # Configuration
-LOCAL_MLC_DIR="./local-ai-mlc"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "$ROOT_DIR"
+
+LOCAL_MLC_DIR="$ROOT_DIR/local-ai-mlc"
 MLC_MODELS_DIR="$HOME/.mlc-llm/models"
 mkdir -p "$MLC_MODELS_DIR"
 
 if [ -z "$1" ]; then
-    echo "Usage: ./convert_to_mlc.sh <path_to_mlx_model_folder_OR_huggingface_id>"
+    echo "Usage: ./scripts/servers/convert_to_mlc.sh <path_to_mlx_model_folder_OR_huggingface_id>"
     exit 1
 fi
+
 
 INPUT_SOURCE="$1"
 
@@ -76,4 +81,5 @@ python -m mlc_llm compile "$OUTPUT_PATH/mlc-chat-config.json" \
 echo ""
 echo "✅ Conversion Complete!"
 echo "📍 MLC Model ready at: $OUTPUT_PATH"
-echo "🚀 You can now select this model in ./start_mlc_server.sh"
+echo "🚀 You can now select this model in ./scripts/servers/start_mlc_server.sh"
+

@@ -3,11 +3,12 @@ set -euo pipefail
 
 # Run dendrophis with PyPy
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROFILING_DIR="${SCRIPT_DIR}/.profiling"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROFILING_DIR="${ROOT_DIR}/.profiling"
 RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Prefer the installed package in the venv
-cd "$SCRIPT_DIR"
+cd "$ROOT_DIR"
 
 # Enable profiling if DENDROPHIS_PROFILE=1 is set
 if [[ "${DENDROPHIS_PROFILE:-0}" == "1" ]]; then
@@ -22,10 +23,11 @@ if [[ "${DENDROPHIS_PROFILE:-0}" == "1" ]]; then
     echo "Profile summary written to: $PROFILING_DIR/profile_${RUN_TIMESTAMP}_summary.txt"
 else
     # Run with PyPy from the specific venv if it exists
-if [[ -f "${SCRIPT_DIR}/.venv_pypy/bin/python" ]]; then
-    "${SCRIPT_DIR}/.venv_pypy/bin/python" -m dendrophis "$@"
+if [[ -f "${ROOT_DIR}/.venv_pypy/bin/python" ]]; then
+    "${ROOT_DIR}/.venv_pypy/bin/python" -m dendrophis "$@"
 else
     # Fallback to system pypy
     pypy -m dendrophis "$@"
 fi
 fi
+

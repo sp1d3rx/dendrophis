@@ -1,8 +1,13 @@
 #!/bin/zsh
 
 # Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "$ROOT_DIR"
+
 LM_STUDIO_MODELS="$HOME/.lmstudio/models"
 PORT=8080
+
 
 # 1. Find all MLX models (look for folders containing config.json)
 echo "🔍 Scanning for MLX models in LM Studio..."
