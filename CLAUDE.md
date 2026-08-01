@@ -20,7 +20,8 @@ dendrophis
 dendrophis --config path/to/config.yaml --model "model-name"
 
 # Enable profiling (outputs to .profiling/)
-DENDROPHIS_PROFILE=1 ./scripts/launchers/dendrophis.sh
+DENDROPHIS_PROFILE=1 ./dendrophis.sh
+
 
 ```
 
