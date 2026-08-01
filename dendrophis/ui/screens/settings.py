@@ -557,13 +557,14 @@ class SettingsScreen(Screen):
     }
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, initial_tab: str = "tab-llm") -> None:
         super().__init__()
         self._session = session
         self._raw = session.config_loader._raw
         self._cfg = session.config
         self._last_valid_yaml = session.config_loader.raw_yaml
-        self._last_tab = "tab-llm"
+        self._last_tab = initial_tab
+        self._initial_tab = initial_tab
 
     def compose(self) -> ComposeResult:
         # Determine maximum context window from model list or fallback to 128000
@@ -580,7 +581,7 @@ class SettingsScreen(Screen):
         with Vertical(id="settings-container"):
             yield Label(f"Config: {self._session.config_loader.path}", classes="settings-section")
 
-            with TabbedContent():
+            with TabbedContent(initial=self._initial_tab):
                 with TabPane("LLM", id="tab-llm"), VerticalScroll():
                     with Vertical(classes="settings-group"):
                         yield Label("API Connection & Model", classes="settings-group-title")

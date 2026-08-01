@@ -10,6 +10,7 @@ from dendrophis.events import (
     StreamingFinishedEvent,
     StreamingStartedEvent,
     TextDeltaEvent,
+    ToolCallStartEvent,
     ToolExecutionFinishedEvent,
     ToolExecutionStartedEvent,
     WaitingForInputEvent,
@@ -50,6 +51,11 @@ class StatusPanel(TextPanel):
         self._message_sent = True
         self._waiting_input = False
         self._tool_calling = False
+        self.update_value()
+
+    @listen
+    def _on_tool_call_start(self, event: ToolCallStartEvent) -> None:
+        self._tool_calling = True
         self.update_value()
 
     @listen

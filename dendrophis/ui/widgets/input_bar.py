@@ -88,14 +88,20 @@ class InputBar(TextArea):
     InputBar:focus {
         border-top: solid $primary;
     }
+    InputBar .text-area--cursor {
+        text-style: underline;
+    }
     """
 
     def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("placeholder", "Type a message... (@ for files, / for commands)")
         super().__init__(**kwargs)
+        self._default_placeholder: str = self.placeholder
         self._history: list[str] = []
         self._history_index: int = -1
         self._draft: str = ""
         self._completing: bool = False
+        self._streaming: bool = False
 
     class Submitted(Message):
         """Posted when the user submits a prompt."""
@@ -238,6 +244,15 @@ class InputBar(TextArea):
 
     class SelectAutocomplete(Message):
         pass
+
+    def set_streaming(self, streaming: bool) -> None:
+        """Enable/disable streaming state (hides cursor, updates placeholder indicator)."""
+        self._streaming = streaming
+        self.show_cursor = not streaming
+        if streaming:
+            self.placeholder = "⏳ Streaming response..."
+        else:
+            self.placeholder = self._default_placeholder
 
     def _submit(self) -> None:
         raw = self.text.strip()

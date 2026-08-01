@@ -67,24 +67,28 @@ class ConfigLoader:
         if system_md_path.exists():
             system_prompt_source = "system.md"
 
+        is_explicit_config = config_path is not None or "DENDROPHIS_CONFIG" in os.environ
         paths = [Path(config_path)] if config_path else _config_search_paths()
 
-        path: Path | None = None
-        for candidate in paths:
-            if candidate.exists():
-                path = candidate
+        resolved_path: Path | None = None
+        for candidate_path in paths:
+            if candidate_path.exists():
+                resolved_path = candidate_path
                 break
 
-        if path is None:
-            path = Path.home() / ".config" / "dendrophis" / "config.yaml"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(DEFAULT_CONFIG_YAML)
+        if resolved_path is None:
+            if is_explicit_config:
+                explicit_config_name = config_path or os.environ.get("DENDROPHIS_CONFIG")
+                raise FileNotFoundError(f"Config file not found: {explicit_config_name}")
+            resolved_path = Path.home() / ".config" / "dendrophis" / "config.yaml"
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            resolved_path.write_text(DEFAULT_CONFIG_YAML)
 
-        raw = _yaml.load(path.read_text()) or {}
+        raw = _yaml.load(resolved_path.read_text()) or {}
         raw = _apply_env_overrides(raw)
         config = DendrophisConfig.model_validate(raw)
         return ConfigLoadResult(
-            loader=cls(path=path, raw=raw, config=config), system_prompt_source=system_prompt_source
+            loader=cls(path=resolved_path, raw=raw, config=config), system_prompt_source=system_prompt_source
         )
 
     def save(self, new_yaml_text: str | None = None) -> None:

@@ -271,7 +271,11 @@ def main() -> None:
     from dendrophis.config.loader import ConfigLoader
     from dendrophis.ui.app import DendrophisApp
 
-    loader = ConfigLoader.load(config_path=args.config)
+    try:
+        loader = ConfigLoader.load(config_path=args.config)
+    except FileNotFoundError as config_error:
+        print(f"Error: {config_error}", file=sys.stderr)
+        sys.exit(1)
     if args.model:
         loader.config.llm.model = args.model
 

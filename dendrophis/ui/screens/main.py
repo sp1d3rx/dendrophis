@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from typing import TYPE_CHECKING
 
@@ -74,6 +75,12 @@ class MainScreen(Screen):
         height: 1fr;
         width: 1fr;
     }
+    #streaming-indicator {
+        display: none;
+        width: 1;
+        padding: 0 1;
+        color: $primary;
+    }
     ChatView {
         height: 1fr;
         width: 100%;
@@ -115,6 +122,9 @@ class MainScreen(Screen):
         self._setup_event_handlers()
         # Auto-load project primer if available (deferred so UI is ready)
         self.call_later(self._auto_load_primer)
+        target_tab = os.environ.get("DENDROPHIS_OPEN_SETTINGS")
+        if target_tab:
+            self.call_later(lambda: self.action_open_settings(initial_tab=target_tab))
 
     def _auto_load_primer(self) -> None:
         """Automatically load project primer on session start."""
@@ -187,6 +197,7 @@ class MainScreen(Screen):
     def _on_streaming_started(self, event: StreamingStartedEvent) -> None:
         """Handle streaming started events."""
         self._streaming = True
+        self.query_one(InputBar).set_streaming(True)
         model_id = self._session.config.llm.model
         self.query_one(ChatView).start_assistant_message(model_id=model_id)
 
@@ -194,6 +205,7 @@ class MainScreen(Screen):
     def _on_streaming_finished(self, event: StreamingFinishedEvent) -> None:
         """Handle streaming finished events."""
         self._streaming = False
+        self.query_one(InputBar).set_streaming(False)
         chat = self.query_one(ChatView)
         chat.remove_retry_status()
         chat.finish_assistant_message()
@@ -328,14 +340,25 @@ class MainScreen(Screen):
                         chat.start_assistant_message(loading=False)
                         reasoning = msg.get("reasoning_content")
                         if reasoning:
-                            chat.append_reasoning(reasoning)
+                            chat.append_reasoning_delta(reasoning)
                         if content:
                             chat.append_text_delta(content)
-                        # Store tool calls to match with results later
-                        for tc in msg.get("tool_calls", []):
-                            tc_id = tc.get("id")
-                            if tc_id:
-                                pending_tool_calls[tc_id] = tc
+                        # Store tool calls to match with results later and display status lines
+                        tool_calls = msg.get("tool_calls", [])
+                        for call_index, tool_call in enumerate(tool_calls):
+                            tool_call_id = tool_call.get("id")
+                            function_info = tool_call.get("function", {})
+                            tool_name = function_info.get("name", "unknown")
+                            tool_arguments = function_info.get("arguments", "")
+                            if tool_call_id:
+                                pending_tool_calls[tool_call_id] = tool_call
+                            chat.add_tool_status(
+                                tool_name=tool_name,
+                                description="",
+                                arguments=tool_arguments,
+                                index=call_index,
+                                tool_call_id=tool_call_id,
+                            )
                         chat.finish_assistant_message()
                     elif role == "tool":
                         # Tool result message - match with pending call
@@ -861,10 +884,10 @@ class MainScreen(Screen):
 
         self.app.push_screen(SessionPickerScreen(self._session), handle_session_selected)
 
-    def action_open_settings(self) -> None:
+    def action_open_settings(self, initial_tab: str = "tab-llm") -> None:
         from dendrophis.ui.screens.settings import SettingsScreen
 
-        self.app.push_screen(SettingsScreen(self._session))
+        self.app.push_screen(SettingsScreen(self._session, initial_tab=initial_tab))
 
     def action_open_memory_viewer(self) -> None:
         """Open the memory viewer."""
@@ -876,6 +899,7 @@ class MainScreen(Screen):
         if self._streaming:
             self._session.cancel_streaming()
             self._streaming = False
+            self.query_one(InputBar).set_streaming(False)
             chat = self.query_one(ChatView)
             chat.remove_retry_status()
             chat.finish_assistant_message()

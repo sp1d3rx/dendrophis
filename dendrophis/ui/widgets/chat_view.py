@@ -7,6 +7,7 @@ import re
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,7 +69,7 @@ def _clean_latex_shorthand(text: str) -> str:
     return cleaned
 
 
-def _format_tool_args(tool_name: str, arguments: str) -> str:
+def _format_tool_args(tool_name: str, arguments: str, result_content: str = "") -> str:
     """Return a compact Rich-markup string of the key argument for a tool call."""
     try:
         if not arguments:
@@ -129,26 +130,56 @@ def _format_tool_args(tool_name: str, arguments: str) -> str:
                 rel = "…" + rel[-57:]
 
             suffix = ""
-            if tool_name == "read":
-                offset = args.get("offset")
-                limit = args.get("limit")
+            if tool_name in ("read", "read_file"):
+                # Try to extract actual showing_lines/total_lines from result
+                showing_lines = None
+                total_lines = None
+                if result_content:
+                    try:
+                        result = json.loads(result_content)
+                        showing_lines = result.get("showing_lines")
+                        total_lines = result.get("total_lines")
+                    except Exception:
+                        pass
 
-                if offset is None:
-                    offset = 1
-                if limit is None:
-                    limit = 2000
+                if showing_lines and total_lines is not None:
+                    # Use actual result metadata
+                    line_range = f"[{showing_lines}] ({total_lines} lines total)"
+                else:
+                    # Fallback: compute from arguments
+                    offset = args.get("offset")
+                    limit = args.get("limit")
 
-                try:
-                    offset_val = int(offset)
-                    if str(limit).lower() == "all":
-                        line_range = f"[{offset_val}:all]"
-                    else:
-                        limit_val = int(limit)
-                        end_line = offset_val + limit_val - 1
-                        line_range = f"[{offset_val}:{end_line}]"
-                except (ValueError, TypeError):
-                    line_range = f"[{offset}:{limit}]"
+                    if offset is None:
+                        offset = 1
+                    if limit is None:
+                        limit = 2000
+
+                    try:
+                        offset_val = int(offset)
+                        if str(limit).lower() == "all":
+                            line_range = f"[{offset_val}:all]"
+                        else:
+                            limit_val = int(limit)
+                            end_line = offset_val + limit_val - 1
+                            line_range = f"[{offset_val}:{end_line}]"
+                    except (ValueError, TypeError):
+                        line_range = f"[{offset}:{limit}]"
                 suffix = f"[dim] {line_range}[/dim]"
+            elif tool_name in ("edit", "edit_function"):
+                # Extract +/- changes from result
+                if result_content:
+                    try:
+                        result = json.loads(result_content)
+                        changes = result.get("changes", "")
+                        if changes:
+                            parts = changes.split("/")
+                            if len(parts) == 2:
+                                suffix = f" [green]{parts[0]}[/green]/[red]{parts[1]}[/red]"
+                            else:
+                                suffix = f" [green]{changes}[/green]"
+                    except Exception:
+                        pass
             elif tool_name in ("get_function", "replace_function"):
                 func = args.get("function_name", "")
                 suffix = f" [dim]({func})[/dim]"
@@ -272,7 +303,7 @@ class ThoughtBubble(VerticalScroll):
 
     def compose(self) -> ComposeResult:
         yield Static("🧠 [bold]Thought[/bold]", id="thought-header", markup=True)
-        yield Static("", id="thought-text")
+        yield Static("", id="thought-text", markup=False)
 
     def on_mount(self) -> None:
         if self._parts:
@@ -280,7 +311,7 @@ class ThoughtBubble(VerticalScroll):
             self.query_one("#thought-header", Static).update("🧠 [bold]Thinking...[/bold]")
             body = self.query_one("#thought-text", Static)
             body.styles.display = "block"
-            body.update(escape(joined))
+            body.update(joined)
             self.styles.display = "block"
         self._update_display_state()
 
@@ -299,7 +330,7 @@ class ThoughtBubble(VerticalScroll):
         self.query_one("#thought-header", Static).update("🧠 [bold]Thinking...[/bold]")
         body = self.query_one("#thought-text", Static)
         body.styles.display = "block"
-        body.update(escape(joined))
+        body.update(joined)
 
         # Force a height once we reach the limit to ensure the scrollbar activates
         # in the VerticalScroll container.
@@ -475,7 +506,9 @@ class AssistantMessage(Vertical):
 
     def _render_clean(self) -> None:
         """Render accumulated text for the current segment to markdown."""
-        self._markdown.update(_clean_latex_shorthand("".join(self._clean_parts)))
+        current_text = _clean_latex_shorthand("".join(self._clean_parts))
+        if current_text:
+            self.run_worker(self._markdown.update(current_text))
 
     def _schedule_render(self) -> None:
         """Schedule a markdown render, throttled to every 50 ms."""
@@ -735,9 +768,9 @@ class AssistantMessage(Vertical):
 
     def _freeze_current_segment(self) -> None:
         """Flush pending text into the active markdown and reset the part buffer."""
-        current = "".join(self._clean_parts).strip()
-        if current:
-            self._markdown.update(_clean_latex_shorthand(current))
+        current_text = "".join(self._clean_parts).strip()
+        if current_text:
+            self.run_worker(self._markdown.update(_clean_latex_shorthand(current_text)))
         self._clean_parts = []
 
     def add_tool_placeholder(self, index: int, tool_name: str, tool_call_id: str | None = None) -> None:
@@ -818,6 +851,28 @@ class AssistantMessage(Vertical):
         else:
             self.mount(msg)
 
+    def on_mount(self) -> None:
+        """Ensure markdown content and copy buttons are rendered when mounted."""
+        if self._finalized or self._clean_parts or self._all_parts:
+            self._schedule_finalized_render()
+
+    def _schedule_finalized_render(self) -> None:
+        remaining_text = _clean_latex_shorthand("".join(self._clean_parts)).strip()
+
+        async def _update_and_inject() -> None:
+            if remaining_text:
+                await self._markdown.update(remaining_text)
+            # Inject copy buttons into every markdown segment
+            for markdown_widget in self._markdown_segments:
+                for child_widget in list(markdown_widget.walk_children()):
+                    if isinstance(child_widget, MarkdownFence) and child_widget.code:
+                        parent_widget = child_widget.parent
+                        if parent_widget is not None:
+                            with suppress(Exception):
+                                await parent_widget.mount(CopyCodeButton(child_widget.code), before=child_widget)
+
+        self.run_worker(_update_and_inject())
+
     # ── Finalise ──────────────────────────────────────────────────────────────
 
     def finalize(self) -> None:
@@ -875,19 +930,7 @@ class AssistantMessage(Vertical):
 
         # Full text across all segments (for copy-all via AssistantLabel)
         self._clean_text = _clean_latex_shorthand("".join(self._all_parts)).strip()
-        # Remaining text for the last segment
-        remaining = _clean_latex_shorthand("".join(self._clean_parts)).strip()
-
-        async def _update_and_inject() -> None:
-            if remaining:
-                await self._markdown.update(remaining)
-            # Inject copy buttons into every markdown segment
-            for md in self._markdown_segments:
-                for child in list(md.children):
-                    if isinstance(child, MarkdownFence) and child.code:
-                        await md.mount(CopyCodeButton(child.code), before=child)
-
-        self.run_worker(_update_and_inject())
+        self._schedule_finalized_render()
 
 
 class ErrorMessage(Static):
@@ -1040,7 +1083,7 @@ class ToolResultMessage(Vertical):
 
     def compose(self) -> ComposeResult:
         """Render tool name with key arguments; show error detail only on repeated failures."""
-        display_args = _format_tool_args(self._tool_name, self._arguments)
+        display_args = _format_tool_args(self._tool_name, self._arguments, self._content)
 
         exit_str = ""
         if self._parsed_bash is not None:
@@ -1157,6 +1200,9 @@ class ChatView(VerticalScroll):
         if self._active_bubble is not None:
             self._active_bubble.append_reasoning(delta)
             self._throttled_scroll_end()
+
+    def append_reasoning(self, delta: str) -> None:
+        self.append_reasoning_delta(delta)
 
     def finish_assistant_message(self) -> None:
         if self._active_bubble is not None:

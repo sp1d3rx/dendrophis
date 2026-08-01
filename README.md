@@ -4,6 +4,14 @@ A Python-native terminal coding agent with a TUI built on [Textual](https://text
 
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue) [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
 
+![Dendrophis TUI Interface](screenshots/main_chat.png)
+
+### Settings & Permissions Management
+
+![Dendrophis Settings & Permissions](screenshots/settings_permissions.png)
+
+
+
 ## Philosophy
 
 Most coding assistants in the terminal are built on TypeScript and Node.js. We think that's backwards.
