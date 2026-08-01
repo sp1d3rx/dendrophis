@@ -63,6 +63,8 @@ projects/
 .temp/
 test_*.py
 !dendrophis/**/test_*.py
+story_john_smith/
+
 
 
 # os
