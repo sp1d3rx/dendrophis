@@ -64,6 +64,9 @@ projects/
 test_*.py
 !dendrophis/**/test_*.py
 story_john_smith/
+scratch/
+routerdash/
+
 
 
 
