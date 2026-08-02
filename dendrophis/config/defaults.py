@@ -48,6 +48,18 @@ llm:
   # Format to send tools: "auto" (XML for local, native otherwise), "native" (OpenAI API), or "xml"
   tool_mode: "auto"
 
+  # --- Visual VLM Features (Opt-in) ---
+  # Render system prompt as a 1-bit binary image for supported VLM models
+  visual_system_prompt: false
+  # Render compacted past history as a 1-bit binary image for supported VLM models
+  visual_compaction: false
+  # Render large tool outputs (> visual_threshold_chars) as a 1-bit binary image for supported VLM models
+  visual_tool_results: false
+  # Render large user prompts/error logs (> visual_threshold_chars) as a 1-bit binary image for supported VLM models
+  visual_user_prompts: false
+  # Minimum character threshold before tool results or user prompts are converted to 1-bit images
+  visual_threshold_chars: 1000
+
 ui:
   theme: monokai
   colors:

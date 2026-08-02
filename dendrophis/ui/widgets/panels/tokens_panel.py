@@ -42,4 +42,8 @@ class TokensPanel(TextPanel):
     def render_value(self) -> str:
         """Return the token display string."""
         total = self._prompt_tokens + self._completion_tokens
-        return f"[#89dceb]{total:,}[/] [dim](P:{self._prompt_tokens:,} C:{self._completion_tokens:,})[/]"
+        display_text = f"[#89dceb]{total:,}[/] [dim](P:{self._prompt_tokens:,} C:{self._completion_tokens:,})[/]"
+        saved_tokens = getattr(self._session.stats, "visual_tokens_saved", 0)
+        if saved_tokens > 0:
+            display_text += f" [green](🖼️ -{saved_tokens:,})[/green]"
+        return display_text

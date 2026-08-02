@@ -49,6 +49,7 @@ class ModelCapabilities:
     supports_caching: bool = False
     supports_prompt_cache: bool = False
     supports_prompt_cache_key: bool = False
+    supports_vlm: bool = False
 
     # Parameter quirks (provider-specific)
     rejected_params: list[str] = field(default_factory=list)
@@ -88,6 +89,7 @@ class ModelCapabilities:
             "supports_caching": self.supports_caching,
             "supports_prompt_cache": self.supports_prompt_cache,
             "supports_prompt_cache_key": self.supports_prompt_cache_key,
+            "supports_vlm": self.supports_vlm,
             "rejected_params": self.rejected_params,
             "requires_params": self.requires_params,
             "test_results": self.test_results,
@@ -109,6 +111,7 @@ class ModelCapabilities:
             supports_caching=data.get("supports_caching", False),
             supports_prompt_cache=data.get("supports_prompt_cache", False),
             supports_prompt_cache_key=data.get("supports_prompt_cache_key", False),
+            supports_vlm=data.get("supports_vlm", False),
             rejected_params=data.get("rejected_params", []),
             requires_params=data.get("requires_params", []),
             test_results=data.get("test_results", {}),
@@ -155,6 +158,7 @@ class ModelCapabilities:
             ("Caching", self.supports_caching, "✅"),
             ("Prompt cache", self.supports_prompt_cache, "✅"),
             ("Prompt cache key", self.supports_prompt_cache_key, "✅"),
+            ("VLM Vision", self.supports_vlm, "✅"),
         ]
 
         for name, supported, icon in features:
@@ -503,6 +507,23 @@ async def calibrate_model(
     # Mistral models generally support tools
     if any(x in model_lower for x in ["mistral", "mixtral", "codestral"]):
         capabilities.supports_tools = True
+
+    # Detect VLM capability from model identifier patterns
+    vlm_keywords = [
+        "gemma-4",
+        "claude-3-5",
+        "claude-3",
+        "gpt-4o",
+        "gemini-1.5",
+        "gemini-2.0",
+        "qwen2.5-vl",
+        "llava",
+        "vision",
+        "vlm",
+        "pixtral",
+    ]
+    if any(keyword in model_lower for keyword in vlm_keywords):
+        capabilities.supports_vlm = True
 
     # Local MLC models don't support tool_calls in history
     if provider == "local":

@@ -295,6 +295,7 @@ class LLMClient:
 
     def __init__(self, config: LLMConfig, http_client: httpx.AsyncClient | None = None) -> None:
         self._config = config
+        self.last_visual_tokens_saved: int = 0
         self._http = http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0,
@@ -416,9 +417,39 @@ class LLMClient:
                 merged_text = (previous_text + "\n\n" + text_content).strip()
                 previous_message["content"] = merged_text
 
-                if "tool_calls" in message_dict:
+                if "tool_calls" in message_dict and isinstance(message_dict["tool_calls"], list):
                     existing_calls = previous_message.setdefault("tool_calls", [])
-                    existing_calls.extend(message_dict["tool_calls"])
+                    existing_ids = {
+                        call_item.get("id")
+                        for call_item in existing_calls
+                        if isinstance(call_item, dict) and call_item.get("id")
+                    }
+                    existing_signatures = {
+                        (
+                            call_item.get("function", {}).get("name"),
+                            call_item.get("function", {}).get("arguments"),
+                        )
+                        for call_item in existing_calls
+                        if isinstance(call_item, dict) and isinstance(call_item.get("function"), dict)
+                    }
+                    for incoming_call in message_dict["tool_calls"]:
+                        if not isinstance(incoming_call, dict):
+                            continue
+                        call_id_val = incoming_call.get("id")
+                        function_data = (
+                            incoming_call.get("function", {}) if isinstance(incoming_call.get("function"), dict) else {}
+                        )
+                        signature_tuple = (function_data.get("name"), function_data.get("arguments"))
+
+                        if call_id_val and call_id_val in existing_ids:
+                            continue
+                        if signature_tuple in existing_signatures:
+                            continue
+
+                        existing_calls.append(incoming_call)
+                        if call_id_val:
+                            existing_ids.add(call_id_val)
+                        existing_signatures.add(signature_tuple)
             else:
                 new_message = {key: value for key, value in message_dict.items() if key != "content"}
                 new_message["content"] = text_content
@@ -512,6 +543,155 @@ class LLMClient:
         ]
         return self._coalesce_consecutive_messages(sanitized)
 
+    def _apply_visual_vlm_transformations(
+        self,
+        messages_list: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Transform text system prompt, compaction, or large tool outputs to 1-bit images for VLMs."""
+        from dendrophis.llm.visual_prompt import is_vlm_model, render_text_to_1bit_data_uri
+
+        self.last_visual_tokens_saved = 0
+
+        if not is_vlm_model(self._config.model):
+            return messages_list
+
+        transformed_messages: list[dict[str, Any]] = []
+
+        for message_item in messages_list:
+            role_name = message_item.get("role", "")
+            content_data = message_item.get("content", "")
+
+            # 1. Visual System Prompt
+            if role_name == "system" and self._config.visual_system_prompt and isinstance(content_data, str):
+                data_uri = render_text_to_1bit_data_uri(
+                    content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_system_prompt"
+                )
+                if data_uri:
+                    estimated_text_tokens = int(len(content_data) / 3.5)
+                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    transformed_messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "System Instructions & Tool Declarations (8-bit Grayscale visual image):",
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_uri},
+                                },
+                            ],
+                        }
+                    )
+                    continue
+
+            # 2. Visual Tool Results
+            if (
+                role_name == "tool"
+                and self._config.visual_tool_results
+                and isinstance(content_data, str)
+                and len(content_data) >= self._config.visual_threshold_chars
+            ):
+                data_uri = render_text_to_1bit_data_uri(
+                    content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_tool_result"
+                )
+                if data_uri:
+                    estimated_text_tokens = int(len(content_data) / 3.5)
+                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    tool_call_id = message_item.get("tool_call_id", "")
+
+                    tool_msg: dict[str, Any] = {
+                        "role": "tool",
+                        "content": (
+                            f"[Tool result complete ({len(content_data)} chars). "
+                            "Output image attached in user payload below.]"
+                        ),
+                    }
+                    if tool_call_id:
+                        tool_msg["tool_call_id"] = tool_call_id
+
+                    transformed_messages.append(tool_msg)
+                    transformed_messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": f"[Tool Execution Result Image for call {tool_call_id}]:",
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_uri},
+                                },
+                            ],
+                        }
+                    )
+                    continue
+
+            # 3. Visual Compaction (Summary)
+            if (
+                self._config.visual_compaction
+                and isinstance(content_data, str)
+                and (content_data.startswith("[Compacted Memory") or content_data.startswith("[Summary of earlier"))
+            ):
+                data_uri = render_text_to_1bit_data_uri(
+                    content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_compaction"
+                )
+                if data_uri:
+                    estimated_text_tokens = int(len(content_data) / 3.5)
+                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    transformed_messages.append(
+                        {
+                            "role": role_name,
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Compacted Past Conversation Snapshot (8-bit Grayscale visual PNG):",
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_uri},
+                                },
+                            ],
+                        }
+                    )
+                    continue
+
+            # 4. Visual User Prompts / Error Logs
+            if (
+                role_name == "user"
+                and self._config.visual_user_prompts
+                and isinstance(content_data, str)
+                and len(content_data) >= self._config.visual_threshold_chars
+            ):
+                data_uri = render_text_to_1bit_data_uri(
+                    content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_user_prompt"
+                )
+                if data_uri:
+                    estimated_text_tokens = int(len(content_data) / 3.5)
+                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    transformed_messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": f"User Prompt ({len(content_data)} chars, 8-bit Grayscale visual PNG):",
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_uri},
+                                },
+                            ],
+                        }
+                    )
+                    continue
+
+            transformed_messages.append(message_item)
+
+        return transformed_messages
+
     # -- Payload construction ------------------------------------------------
 
     def _build_payload(
@@ -523,17 +703,21 @@ class LLMClient:
         tool_choice: str,
     ) -> dict[str, Any]:
         """Build the full request payload for the given provider context."""
+        sanitized_messages = self._sanitize_messages(
+            messages,
+            is_local=provider_context.is_local,
+            is_direct_anthropic=provider_context.is_direct_anthropic,
+            is_openrouter=provider_context.is_openrouter,
+            is_deepinfra=provider_context.is_deepinfra,
+            use_responses_api=provider_context.use_responses_api,
+            use_xml_tools=provider_context.use_xml_tools,
+        )
+
+        transformed_messages = self._apply_visual_vlm_transformations(sanitized_messages)
+
         payload: dict[str, Any] = {
             "model": self._config.model,
-            "messages": self._sanitize_messages(
-                messages,
-                is_local=provider_context.is_local,
-                is_direct_anthropic=provider_context.is_direct_anthropic,
-                is_openrouter=provider_context.is_openrouter,
-                is_deepinfra=provider_context.is_deepinfra,
-                use_responses_api=provider_context.use_responses_api,
-                use_xml_tools=provider_context.use_xml_tools,
-            ),
+            "messages": transformed_messages,
             "max_tokens": self._config.max_tokens,
             "temperature": self._config.temperature,
             "stream": True,

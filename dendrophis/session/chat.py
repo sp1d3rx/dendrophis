@@ -77,6 +77,7 @@ class SessionStats:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    visual_tokens_saved: int = 0
     total_cost_usd: float = 0.0
     tokens_per_sec: float = 0.0
     time_to_first_token: float = 0.0
@@ -487,6 +488,7 @@ class ChatOrchestrator:
                     )
                     cost_per_1k = self._get_current_model_cost_per_1k()
                     self.stats.update(event.prompt_tokens, event.completion_tokens, cost_per_1k, event.cached_tokens)
+                    self.stats.visual_tokens_saved += getattr(self.llm, "last_visual_tokens_saved", 0)
                     self._emit(event)
                     self._emit(
                         StatsUpdatedEvent(

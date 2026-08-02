@@ -718,6 +718,54 @@ class SettingsScreen(Screen):
                                     self._cfg.llm.prompt_cache_key or "",
                                 )
 
+                    with Vertical(classes="settings-group"):
+                        yield Label("Visual VLM Optimizations (Opt-in)", classes="settings-group-title")
+                        with Horizontal(classes="column-layout"):
+                            with Vertical():
+                                bool_options = [("Disabled", "False"), ("Enabled", "True")]
+                                yield Horizontal(
+                                    Label("Visual System Prompt", classes="settings-label"),
+                                    Select(
+                                        bool_options,
+                                        value=str(self._cfg.llm.visual_system_prompt),
+                                        id="llm_visual_system_prompt",
+                                    ),
+                                    classes="settings-row",
+                                )
+                                yield Horizontal(
+                                    Label("Visual Compaction", classes="settings-label"),
+                                    Select(
+                                        bool_options,
+                                        value=str(self._cfg.llm.visual_compaction),
+                                        id="llm_visual_compaction",
+                                    ),
+                                    classes="settings-row",
+                                )
+                            with Vertical():
+                                yield Horizontal(
+                                    Label("Visual Tool Results", classes="settings-label"),
+                                    Select(
+                                        bool_options,
+                                        value=str(self._cfg.llm.visual_tool_results),
+                                        id="llm_visual_tool_results",
+                                    ),
+                                    classes="settings-row",
+                                )
+                                yield Horizontal(
+                                    Label("Visual User Prompts", classes="settings-label"),
+                                    Select(
+                                        bool_options,
+                                        value=str(self._cfg.llm.visual_user_prompts),
+                                        id="llm_visual_user_prompts",
+                                    ),
+                                    classes="settings-row",
+                                )
+                                yield self._make_input(
+                                    "llm.visual_threshold_chars",
+                                    "Visual Threshold (chars)",
+                                    str(self._cfg.llm.visual_threshold_chars),
+                                )
+
                 with TabPane("UI & Panels", id="tab-ui"), VerticalScroll():
                     with Vertical(classes="settings-group"):
                         yield Label("General UI Layout", classes="settings-group-title")
@@ -1103,6 +1151,16 @@ class SettingsScreen(Screen):
 
             set_nested(raw, ["llm", "prompt_cache_key"], get_nullable_str("llm_prompt_cache_key"))
             set_nested(raw, ["llm", "tool_mode"], self._get_val("llm_tool_mode", "auto"))
+
+            set_nested(raw, ["llm", "visual_system_prompt"], self._get_val("llm_visual_system_prompt") == "True")
+            set_nested(raw, ["llm", "visual_compaction"], self._get_val("llm_visual_compaction") == "True")
+            set_nested(raw, ["llm", "visual_tool_results"], self._get_val("llm_visual_tool_results") == "True")
+            set_nested(raw, ["llm", "visual_user_prompts"], self._get_val("llm_visual_user_prompts") == "True")
+            set_nested(
+                raw,
+                ["llm", "visual_threshold_chars"],
+                int(self._get_val("llm_visual_threshold_chars", "1000")),
+            )
 
             responses_val = self._get_val("llm_use_responses_api")
             if responses_val == "True":

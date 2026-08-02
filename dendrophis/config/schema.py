@@ -59,6 +59,17 @@ class LLMConfig(BaseModel):
     #   "current" — preserve reasoning only for the current active turn
     #   "never"   — never preserve reasoning in the context (e.g. for Gemini)
     preserve_reasoning: Literal["always", "current", "never"] = "always"
+    # --- Visual VLM Features (Opt-in) ---
+    # Render system prompt as a 1-bit binary image for supported VLM models
+    visual_system_prompt: bool = False
+    # Render compacted past history as a 1-bit binary image for supported VLM models
+    visual_compaction: bool = False
+    # Render large tool outputs (> visual_threshold_chars) as a 1-bit binary image for supported VLM models
+    visual_tool_results: bool = False
+    # Render large user prompts/error logs (> visual_threshold_chars) as a 1-bit binary image for supported VLM models
+    visual_user_prompts: bool = False
+    # Minimum character threshold before tool results or user prompts are converted to 1-bit images
+    visual_threshold_chars: int = 1000
 
     @model_validator(mode="before")
     @classmethod
