@@ -44,9 +44,11 @@ class ContextManager:
     def _init_system(self) -> None:
         if self._system_prompt:
             msg: dict[str, Any] = {"role": "system", "content": self._system_prompt}
-            # Cache control will be added after we know if model supports it
             self.messages = [msg]
-            self.token_count = count_tokens(self._system_prompt)
+            if getattr(self._config.llm, "visual_system_prompt", False):
+                self.token_count = 310
+            else:
+                self.token_count = count_tokens(self._system_prompt)
 
     def update_system_prompt_caching(self, caching_enabled: bool) -> None:
         """Update cache_control on system prompt after model is known.

@@ -60,7 +60,10 @@ def count_messages_tokens(messages: list[dict[str, Any]]) -> int:
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict):
-                    total += count_tokens(block.get("text", ""))
+                    if block.get("type") == "image_url":
+                        total += 310
+                    else:
+                        total += count_tokens(block.get("text", ""))
         else:
             total += count_tokens(str(content))
         total += 4
