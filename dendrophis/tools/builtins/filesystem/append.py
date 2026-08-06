@@ -1,4 +1,4 @@
-"""Write tool implementation."""
+"""Append tool implementation."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto
 from dendrophis.tools.names import ToolName
 
 
-class WriteTool(BaseTool):
-    """Create a completely new file."""
+class AppendTool(BaseTool):
+    """Append content to the end of a file, creating it if it doesn't exist."""
 
     @property
     def name(self) -> str:
-        return ToolName.WRITE
+        return ToolName.APPEND
 
     @property
     def description(self) -> str:
         return (
-            "Write content to a file, creating it if it doesn't exist, or overwriting it if it does. "
-            "Provide the FULL file content."
+            "Append content to the end of a file. Creates the file if it doesn't exist. "
+            "Useful for adding lines to logs, .gitignore, requirements files, etc."
         )
 
     @property
@@ -32,13 +32,12 @@ class WriteTool(BaseTool):
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": ("REQUIRED. Relative path to the file to write (relative to CWD/project root)"),
+                    "description": "REQUIRED. Relative path to the file (relative to CWD/project root)",
                 },
                 "content": {
                     "type": "string",
                     "description": (
-                        "REQUIRED. The content to write. DO NOT escape double quotes or use escaped characters;"
-                        " provide the RAW text exactly as it should appear in the file."
+                        "REQUIRED. The content to append. Provide the RAW text exactly as it should appear in the file."
                     ),
                 },
             },
@@ -58,7 +57,14 @@ class WriteTool(BaseTool):
                 return {"error": f"File path must be within working directory: {file_path}"}
 
             path.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+
+            # Append in thread
+            def _append() -> int:
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(content)
+                return len(content.encode("utf-8"))
+
+            written_bytes = await asyncio.to_thread(_append)
 
             # Run auto-linting
             lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
@@ -66,7 +72,8 @@ class WriteTool(BaseTool):
             result = {
                 "success": True,
                 "file": str(path),
-                "written_bytes": len(content.encode("utf-8")),
+                "appended_bytes": written_bytes,
+                "appended_lines": len(content.splitlines()),
             }
             if lint_errors:
                 result["lint_errors"] = lint_errors
