@@ -8,7 +8,9 @@ import json
 from io import BytesIO
 from pathlib import Path
 
-SCRATCH_DIR = Path("/Users/derekw/Documents/projects/boiga/scratch")
+# Debug scratch dir for rendered prompt images. Derived from CWD so it's portable
+# across machines (was previously a hardcoded absolute path).
+SCRATCH_DIR = Path.cwd() / "scratch"
 
 # Global in-memory cache to prevent re-rendering identical prompt images across chat turns
 _VISUAL_RENDER_CACHE: dict[str, str] = {}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 from textual.app import App
@@ -181,6 +182,11 @@ class DendrophisApp(App):
         self.call_later(self._check_and_prompt_calibration, self._session.config.llm.model)
 
     async def on_unmount(self) -> None:
+        # Stop the web observability server so its uvicorn task doesn't keep the
+        # event loop alive and hang the process on exit.
+        if self._web_server is not None:
+            with contextlib.suppress(Exception):
+                await self._web_server.stop()
         await self._session.aclose()
         self._event_bus.shutdown(wait=False)
 
