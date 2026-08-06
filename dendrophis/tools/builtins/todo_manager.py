@@ -39,18 +39,18 @@ class TodoManager:
             if event.action == "add":
                 if not event.text:
                     return
-                self.add(event.text)
+                self.add(event.text, request_id=event.request_id)
             elif event.action == "toggle":
                 if not event.todo_id:
                     return
-                self.toggle(event.todo_id)
+                self.toggle(event.todo_id, request_id=event.request_id)
             elif event.action == "remove":
                 if not event.todo_id:
                     return
-                self.remove(event.todo_id)
+                self.remove(event.todo_id, request_id=event.request_id)
             elif event.action == "list":
                 # For 'list', we just ensure the UI has the latest state
-                self._emit_change()
+                self._emit_change(request_id=event.request_id)
         except Exception:
             logger.exception("Error handling todo request: %s", event.action)
 
@@ -86,12 +86,12 @@ class TodoManager:
             self._todos = new_todos
             self._emit_change()
 
-    def add(self, text: str) -> None:
+    def add(self, text: str, request_id: str | None = None) -> None:
         item = TodoItem(id=uuid.uuid4().hex, text=text.strip())
         self._todos.append(item)
-        self._emit_change()
+        self._emit_change(request_id=request_id)
 
-    def toggle(self, todo_id: str) -> None:
+    def toggle(self, todo_id: str, request_id: str | None = None) -> None:
         for index, item in enumerate(self._todos):
             if item.id == todo_id:
                 self._todos[index] = TodoItem(
@@ -100,21 +100,21 @@ class TodoManager:
                     done=not item.done,
                     completed_turns=item.completed_turns,
                 )
-                self._emit_change()
+                self._emit_change(request_id=request_id)
                 return
         raise ValueError(f"Todo item {todo_id} not found.")
 
-    def remove(self, todo_id: str) -> None:
+    def remove(self, todo_id: str, request_id: str | None = None) -> None:
         original_len = len(self._todos)
         self._todos = [item for item in self._todos if item.id != todo_id]
         if len(self._todos) < original_len:
-            self._emit_change()
+            self._emit_change(request_id=request_id)
         else:
             raise ValueError(f"Todo item {todo_id} not found.")
 
-    def _emit_change(self) -> None:
+    def _emit_change(self, request_id: str | None = None) -> None:
         """Notify listeners that the todo list has changed."""
-        self._event_bus.publish(TodoUpdatedEvent(todos=self.get_all()))
+        self._event_bus.publish(TodoUpdatedEvent(todos=self.get_all(), request_id=request_id))
 
     def get_all(self) -> list[dict[str, Any]]:
         """Return all todo items as a list of dicts."""

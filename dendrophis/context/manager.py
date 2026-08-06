@@ -261,6 +261,47 @@ class ContextManager:
                 return True
         return False
 
+    def merge_last_turns(self) -> None:
+        """Collapse a continuation-nudge exchange.
+
+        The nudge is a user message sandwiched between two assistant turns.
+        Remove it and merge the two assistant turns into one, so the nudge never
+        pollutes the persisted transcript. Safe to call repeatedly for
+        back-to-back nudges (each call collapses one nudge).
+        """
+        if len(self.messages) < 3:
+            return
+        last = self.messages[-1]
+        nudge = self.messages[-2]
+        before = self.messages[-3]
+        if last.get("role") != "assistant" or nudge.get("role") != "user" or before.get("role") != "assistant":
+            return
+
+        before_content = before.get("content") or ""
+        last_content = last.get("content") or ""
+        merged_content = (before_content + "\n\n" + last_content).strip() or None
+
+        merged: dict[str, Any] = {"role": "assistant", "content": merged_content}
+        # The pre-nudge turn has no tool calls (that's what triggered the nudge),
+        # so the post-nudge turn's tool_calls/reasoning are the ones to keep.
+        if last.get("tool_calls"):
+            merged["tool_calls"] = last["tool_calls"]
+        if last.get("reasoning_content"):
+            merged["reasoning_content"] = last["reasoning_content"]
+        elif before.get("reasoning_content"):
+            merged["reasoning_content"] = before["reasoning_content"]
+
+        self.messages[-3:] = [merged]
+
+        # The nudge's append_user incremented the turn count; undo it since the
+        # user message is now gone.
+        if self._turn_count > 0:
+            self._turn_to_index.pop(self._turn_count, None)
+            self._turn_count -= 1
+
+        # Recompute token count from scratch for correctness.
+        self.recalculate_tokens()
+
     def reset(self) -> None:
         self.messages = []
         self.token_count = 0

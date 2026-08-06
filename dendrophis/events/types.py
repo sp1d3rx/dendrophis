@@ -340,6 +340,7 @@ class TodoRequestEvent(RequestEvent):
     action: str  # "add" | "toggle" | "remove" | "list"
     text: str | None = None
     todo_id: str | None = None
+    request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +348,7 @@ class TodoUpdatedEvent(SessionEvent):
     """The todo list has changed. Contains the full list of current todos."""
 
     todos: list[dict[str, Any]]
+    request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

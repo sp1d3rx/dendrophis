@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Any
 
 from dendrophis.events import get_event_bus
@@ -76,17 +77,21 @@ class TodoTool(BaseTool):
             return {"status": "request_sent", "action": action}
 
         # The bus dispatches handlers asynchronously, so await the TodoUpdatedEvent
-        # that TodoManager publishes after applying the request.
+        # that TodoManager publishes after applying the request. Correlate by
+        # request_id so concurrent todo ops (parallel tools) don't cross-talk.
+        request_id = uuid.uuid4().hex
         updated = asyncio.Event()
         result: dict[str, Any] = {}
 
         def _on_updated(event: TodoUpdatedEvent) -> None:
+            if event.request_id != request_id:
+                return
             result["todos"] = event.todos
             updated.set()
 
         subscription = event_bus.subscribe(TodoUpdatedEvent, _on_updated)
         try:
-            event_bus.publish(TodoRequestEvent(action=action, text=text, todo_id=todo_id))
+            event_bus.publish(TodoRequestEvent(action=action, text=text, todo_id=todo_id, request_id=request_id))
             await asyncio.wait_for(updated.wait(), timeout=_UPDATE_TIMEOUT)
         except TimeoutError:
             # The mutation may have landed even if the event didn't round-trip;

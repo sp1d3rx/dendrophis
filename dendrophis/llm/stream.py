@@ -98,6 +98,10 @@ def _extract_cached_tokens(usage: dict[str, Any], tokens_details: dict[str, Any]
     cache_read = usage.get("cache_read_input_tokens")
     if isinstance(cache_read, int):
         return cache_read
+    # Anthropic also reports tokens written to cache on first use.
+    cache_creation = usage.get("cache_creation_input_tokens")
+    if isinstance(cache_creation, int):
+        return cache_creation
     return 0
 
 

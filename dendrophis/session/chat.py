@@ -482,6 +482,7 @@ class ChatOrchestrator:
         consecutive_failures = 0
         continuation_nudges = 0
         max_continuation_nudges = 2
+        nudge_pending = False
         while not self.cancel_flag.is_set():
             self._log(f"_run_completion_loop consecutive_failures={consecutive_failures}")
             last_message = self.context.get_messages_for_api()[-1]["content"]
@@ -602,6 +603,12 @@ class ChatOrchestrator:
             else:
                 tool_calls_payload = None
             self.context.append_assistant(assistant_text, tool_calls_payload, turn.reasoning or None)
+            # If the previous turn was a nudge, collapse it now that we have the
+            # post-nudge assistant turn (removes the nudge user message and merges
+            # the two assistant turns into one).
+            if nudge_pending:
+                self.context.merge_last_turns()
+                nudge_pending = False
             is_tool_finish = bool(turn.tool_calls) and turn.finish_reason in ("tool_calls", "stop")
             if not is_tool_finish:
                 # Stall recovery: model stopped with text but no tool call, and the text
@@ -615,12 +622,15 @@ class ChatOrchestrator:
                     and self._signals_unfinished_intent(turn.text)
                 ):
                     continuation_nudges += 1
+                    nudge_pending = True
                     self._log(f"Continuation nudge #{continuation_nudges}: model narrated intent without a tool call")
                     self.context.append_user(
                         "You described an action but did not call a tool. "
                         "Proceed with the tool call now, or state clearly that you are finished."
                     )
                     continue
+                # Normal finish — reset the back-to-back nudge chain.
+                continuation_nudges = 0
                 self._log(f"Exiting: finish_reason={turn.finish_reason}, has_tools={bool(turn.tool_calls)}")
                 if turn.finish_reason == "length" and not turn.text and not turn.tool_calls:
                     self._emit(
@@ -632,6 +642,8 @@ class ChatOrchestrator:
                         )
                     )
                 return
+            # Tool-call turn — a normal turn, so reset the back-to-back nudge chain.
+            continuation_nudges = 0
             self._log(f"Executing {len(turn.tool_calls)} tool calls")
             _tool_log("=== TOOL EXECUTION START ===", self.session_id)
             _tool_log(f"Session: {self.session_id}", self.session_id)
