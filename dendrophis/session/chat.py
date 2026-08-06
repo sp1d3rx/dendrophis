@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -280,32 +281,72 @@ class ChatOrchestrator:
         """Return True if assistant text narrates an action it never took.
 
         Catches the "now let me read the file..." -> stop stall: the model announces
-        intent but produces no tool call. Matches trailing intent phrases; a model that
-        merely mentions a tool in passing mid-answer won't trigger a nudge.
+        intent but produces no tool call. Requires an action verb to immediately
+        follow an intent intro phrase, so normal closings like "let me know if you
+        need anything else" or "I'll be here if you need me" do NOT trigger a nudge.
         """
         if not text:
             return False
         tail = text.strip().lower()[-200:]
-        cues = (
-            "let me",
-            "i'll ",
-            "i will ",
-            "i'm going to",
-            "i am going to",
-            "now i'll",
-            "now i will",
-            "let's ",
-            "let us ",
-            "i need to",
-            "i should",
-            "next,",
-            "first,",
-            "i'll start",
-            "going to read",
-            "going to check",
-            "going to run",
+        # Strip trailing punctuation so "let me read the file." still matches.
+        tail = tail.rstrip(".!?;: ")
+        # Action verbs that signal an imminent tool call.
+        action_verbs = (
+            "read",
+            "check",
+            "run",
+            "open",
+            "look",
+            "search",
+            "execute",
+            "inspect",
+            "list",
+            "find",
+            "create",
+            "write",
+            "edit",
+            "test",
+            "review",
+            "examine",
+            "fetch",
+            "load",
+            "query",
+            "scan",
+            "grep",
+            "glob",
+            "cat",
+            "show",
+            "lookup",
+            "investigate",
+            "verify",
+            "confirm",
+            "try",
         )
-        return any(cue in tail for cue in cues)
+        # Intent intro phrases. The action verb must immediately follow one of these.
+        intros = (
+            r"let me",
+            r"i'?ll",
+            r"i will",
+            r"i'?m going to",
+            r"i am going to",
+            r"going to",
+            r"i need to",
+            r"i should",
+            r"let'?s",
+            r"let us",
+            r"now i'?ll",
+            r"now i will",
+            r"i'?ll start",
+            r"i'?ll go ahead and",
+        )
+        for verb in action_verbs:
+            for intro in intros:
+                if re.search(rf"{intro}\s+{verb}\b", tail):
+                    # Exclude closing phrases that happen to use an action verb.
+                    if re.search(rf"{intro}\s+{verb}\s+back\b", tail):
+                        continue
+                    return True
+        return False
 
     async def _emit_stats_periodically(self) -> None:
         """Periodically emit stats events while streaming."""
@@ -623,7 +664,10 @@ class ChatOrchestrator:
                 ):
                     continuation_nudges += 1
                     nudge_pending = True
-                    self._log(f"Continuation nudge #{continuation_nudges}: model narrated intent without a tool call")
+                    self._log(
+                        f"Continuation nudge #{continuation_nudges}: model narrated intent without a tool call. "
+                        f"Tail: {turn.text[-120:]!r}"
+                    )
                     self.context.append_user(
                         "You described an action but did not call a tool. "
                         "Proceed with the tool call now, or state clearly that you are finished."
