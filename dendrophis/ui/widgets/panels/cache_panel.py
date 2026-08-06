@@ -49,7 +49,7 @@ class CachePanel(TextPanel):
     @listen
     def _on_stats_updated(self, event: StatsUpdatedEvent) -> None:
         """Update local cache when stats change."""
-        self._cached_tokens = event.cached_tokens if hasattr(event, "cached_tokens") else 0
+        self._cached_tokens = event.cached_tokens
         self._prompt_tokens = event.prompt_tokens
         self.update_value()
 

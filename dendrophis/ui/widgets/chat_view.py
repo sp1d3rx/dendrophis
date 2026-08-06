@@ -70,44 +70,125 @@ def _clean_latex_shorthand(text: str) -> str:
 
 
 def _format_tool_args(tool_name: str, arguments: str, result_content: str = "") -> str:
-    """Return a compact Rich-markup string of the key argument for a tool call."""
+    """Return a compact Rich-markup string of key arguments for a tool call."""
     try:
         if not arguments:
             return ""
-        args = json.loads(arguments)
+        arguments_data = json.loads(arguments)
+        if not isinstance(arguments_data, dict) or not arguments_data:
+            return ""
+
         if tool_name == "bash":
-            cmd = args.get("command", "")
-            if len(cmd) > 60:
-                cmd = cmd[:57] + "…"
-            return f" [cyan]{escape(cmd)}[/cyan]"
+            command_string = arguments_data.get("command", "")
+            if len(command_string) > 60:
+                command_string = command_string[:57] + "…"
+            if command_string:
+                return f" [cyan]{escape(command_string)}[/cyan]"
+
         if tool_name in ("glob", "ripgrep"):
-            return f" [cyan]{escape(args.get('pattern', ''))}[/cyan]"
+            pattern_string = arguments_data.get("pattern", "")
+            path_string = (
+                arguments_data.get("path")
+                or arguments_data.get("directory")
+                or arguments_data.get("file_path")
+                or arguments_data.get("search_path")
+            )
+            path_suffix = f" [dim]in {escape(str(path_string))}[/dim]" if path_string else ""
+            if pattern_string:
+                return f" [cyan]{escape(str(pattern_string))}[/cyan]{path_suffix}"
+
         if tool_name == "search_memory":
-            query = args.get("query", "")
-            if len(query) > 60:
-                query = query[:57] + "…"
-            tag = args.get("tag")
-            tag_suffix = f" [dim]({tag})[/dim]" if tag else ""
-            return f" [cyan]{escape(query)}[/cyan]{tag_suffix}"
+            query_input = arguments_data.get("query")
+            tags_input = arguments_data.get("tags") or arguments_data.get("tag")
+            project_identifier = arguments_data.get("project_id")
+            limit_number = arguments_data.get("limit")
+
+            tags_string = ""
+            if isinstance(tags_input, list):
+                tags_string = ", ".join(str(item) for item in tags_input if item)
+            elif tags_input:
+                tags_string = str(tags_input)
+
+            parts_list = []
+            if query_input:
+                query_string = str(query_input)
+                if len(query_string) > 60:
+                    query_string = query_string[:57] + "…"
+                parts_list.append(f"[cyan]{escape(query_string)}[/cyan]")
+
+            if tags_string:
+                parts_list.append(f"[dim]({escape(tags_string)})[/dim]")
+
+            if not query_input and not tags_string:
+                if project_identifier:
+                    parts_list.append(f"[dim]project: {escape(str(project_identifier))}[/dim]")
+                if limit_number is not None:
+                    parts_list.append(f"[dim]limit: {limit_number}[/dim]")
+
+            if parts_list:
+                return " " + " ".join(parts_list)
+
         if tool_name in ("recall_memory", "delete_memory"):
-            memory_id = args.get("memory_id", "")
-            return f" [cyan]{escape(memory_id)}[/cyan]"
+            memory_identifier = (
+                arguments_data.get("memory_id") or arguments_data.get("id") or arguments_data.get("query")
+            )
+            if memory_identifier:
+                memory_string = str(memory_identifier)
+                if len(memory_string) > 60:
+                    memory_string = memory_string[:57] + "…"
+                return f" [cyan]{escape(memory_string)}[/cyan]"
+
         if tool_name == "save_memory":
-            content = args.get("content", "")
-            if len(content) > 60:
-                content = content[:57] + "…"
-            return f" [cyan]{escape(content)}[/cyan]"
+            content_input = arguments_data.get("content") or arguments_data.get("memory") or arguments_data.get("text")
+            tags_input = arguments_data.get("tags") or arguments_data.get("tag")
+            if content_input:
+                content_string = str(content_input)
+                if len(content_string) > 60:
+                    content_string = content_string[:57] + "…"
+                tags_suffix = ""
+                if tags_input:
+                    if isinstance(tags_input, list):
+                        tags_string = ", ".join(str(item) for item in tags_input)
+                    else:
+                        tags_string = str(tags_input)
+                    tags_suffix = f" [dim]({escape(tags_string)})[/dim]"
+                return f" [cyan]{escape(content_string)}[/cyan]{tags_suffix}"
+
         if tool_name == "ask_multiple_choice":
-            question = args.get("question", "")
-            if len(question) > 60:
-                question = question[:57] + "…"
-            return f" [cyan]{escape(question)}[/cyan]"
+            question_input = arguments_data.get("question") or arguments_data.get("prompt")
+            if question_input:
+                question_string = str(question_input)
+                if len(question_string) > 60:
+                    question_string = question_string[:57] + "…"
+                return f" [cyan]{escape(question_string)}[/cyan]"
+
         if tool_name == "invoke_subagent":
-            agent = args.get("agent", "")
-            task = args.get("task", "")
-            if len(task) > 50:
-                task = task[:47] + "…"
-            return f" [cyan]{escape(agent)}[/cyan] [dim]{escape(task)}[/dim]"
+            agent_name = (
+                arguments_data.get("agent")
+                or arguments_data.get("subagent")
+                or arguments_data.get("role")
+                or arguments_data.get("name", "")
+            )
+            task_description = (
+                arguments_data.get("task") or arguments_data.get("prompt") or arguments_data.get("description", "")
+            )
+            task_string = str(task_description)
+            if len(task_string) > 50:
+                task_string = task_string[:47] + "…"
+            return f" [cyan]{escape(str(agent_name))}[/cyan] [dim]{escape(task_string)}[/dim]"
+
+        if tool_name in ("execute_code", "python_exec"):
+            code_snippet = arguments_data.get("code") or arguments_data.get("script") or arguments_data.get("command")
+            if code_snippet:
+                code_string = str(code_snippet)
+                if len(code_string) > 60:
+                    code_string = code_string[:57] + "…"
+                return f" [cyan]{escape(code_string)}[/cyan]"
+
+        if tool_name == "todo":
+            action_type = arguments_data.get("action", "")
+            item_text = arguments_data.get("text") or arguments_data.get("todo_id", "")
+            return f" [cyan]{escape(str(action_type))}[/cyan] [dim]{escape(str(item_text))}[/dim]"
 
         if tool_name in (
             "read",
@@ -120,80 +201,120 @@ def _format_tool_args(tool_name: str, arguments: str, result_content: str = "") 
             "write_file",
             "edit_function",
             "list_dir",
+            "patch",
         ):
-            path = args.get("file_path", "")
-            try:
-                rel = str(Path(path).relative_to(Path.cwd()))
-            except ValueError:
-                rel = path
-            if len(rel) > 60:
-                rel = "…" + rel[-57:]
+            file_path_input = (
+                arguments_data.get("file_path")
+                or arguments_data.get("path")
+                or arguments_data.get("directory")
+                or arguments_data.get("dir_path")
+                or arguments_data.get("target_file")
+            )
+            if file_path_input is not None:
+                file_path_string = str(file_path_input)
+                try:
+                    relative_path = str(Path(file_path_string).relative_to(Path.cwd()))
+                except (ValueError, TypeError):
+                    relative_path = file_path_string
+                if len(relative_path) > 60:
+                    relative_path = "…" + relative_path[-57:]
 
-            suffix = ""
-            if tool_name in ("read", "read_file"):
-                # Try to extract actual showing_lines/total_lines from result
-                showing_lines = None
-                total_lines = None
-                if result_content:
-                    try:
-                        result = json.loads(result_content)
-                        showing_lines = result.get("showing_lines")
-                        total_lines = result.get("total_lines")
-                    except Exception:
-                        pass
+                suffix_text = ""
+                if tool_name in ("read", "read_file"):
+                    showing_lines = None
+                    total_lines = None
+                    if result_content:
+                        try:
+                            result_data = json.loads(result_content)
+                            showing_lines = result_data.get("showing_lines")
+                            total_lines = result_data.get("total_lines")
+                        except Exception:
+                            pass
 
-                if showing_lines and total_lines is not None:
-                    # Use actual result metadata
-                    line_range = f"[{showing_lines}] ({total_lines} lines total)"
-                else:
-                    # Fallback: compute from arguments
-                    offset = args.get("offset")
-                    limit = args.get("limit")
+                    if showing_lines and total_lines is not None:
+                        line_range = f"[{showing_lines}] ({total_lines} lines total)"
+                    else:
+                        offset_input = arguments_data.get("offset")
+                        limit_input = arguments_data.get("limit")
 
-                    if offset is None:
-                        offset = 1
-                    if limit is None:
-                        limit = 2000
+                        if offset_input is None:
+                            offset_input = 1
+                        if limit_input is None:
+                            limit_input = 2000
 
-                    try:
-                        offset_val = int(offset)
-                        if str(limit).lower() == "all":
-                            line_range = f"[{offset_val}:all]"
-                        else:
-                            limit_val = int(limit)
-                            end_line = offset_val + limit_val - 1
-                            line_range = f"[{offset_val}:{end_line}]"
-                    except (ValueError, TypeError):
-                        line_range = f"[{offset}:{limit}]"
-                suffix = f"[dim] {line_range}[/dim]"
-            elif tool_name in ("edit", "edit_function"):
-                # Extract +/- changes from result
-                if result_content:
-                    try:
-                        result = json.loads(result_content)
-                        changes = result.get("changes", "")
-                        if changes:
-                            parts = changes.split("/")
-                            if len(parts) == 2:
-                                suffix = f" [green]{parts[0]}[/green]/[red]{parts[1]}[/red]"
+                        try:
+                            offset_number = int(offset_input)
+                            if str(limit_input).lower() == "all":
+                                line_range = f"[{offset_number}:all]"
                             else:
-                                suffix = f" [green]{changes}[/green]"
-                    except Exception:
-                        pass
-            elif tool_name in ("get_function", "replace_function"):
-                func = args.get("function_name", "")
-                suffix = f" [dim]({func})[/dim]"
+                                limit_number = int(limit_input)
+                                end_line_number = offset_number + limit_number - 1
+                                line_range = f"[{offset_number}:{end_line_number}]"
+                        except (ValueError, TypeError):
+                            line_range = f"[{offset_input}:{limit_input}]"
+                    suffix_text = f"[dim] {line_range}[/dim]"
+                elif tool_name in ("edit", "edit_function"):
+                    if result_content:
+                        try:
+                            result_data = json.loads(result_content)
+                            changes_summary = result_data.get("changes", "")
+                            if changes_summary:
+                                changes_parts = changes_summary.split("/")
+                                if len(changes_parts) == 2:
+                                    suffix_text = f" [green]{changes_parts[0]}[/green]/[red]{changes_parts[1]}[/red]"
+                                else:
+                                    suffix_text = f" [green]{changes_summary}[/green]"
+                        except Exception:
+                            pass
+                elif tool_name in ("get_function", "replace_function"):
+                    function_name = arguments_data.get("function_name", "")
+                    if function_name:
+                        suffix_text = f" [dim]({function_name})[/dim]"
 
-            return f" [cyan]{escape(rel)}[/cyan]{suffix}"
+                return f" [cyan]{escape(relative_path)}[/cyan]{suffix_text}"
 
-        # Fallback for any other tools: check common keys
-        for key in ("file_path", "path", "command", "pattern", "query", "memory_id", "agent", "question"):
-            val = args.get(key)
-            if val:
-                val_str = str(val)
-                if len(val_str) > 60:
-                    val_str = val_str[:57] + "…"
-                return f" [cyan]{escape(val_str)}[/cyan]"
+        # Fallback 1: check common primary keys
+        common_keys = (
+            "file_path",
+            "path",
+            "command",
+            "pattern",
+            "query",
+            "memory_id",
+            "agent",
+            "question",
+            "prompt",
+            "code",
+            "content",
+            "text",
+            "directory",
+            "target_file",
+        )
+        for key_name in common_keys:
+            value_data = arguments_data.get(key_name)
+            if value_data is not None and value_data != "":
+                value_string = str(value_data)
+                if len(value_string) > 60:
+                    value_string = value_string[:57] + "…"
+                return f" [cyan]{escape(value_string)}[/cyan]"
+
+        # Fallback 2: key-value summary for any other tool with arguments
+        fallback_items = []
+        for argument_key, argument_value in arguments_data.items():
+            if argument_value is None or argument_value == "":
+                continue
+            if isinstance(argument_value, (dict, list)):
+                value_string = json.dumps(argument_value)
+            else:
+                value_string = str(argument_value)
+            if len(value_string) > 40:
+                value_string = value_string[:37] + "…"
+            fallback_items.append(f"[dim]{escape(str(argument_key))}=[/dim][cyan]{escape(value_string)}[/cyan]")
+            if len(fallback_items) >= 3:
+                break
+
+        if fallback_items:
+            return " " + ", ".join(fallback_items)
     except Exception:
         pass
     return ""

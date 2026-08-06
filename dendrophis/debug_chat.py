@@ -752,6 +752,11 @@ Examples:
         help="Path to config file (overrides DENDROPHIS_CONFIG env var)",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode and detailed tool execution logging to tool_log.txt",
+    )
+    parser.add_argument(
         "--log",
         action="store_true",
         help="Enable detailed tool execution logging to tool_log.txt",
@@ -769,7 +774,7 @@ Examples:
         os.environ["DENDROPHIS_CONFIG"] = args.config
 
     # Enable tool logging if requested
-    if args.log:
+    if args.debug or args.log:
         os.environ["DENDROPHIS_TOOL_LOG"] = "1"
         print("🔍 Tool execution logging enabled - check tool_log.txt")
 

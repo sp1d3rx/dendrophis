@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from dendrophis.events import EventBus, get_event_bus, listen
 from dendrophis.events.types import TodoRequestEvent, TodoUpdatedEvent, WaitingForInputEvent
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +52,7 @@ class TodoManager:
                 # For 'list', we just ensure the UI has the latest state
                 self._emit_change()
         except Exception:
-            # In a real system, we might emit an error event
-            pass
+            logger.exception("Error handling todo request: %s", event.action)
 
     @listen
     def _handle_waiting_input(self, event: WaitingForInputEvent) -> None:
@@ -92,7 +94,12 @@ class TodoManager:
     def toggle(self, todo_id: str) -> None:
         for index, item in enumerate(self._todos):
             if item.id == todo_id:
-                self._todos[index] = TodoItem(id=item.id, text=item.text, done=not item.done)
+                self._todos[index] = TodoItem(
+                    id=item.id,
+                    text=item.text,
+                    done=not item.done,
+                    completed_turns=item.completed_turns,
+                )
                 self._emit_change()
                 return
         raise ValueError(f"Todo item {todo_id} not found.")

@@ -38,12 +38,20 @@ class DendrophisApp(App):
         self,
         config_loader: ConfigLoader,
         session_path: str | None = None,
+        as_fork: bool = False,
         system_prompt_source: str | None = None,
+        enable_web: bool = False,
+        web_port: int = 9320,
     ) -> None:
         super().__init__()
         self._config_loader = config_loader
         self._session_path = session_path
+        self._as_fork = as_fork
         self._system_prompt_source = system_prompt_source
+        self._enable_web = enable_web
+        self._web_port = web_port
+        self._web_server = None
+        self._web_bridge = None
 
         # Initialize the event bus
         self._event_bus = EventBus(max_workers=8)
@@ -92,6 +100,24 @@ class DendrophisApp(App):
         # Show system prompt source toast
         self._show_system_prompt_toast()
 
+        # Setup and start Web Observability Interface if enabled
+        if self._enable_web:
+            try:
+                from dendrophis.web import EventBridge, WebObservabilityServer
+
+                self._web_bridge = EventBridge(history_size=200)
+                self._web_bridge.attach_event_bus(self._event_bus)
+                self._web_server = WebObservabilityServer(
+                    bridge=self._web_bridge, host="127.0.0.1", port=self._web_port
+                )
+                self._web_server.start_background()
+                self.notify(
+                    f"🌐 Web observability running at http://localhost:{self._web_port}",
+                    severity="information",
+                )
+            except Exception as err:
+                self.notify(f"Failed to start web server: {err}", severity="error")
+
         # Fetch models and initialize MCP servers in background
         self.run_worker(self._session.fetch_models())
         if getattr(self._session, "mcp_manager", None):
@@ -110,9 +136,11 @@ class DendrophisApp(App):
             self.call_later(self._load_session_deferred)
 
     def _load_session_deferred(self) -> None:
-        loaded = self._session.load_session(self._session_path)
+        loaded = self._session.load_session(self._session_path, fork=self._as_fork)
         if loaded:
             self._update_title()
+            if self._as_fork:
+                self.notify(f"Forked session into new branch [{self._session.session_id[:8]}]", severity="information")
             self.debug_log(f"[NOTIFY] SESSION LOADED: {loaded}")
             self.notify(f"Loaded session with {loaded['message_count']} messages", severity="information")
         else:

@@ -91,6 +91,8 @@ class Session:
         self.models: list[ModelInfo] = []
         self.models_by_id: dict[str, ModelInfo] = {}
         self.session_id: str = uuid.uuid4().hex
+        self.fork_name: str | None = None
+        self.parent_session_id: str | None = None
 
         # Set session-scoped prompt cache key for models that support it
         if self.config.llm.prompt_cache_key is None and supports_prompt_cache_key_by_id(self.config.llm.model):
@@ -255,27 +257,66 @@ class Session:
     # Session I/O (Delegated to SessionPersister)
     # =========================================================================
 
-    def save_session(self) -> Path | None:
+    def save_session(self, fork_name: str | None = None) -> Path | None:
         """Save the current session to a JSON file.
+
+        Args:
+            fork_name: Optional custom fork name to associate with this session save.
 
         Returns:
             The path to the saved file, or None if there are no messages to save.
         """
-        return self._persister.save(self.session_id, self._session_file)
+        if fork_name is not None:
+            self.fork_name = fork_name
+        return self._persister.save(
+            self.session_id,
+            self._session_file,
+            fork_name=self.fork_name,
+            parent_session_id=self.parent_session_id,
+        )
 
-    def load_session(self, path: str) -> dict[str, Any] | None:
+    def fork(self, name: str | None = None) -> str:
+        """Fork the current session context into a new session branch.
+
+        Args:
+            name: Optional descriptive name for the fork.
+
+        Returns:
+            The new session ID string.
+        """
+        # First save current state so the base checkpoint is saved on disk
+        if name is not None:
+            self.fork_name = name
+        self.save_session()
+
+        previous_session_id = self.session_id
+        self.session_id = uuid.uuid4().hex
+        self.parent_session_id = previous_session_id
+        self._session_file = None
+
+        if supports_prompt_cache_key_by_id(self.config.llm.model):
+            self.config.llm.prompt_cache_key = f"dendrophis-{self.session_id[:16]}"
+
+        # Immediately save new session branch
+        self.save_session()
+        return self.session_id
+
+    def load_session(self, path: str, fork: bool = False) -> dict[str, Any] | None:
         """Load a session from a JSON file.
 
         Args:
             path: Path to the session JSON file.
+            fork: If True, assign a new session ID and do not link to original file.
 
         Returns:
             Dict with info about loaded session, or None if loading failed.
         """
-        info, session_id, session_file = self._persister.load(path)
+        info, session_id, session_file = self._persister.load(path, as_fork=fork)
         if info:
             self.session_id = session_id
             self._session_file = session_file
+            self.fork_name = info.get("fork_name")
+            self.parent_session_id = info.get("parent_session_id")
             # Update LLM config with loaded model
             if info.get("model"):
                 self.llm._config = self.config.llm
@@ -295,6 +336,7 @@ class Session:
                     total_cost_usd=self.stats.total_cost_usd,
                     tokens_per_sec=0.0,
                     time_to_first_token=0.0,
+                    cached_tokens=self.stats.cached_tokens,
                 )
             )
         return info

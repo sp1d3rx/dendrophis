@@ -12,6 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header
 
 from dendrophis.events import (
+    AppendProposalEvent,
     ConfigReloadedEvent,
     ContextUpdatedEvent,
     EditProposalEvent,
@@ -292,6 +293,17 @@ class MainScreen(Screen):
         self.call_later(show_write_confirmation)
 
     @listen
+    def _on_append_proposal(self, event: AppendProposalEvent) -> None:
+        """Handle request for file append approval with content preview."""
+
+        def show_append_confirmation() -> None:
+            from dendrophis.ui.screens.append_confirmation import AppendConfirmationScreen
+
+            self.app.push_screen(AppendConfirmationScreen(event, self._event_bus))
+
+        self.call_later(show_append_confirmation)
+
+    @listen
     def _on_python_exec_proposal(self, event: PythonExecProposalEvent) -> None:
         """Handle request for Python code execution approval with code preview."""
 
@@ -568,6 +580,7 @@ class MainScreen(Screen):
         commands.extend(
             [
                 ("  /compact     ", "Manually compact context to reduce token usage"),
+                ("  /fork        ", "Fork current context into a new session branch"),
                 ("  /export      ", "Export conversation to markdown file"),
             ]
         )
@@ -637,6 +650,24 @@ class MainScreen(Screen):
         if cmd == "/hello":
             chat = self.query_one(ChatView)
             chat.add_system_message("Hello! 👋 I'm Dendrophis, your coding assistant.")
+            return
+        if cmd.startswith("/fork") and (len(cmd) == 5 or cmd[5] == " "):
+            chat = self.query_one(ChatView)
+            if not self._session.context.messages:
+                chat.add_system_message(
+                    "[warning]Context is empty — write some messages before forking context.[/warning]"
+                )
+                return
+
+            fork_name_arg = event.text.strip()[5:].strip() or None
+            new_session_id = self._session.fork(name=fork_name_arg)
+            self.app._update_title()
+
+            name_label = f" named '[bold cyan]{fork_name_arg}[/bold cyan]'" if fork_name_arg else ""
+            chat.add_system_message(
+                f"🍴 Context forked into new session branch [bold green]{new_session_id[:8]}[/bold green]{name_label}! "
+                "Subsequent messages will be saved to this new session branch."
+            )
             return
         if cmd == "/save-primer":
             if not self._session.config.caching.pr_enabled:
@@ -752,6 +783,7 @@ class MainScreen(Screen):
                 total_cost_usd=self._session.stats.total_cost_usd,
                 tokens_per_sec=0.0,
                 time_to_first_token=0.0,
+                cached_tokens=self._session.stats.cached_tokens,
             )
         )
 
@@ -862,9 +894,16 @@ class MainScreen(Screen):
         """Open the session picker to load a previous session."""
         from dendrophis.ui.screens.session_picker import SessionPickerScreen
 
-        def handle_session_selected(selected_path: str | None) -> None:
-            if not selected_path:
+        def handle_session_selected(result: tuple[str, str] | str | None) -> None:
+            if not result:
                 return
+
+            if isinstance(result, tuple):
+                action_type, selected_path = result
+                as_fork = action_type == "fork"
+            else:
+                selected_path = result
+                as_fork = False
 
             # Save current session to avoid data loss
             if self._session.context.messages:
@@ -872,12 +911,18 @@ class MainScreen(Screen):
                 if saved_path:
                     self._debug_widget.write(f"[NOTIFY] Session autosaved to: {saved_path}")
 
-            loaded_info = self._session.load_session(selected_path)
+            loaded_info = self._session.load_session(selected_path, fork=as_fork)
             if loaded_info:
                 self.app._update_title()
                 message_count = loaded_info.get("message_count", 0)
-                self.notify(f"Resumed session with {message_count} messages", severity="information")
-                self._debug_widget.write(f"[NOTIFY] Session loaded: {selected_path}")
+                if as_fork:
+                    self.notify(
+                        f"Forked session [{self._session.session_id[:8]}] with {message_count} messages",
+                        severity="information",
+                    )
+                else:
+                    self.notify(f"Resumed session with {message_count} messages", severity="information")
+                self._debug_widget.write(f"[NOTIFY] Session loaded (fork={as_fork}): {selected_path}")
             else:
                 self.notify("Failed to load session", severity="error")
                 self._debug_widget.write(f"[NOTIFY ERROR] Failed to load session: {selected_path}")
@@ -942,6 +987,7 @@ class MainScreen(Screen):
         commands.extend(
             [
                 ("/compact", "Manually compact context to reduce token usage"),
+                ("/fork", "Fork current context into a new session branch"),
                 ("/export", "Export conversation to markdown file"),
             ]
         )
@@ -1045,8 +1091,9 @@ class MainScreen(Screen):
     def _execute_slash_command(self, command: str) -> None:
         """Execute a slash command immediately and provide feedback."""
 
-        # Remove leading slash
-        cmd_name = command[1:]  # Remove the /
+        # Remove leading slash and parse command name
+        command_parts = command[1:].split(maxsplit=1)
+        cmd_name = command_parts[0].lower() if command_parts else ""
 
         # Check if it's a built-in command
         builtin_commands = {
@@ -1057,12 +1104,13 @@ class MainScreen(Screen):
             "clear": lambda: self._process_input(InputBar.Submitted("/clear", [])),
             "fresh": lambda: self._process_input(InputBar.Submitted("/fresh", [])),
             "compact": lambda: self._process_input(InputBar.Submitted("/compact", [])),
+            "fork": lambda: self._process_input(InputBar.Submitted(command, [])),
             "export": lambda: self._process_input(InputBar.Submitted("/export", [])),
             "save-primer": lambda: self._process_input(InputBar.Submitted("/save-primer", [])),
             "load-primer": lambda: self._process_input(InputBar.Submitted("/load-primer", [])),
-            "track": lambda: self._process_input(InputBar.Submitted("/track", [])),
-            "untrack": lambda: self._process_input(InputBar.Submitted("/untrack", [])),
-            "set": lambda: self._process_input(InputBar.Submitted("/set", [])),
+            "track": lambda: self._process_input(InputBar.Submitted(command, [])),
+            "untrack": lambda: self._process_input(InputBar.Submitted(command, [])),
+            "set": lambda: self._process_input(InputBar.Submitted(command, [])),
         }
 
         if cmd_name in builtin_commands:

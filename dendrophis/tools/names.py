@@ -12,6 +12,7 @@ class ToolName(StrEnum):
     EDIT = "edit"
     PATCH = "patch"
     WRITE = "write"
+    APPEND = "append"
     GLOB = "glob"
     RIPGREP = "ripgrep"
     READ = "read"

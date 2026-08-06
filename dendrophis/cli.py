@@ -24,12 +24,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--session",
         metavar="ID_OR_PATH",
-        help="Session ID (short or full) or path to session file",
+        help="Session ID (short or full), fork name, or path to session file",
+    )
+    parser.add_argument(
+        "--fork",
+        metavar="ID_OR_NAME",
+        help="Fork context from a saved session or fork name into a new session branch",
     )
     parser.add_argument(
         "--list-sessions",
         action="store_true",
         help="List available saved sessions and exit",
+    )
+    parser.add_argument(
+        "--list-forks",
+        action="store_true",
+        help="List available saved forks and exit",
     )
     parser.add_argument(
         "--calibrate",
@@ -57,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force re-calibration (use with --calibrate)",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode and detailed tool execution logging to tool_log.txt",
+    )
+    parser.add_argument(
         "--log",
         action="store_true",
         help="Enable detailed tool execution logging to tool_log.txt",
@@ -65,6 +80,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-parallel-tools",
         action="store_true",
         help="Execute tools sequentially instead of in parallel",
+    )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Enable web observability interface",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=9320,
+        metavar="PORT",
+        help="Port for web observability interface (default: 9320)",
     )
     parser.add_argument(
         "--version",
@@ -83,13 +110,15 @@ def _list_sessions() -> None:
         print("No saved sessions found.")
         return
 
-    session_files = sorted(sessions_dir.glob("session-*.json*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    session_files = sorted(
+        sessions_dir.glob("session-*.json*"), key=lambda session_file: session_file.stat().st_mtime, reverse=True
+    )
     if not session_files:
         print("No saved sessions found.")
         return
 
-    print(f"{'Session ID':12} {'Date':20} {'Model':40} {'Messages':>8}")
-    print("-" * 90)
+    print(f"{'Session ID':12} {'Fork Name':18} {'Date':20} {'Model':32} {'Messages':>8}")
+    print("-" * 95)
     for path in session_files[:20]:  # Show last 20
         import json
 
@@ -97,31 +126,108 @@ def _list_sessions() -> None:
             if path.suffix == ".xz":
                 import lzma
 
-                with lzma.open(path, "rb") as f:
-                    data = json.loads(f.read().decode())
+                with lzma.open(path, "rb") as file_handle:
+                    data = json.loads(file_handle.read().decode())
             else:
                 data = json.loads(path.read_text())
             session_id = data.get("session_id", "unknown")[:8]
+            fork_name = data.get("fork_name", "")[:16]
             timestamp = data.get("timestamp", "unknown")[:19].replace("T", " ")
-            model = data.get("model", "unknown")[:38]
-            msg_count = len([m for m in data.get("messages", []) if m.get("role") != "system"])
-            print(f"{session_id:12} {timestamp:20} {model:40} {msg_count:>8}")
+            model = data.get("model", "unknown")[:30]
+            msg_count = len([msg for msg in data.get("messages", []) if msg.get("role") != "system"])
+            print(f"{session_id:12} {fork_name:18} {timestamp:20} {model:32} {msg_count:>8}")
         except Exception:
             continue
 
 
-def _resolve_session(id_or_path: str) -> str:
-    """Resolve a session ID (short or full) or path to an absolute path."""
+def _list_forks() -> None:
+    """List available saved forks."""
     from pathlib import Path
 
-    p = Path(id_or_path).expanduser()
-    if p.exists():
-        return str(p)
+    sessions_dir = Path.home() / ".config" / "dendrophis" / "sessions"
+    if not sessions_dir.exists():
+        print("No saved forks found.")
+        return
+
+    session_files = sorted(
+        sessions_dir.glob("session-*.json*"), key=lambda session_file: session_file.stat().st_mtime, reverse=True
+    )
+    if not session_files:
+        print("No saved forks found.")
+        return
+
+    import json
+    import lzma
+
+    forks_found = False
+    print(f"{'Fork Name':20} {'Session ID':12} {'Date':20} {'Model':30} {'Messages':>8}")
+    print("-" * 95)
+    for path in session_files:
+        try:
+            if path.suffix == ".xz":
+                with lzma.open(path, "rb") as file_handle:
+                    data = json.loads(file_handle.read().decode())
+            else:
+                data = json.loads(path.read_text())
+
+            fork_name = data.get("fork_name")
+            if not fork_name:
+                continue
+
+            forks_found = True
+            session_id = data.get("session_id", "unknown")[:8]
+            timestamp = data.get("timestamp", "unknown")[:19].replace("T", " ")
+            model = data.get("model", "unknown")[:28]
+            msg_count = len([msg for msg in data.get("messages", []) if msg.get("role") != "system"])
+            print(f"{fork_name[:20]:20} {session_id:12} {timestamp:20} {model:30} {msg_count:>8}")
+        except Exception:
+            continue
+
+    if not forks_found:
+        print("No named forks found.")
+
+
+def _resolve_session(id_or_path: str) -> str:
+    """Resolve a session ID, fork name, or file path to an absolute path."""
+    from pathlib import Path
+
+    file_path = Path(id_or_path).expanduser()
+    if file_path.exists():
+        return str(file_path)
 
     sessions_dir = Path.home() / ".config" / "dendrophis" / "sessions"
-    matches = sorted(sessions_dir.glob(f"session-{id_or_path}*.json*"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not sessions_dir.exists():
+        print(f"No session found for: {id_or_path}", file=sys.stderr)
+        sys.exit(1)
+
+    matches = sorted(
+        sessions_dir.glob(f"session-{id_or_path}*.json*"),
+        key=lambda session_file: session_file.stat().st_mtime,
+        reverse=True,
+    )
     if matches:
         return str(matches[0])
+
+    # Search inside session files for matching fork_name or session_id prefix
+    import json
+    import lzma
+
+    for session_file in sorted(
+        sessions_dir.glob("session-*.json*"), key=lambda session_file: session_file.stat().st_mtime, reverse=True
+    ):
+        try:
+            if session_file.suffix == ".xz":
+                with lzma.open(session_file, "rb") as file_handle:
+                    data = json.loads(file_handle.read().decode())
+            else:
+                data = json.loads(session_file.read_text())
+
+            if data.get("fork_name") == id_or_path:
+                return str(session_file)
+            if data.get("session_id", "").startswith(id_or_path):
+                return str(session_file)
+        except Exception:
+            continue
 
     print(f"No session found for: {id_or_path}", file=sys.stderr)
     sys.exit(1)
@@ -268,6 +374,10 @@ def main() -> None:
         _list_sessions()
         sys.exit(0)
 
+    if args.list_forks:
+        _list_forks()
+        sys.exit(0)
+
     from dendrophis.config.loader import ConfigLoader
     from dendrophis.ui.app import DendrophisApp
 
@@ -279,8 +389,8 @@ def main() -> None:
     if args.model:
         loader.config.llm.model = args.model
 
-    # Set up tool logging if --log flag is provided
-    if args.log:
+    # Set up tool logging if --debug or --log flag is provided
+    if args.debug or args.log:
         import os
 
         os.environ["DENDROPHIS_TOOL_LOG"] = "1"
@@ -291,9 +401,21 @@ def main() -> None:
         loader.config.tools.parallel_tools = False
         print("🔧 Parallel tool execution disabled")
 
-    session_path = _resolve_session(args.session) if args.session else None
+    session_path = None
+    as_fork = False
+    if args.session:
+        session_path = _resolve_session(args.session)
+    elif args.fork:
+        session_path = _resolve_session(args.fork)
+        as_fork = True
+
     app = DendrophisApp(
-        config_loader=loader, session_path=session_path, system_prompt_source=loader.system_prompt_source
+        config_loader=loader,
+        session_path=session_path,
+        as_fork=as_fork,
+        system_prompt_source=loader.system_prompt_source,
+        enable_web=args.web,
+        web_port=args.web_port,
     )
     app.run()
 

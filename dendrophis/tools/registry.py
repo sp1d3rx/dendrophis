@@ -10,6 +10,28 @@ if TYPE_CHECKING:
     from dendrophis.tools.base import BaseTool
 
 
+PREFERRED_TOOL_ORDER: tuple[str, ...] = (
+    ToolName.GLOB,
+    ToolName.RIPGREP,
+    ToolName.READ,
+    ToolName.READ_FILE,
+    ToolName.LIST_DIR,
+    ToolName.EDIT,
+    ToolName.EDIT_FUNCTION,
+    ToolName.WRITE,
+    ToolName.WRITE_FILE,
+    ToolName.BASH,
+)
+
+
+def _tool_sort_key(tool: BaseTool) -> int:
+    """Sort key for tools according to PREFERRED_TOOL_ORDER."""
+    try:
+        return PREFERRED_TOOL_ORDER.index(tool.name)
+    except ValueError:
+        return len(PREFERRED_TOOL_ORDER)
+
+
 class ToolRegistry:
     """Holds all registered tools."""
 
@@ -42,63 +64,8 @@ class ToolRegistry:
 
     def all(self) -> list[BaseTool]:
         """Return all registered tool instances, ordered by preference."""
-        # Preferred order: investigation tools, then editing, then execution
-        preferred_order = [
-            ToolName.GLOB,
-            ToolName.RIPGREP,
-            ToolName.READ,
-            ToolName.READ_FILE,
-            ToolName.LIST_DIR,
-            ToolName.EDIT,
-            ToolName.EDIT_FUNCTION,
-            ToolName.WRITE,
-            ToolName.WRITE_FILE,
-            ToolName.BASH,
-        ]
-
-        ordered_tools: list[BaseTool] = []
-        remaining = list(self._tools.values())
-
-        for name in preferred_order:
-            if name in self._tools:
-                ordered_tools.append(self._tools[name])
-                for index, tool in enumerate(remaining):
-                    if tool.name == name:
-                        remaining.pop(index)
-                        break
-
-        # Add any remaining tools not in preferred order
-        ordered_tools.extend(remaining)
-        return ordered_tools
+        return sorted(self._tools.values(), key=_tool_sort_key)
 
     def all_schema(self) -> list[dict[str, Any]]:
         """Return list of all tool schemas for OpenAI, ordered by preference."""
-        # Preferred order: investigation tools, then editing, then execution
-        preferred_order = [
-            ToolName.GLOB,
-            ToolName.RIPGREP,
-            ToolName.READ,
-            ToolName.READ_FILE,
-            ToolName.LIST_DIR,
-            ToolName.EDIT,
-            ToolName.EDIT_FUNCTION,
-            ToolName.WRITE,
-            ToolName.WRITE_FILE,
-            ToolName.BASH,
-        ]
-
-        ordered_tools: list[dict[str, Any]] = []
-        remaining = list(self._tools.values())
-
-        for name in preferred_order:
-            if name in self._tools:
-                ordered_tools.append(self._tools[name].schema)
-                for index, tool in enumerate(remaining):
-                    if tool.name == name:
-                        remaining.pop(index)
-                        break
-
-        # Add any remaining tools not in preferred order
-        ordered_tools.extend(tool.schema for tool in remaining)
-
-        return ordered_tools
+        return [tool.schema for tool in self.all()]

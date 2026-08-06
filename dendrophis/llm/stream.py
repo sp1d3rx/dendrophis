@@ -85,6 +85,22 @@ def _extract_delta_reasoning(delta: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_cached_tokens(usage: dict[str, Any], tokens_details: dict[str, Any]) -> int:
+    """Return cached-token count from a usage dict across provider formats.
+
+    OpenAI (and OpenRouter routing to OpenAI) report prompt_tokens_details.cached_tokens
+    (or input_tokens_details.cached_tokens on the responses API). OpenRouter routing to
+    Anthropic reports cache_read_input_tokens at the top level of usage.
+    """
+    cached = tokens_details.get("cached_tokens")
+    if isinstance(cached, int):
+        return cached
+    cache_read = usage.get("cache_read_input_tokens")
+    if isinstance(cache_read, int):
+        return cache_read
+    return 0
+
+
 def _extract_tool_call_chunk(
     toolCallChunk: dict[str, Any],
 ) -> tuple[int, str | None, str | None, str]:
@@ -422,7 +438,9 @@ def parse_sse_event(
                     UsageEvent(
                         prompt_tokens=usageDetails.get("input_tokens", 0),
                         completion_tokens=usageDetails.get("output_tokens", 0),
-                        cached_tokens=(usageDetails.get("input_tokens_details") or {}).get("cached_tokens", 0),
+                        cached_tokens=_extract_cached_tokens(
+                            usageDetails, usageDetails.get("input_tokens_details") or {}
+                        ),
                     )
                 )
             outputs = responseDetails.get("output", [])
@@ -676,7 +694,7 @@ def parse_sse_event(
             UsageEvent(
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),
-                cached_tokens=promptTokensDetails.get("cached_tokens", 0),
+                cached_tokens=_extract_cached_tokens(usage, promptTokensDetails),
             )
         )
 

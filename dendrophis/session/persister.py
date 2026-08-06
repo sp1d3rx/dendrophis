@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dendrophis.llm.models import supports_prompt_cache_key_by_id
+
 if TYPE_CHECKING:
     from dendrophis.config.schema import DendrophisConfig
     from dendrophis.context.manager import ContextManager
@@ -68,12 +70,16 @@ class SessionPersister:
         self,
         session_id: str,
         session_file: Path | None = None,
+        fork_name: str | None = None,
+        parent_session_id: str | None = None,
     ) -> Path | None:
         """Save the current session to a JSON file.
 
         Args:
             session_id: The session identifier.
             session_file: Optional path to save to (for resaving existing session).
+            fork_name: Optional custom fork name.
+            parent_session_id: Optional ID of parent session if this is a fork.
 
         Returns:
             The path to the saved file, or None if there are no messages to save.
@@ -93,7 +99,7 @@ class SessionPersister:
             filepath = sessions_dir / f"session-{short_id}.{timestamp}.json.xz"
 
         # Build session data
-        session_data = {
+        session_data: dict[str, Any] = {
             "session_id": session_id,
             "timestamp": datetime.now().isoformat(),
             "model": self._config.llm.model,
@@ -106,27 +112,37 @@ class SessionPersister:
             },
         }
 
+        if fork_name is not None:
+            session_data["fork_name"] = fork_name
+        if parent_session_id is not None:
+            session_data["parent_session_id"] = parent_session_id
+
         # Save prompt_cache_key if set (for cache continuity across session loads)
         if self._config.llm.prompt_cache_key is not None:
             session_data["prompt_cache_key"] = self._config.llm.prompt_cache_key
 
         try:
             data = json.dumps(session_data, ensure_ascii=False).encode()
-            with lzma.open(filepath, "wb", preset=0) as f:
-                f.write(data)
+            with lzma.open(filepath, "wb", preset=0) as file_handle:
+                file_handle.write(data)
             return filepath
         except Exception:
             return None
 
-    def load(self, path: str) -> tuple[dict[str, Any] | None, str, Path | None]:
+    def load(
+        self,
+        path: str,
+        as_fork: bool = False,
+    ) -> tuple[dict[str, Any] | None, str, Path | None]:
         """Load a session from a JSON file.
 
         Args:
             path: Path to the session JSON file.
+            as_fork: If True, assign a new session ID and do not link to original file.
 
         Returns:
             Tuple of (info_dict, session_id, session_file) where info_dict contains
-            message_count and model, or None if loading failed.
+            message_count, model, and fork metadata, or None if loading failed.
         """
         filepath = Path(path).expanduser()
         if not filepath.exists():
@@ -135,14 +151,25 @@ class SessionPersister:
 
         try:
             if filepath.suffix == ".xz":
-                with lzma.open(filepath, "rb") as f:
-                    data = json.loads(f.read().decode())
+                with lzma.open(filepath, "rb") as file_handle:
+                    data = json.loads(file_handle.read().decode())
             else:
-                with open(filepath, encoding="utf-8") as f:
-                    data = json.load(f)
+                with open(filepath, encoding="utf-8") as file_handle:
+                    data = json.load(file_handle)
 
-            # Extract session ID
-            session_id = data.get("session_id", "")
+            import uuid
+
+            original_session_id = data.get("session_id", "")
+            if as_fork:
+                session_id = uuid.uuid4().hex
+                session_file = None
+                parent_session_id = original_session_id
+                fork_name = data.get("fork_name")
+            else:
+                session_id = original_session_id
+                session_file = filepath
+                parent_session_id = data.get("parent_session_id")
+                fork_name = data.get("fork_name")
 
             # Restore messages and sanitize
             loaded_messages = data.get("messages", [])
@@ -162,20 +189,27 @@ class SessionPersister:
             if saved_model:
                 self._config.llm.model = saved_model
 
-            # Restore prompt_cache_key if it was saved
-            saved_prompt_cache_key = data.get("prompt_cache_key")
-            if saved_prompt_cache_key:
-                self._config.llm.prompt_cache_key = saved_prompt_cache_key
+            # Restore prompt_cache_key if it was saved (or generate new if forking)
+            if as_fork:
+                if supports_prompt_cache_key_by_id(self._config.llm.model):
+                    self._config.llm.prompt_cache_key = f"dendrophis-{session_id[:16]}"
+            else:
+                saved_prompt_cache_key = data.get("prompt_cache_key")
+                if saved_prompt_cache_key:
+                    self._config.llm.prompt_cache_key = saved_prompt_cache_key
 
             # Recalculate turn count from messages
-            self._context._turn_count = sum(1 for m in self._context.messages if m.get("role") == "user")
+            self._context._turn_count = sum(1 for message in self._context.messages if message.get("role") == "user")
 
             info = {
-                "message_count": len([m for m in self._context.messages if m.get("role") != "system"]),
+                "message_count": len([msg for msg in self._context.messages if msg.get("role") != "system"]),
                 "model": saved_model,
+                "fork_name": fork_name,
+                "parent_session_id": parent_session_id,
+                "is_fork": as_fork,
             }
 
-            return info, session_id, filepath
+            return info, session_id, session_file
 
         except Exception:
             return None, "", None

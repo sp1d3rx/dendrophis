@@ -59,6 +59,10 @@ def _file_log(message: str, log_path: Path) -> None:
 
 def _tool_log(message: str, session_id: str = "global") -> None:
     """Write a message to the tool execution log file."""
+    import os
+
+    if os.environ.get("DENDROPHIS_TOOL_LOG") != "1":
+        return
     log_path = Path(f"tool_log_{session_id}.txt")
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     try:
@@ -167,12 +171,37 @@ class SessionStats:
             if total_duration > 0.0:
                 self.tokens_per_sec = self._turn_completion / total_duration
 
-    def update(self, prompt: int, completion: int, cost_per_1k: float = 0.0, cached: int = 0) -> None:
-        """Accumulate token counts and estimated cost."""
+    def update(
+        self,
+        prompt: int,
+        completion: int,
+        cost_per_1k: float = 0.0,
+        cached: int = 0,
+        *,
+        input_cost_per_token: float | None = None,
+        output_cost_per_token: float | None = None,
+        cache_read_cost_per_token: float | None = None,
+    ) -> None:
+        """Accumulate token counts and estimated cost.
+
+        When per-token rates are provided, cost is computed precisely:
+        uncached input tokens at the input rate, cached tokens at the cache-read
+        rate, and completion tokens at the output rate. Otherwise it falls back
+        to the legacy blended cost_per_1k applied to all tokens.
+        """
         self.prompt_tokens += prompt
         self.completion_tokens += completion
         self.cached_tokens += cached
-        self.total_cost_usd += (prompt + completion) / 1000 * cost_per_1k
+
+        if input_cost_per_token is not None or output_cost_per_token is not None:
+            in_rate = input_cost_per_token or 0.0
+            out_rate = output_cost_per_token or 0.0
+            # Cached tokens are billed at the (cheaper) cache-read rate, not full input price.
+            cache_rate = cache_read_cost_per_token if cache_read_cost_per_token is not None else in_rate
+            uncached_prompt = max(prompt - cached, 0)
+            self.total_cost_usd += uncached_prompt * in_rate + cached * cache_rate + completion * out_rate
+        else:
+            self.total_cost_usd += (prompt + completion) / 1000 * cost_per_1k
 
     def reset(self) -> None:
         """Reset all cumulative statistics."""
@@ -242,13 +271,41 @@ class ChatOrchestrator:
             return model_info.supports_tools
         return supports_tools_by_id(current_id)
 
-    def _get_current_model_cost_per_1k(self) -> float:
-        """Get the cost per 1k tokens for the current model."""
-        current_model_id = self.config.llm.model
-        model_info = self.models_by_id.get(current_model_id)
-        if model_info:
-            return model_info.cost_per_1k
-        return 0.0
+    def _get_current_model_info(self) -> Any:
+        """Return the ModelInfo for the current model, or None if unknown."""
+        return self.models_by_id.get(self.config.llm.model)
+
+    @staticmethod
+    def _signals_unfinished_intent(text: str) -> bool:
+        """Return True if assistant text narrates an action it never took.
+
+        Catches the "now let me read the file..." -> stop stall: the model announces
+        intent but produces no tool call. Matches trailing intent phrases; a model that
+        merely mentions a tool in passing mid-answer won't trigger a nudge.
+        """
+        if not text:
+            return False
+        tail = text.strip().lower()[-200:]
+        cues = (
+            "let me",
+            "i'll ",
+            "i will ",
+            "i'm going to",
+            "i am going to",
+            "now i'll",
+            "now i will",
+            "let's ",
+            "let us ",
+            "i need to",
+            "i should",
+            "next,",
+            "first,",
+            "i'll start",
+            "going to read",
+            "going to check",
+            "going to run",
+        )
+        return any(cue in tail for cue in cues)
 
     async def _emit_stats_periodically(self) -> None:
         """Periodically emit stats events while streaming."""
@@ -262,6 +319,7 @@ class ChatOrchestrator:
                         total_cost_usd=self.stats.total_cost_usd,
                         tokens_per_sec=self.stats.current_tps,
                         time_to_first_token=self.stats.time_to_first_token,
+                        cached_tokens=self.stats.cached_tokens,
                     )
                 )
 
@@ -395,6 +453,7 @@ class ChatOrchestrator:
                         total_cost_usd=self.stats.total_cost_usd,
                         tokens_per_sec=self.stats.tokens_per_sec,
                         time_to_first_token=self.stats.time_to_first_token,
+                        cached_tokens=self.stats.cached_tokens,
                     )
                 )
                 self._emit(StreamingFinishedEvent())
@@ -421,6 +480,8 @@ class ChatOrchestrator:
         )
         max_consecutive_failures = self.config.tools.max_calls
         consecutive_failures = 0
+        continuation_nudges = 0
+        max_continuation_nudges = 2
         while not self.cancel_flag.is_set():
             self._log(f"_run_completion_loop consecutive_failures={consecutive_failures}")
             last_message = self.context.get_messages_for_api()[-1]["content"]
@@ -460,6 +521,7 @@ class ChatOrchestrator:
                                 total_cost_usd=self.stats.total_cost_usd,
                                 tokens_per_sec=self.stats.tokens_per_sec,
                                 time_to_first_token=self.stats.time_to_first_token,
+                                cached_tokens=self.stats.cached_tokens,
                             )
                         )
                     self._emit(event)
@@ -473,6 +535,7 @@ class ChatOrchestrator:
                                 total_cost_usd=self.stats.total_cost_usd,
                                 tokens_per_sec=self.stats.tokens_per_sec,
                                 time_to_first_token=self.stats.time_to_first_token,
+                                cached_tokens=self.stats.cached_tokens,
                             )
                         )
                     self._emit(event)
@@ -486,8 +549,18 @@ class ChatOrchestrator:
                             turn_count=self.context.get_turn_count(),
                         )
                     )
-                    cost_per_1k = self._get_current_model_cost_per_1k()
-                    self.stats.update(event.prompt_tokens, event.completion_tokens, cost_per_1k, event.cached_tokens)
+                    model_info = self._get_current_model_info()
+                    if model_info is not None:
+                        self.stats.update(
+                            event.prompt_tokens,
+                            event.completion_tokens,
+                            cached=event.cached_tokens,
+                            input_cost_per_token=model_info.input_cost_per_token,
+                            output_cost_per_token=model_info.output_cost_per_token,
+                            cache_read_cost_per_token=model_info.cache_read_cost_per_token,
+                        )
+                    else:
+                        self.stats.update(event.prompt_tokens, event.completion_tokens, 0.0, event.cached_tokens)
                     self.stats.visual_tokens_saved += getattr(self.llm, "last_visual_tokens_saved", 0)
                     self._emit(event)
                     self._emit(
@@ -531,6 +604,23 @@ class ChatOrchestrator:
             self.context.append_assistant(assistant_text, tool_calls_payload, turn.reasoning or None)
             is_tool_finish = bool(turn.tool_calls) and turn.finish_reason in ("tool_calls", "stop")
             if not is_tool_finish:
+                # Stall recovery: model stopped with text but no tool call, and the text
+                # signals it intended to act ("let me read...", "I'll check..."). Nudge it
+                # to follow through instead of silently ending the turn.
+                if (
+                    self.config.llm.continuation_nudge
+                    and turn.finish_reason == "stop"
+                    and not turn.tool_calls
+                    and continuation_nudges < max_continuation_nudges
+                    and self._signals_unfinished_intent(turn.text)
+                ):
+                    continuation_nudges += 1
+                    self._log(f"Continuation nudge #{continuation_nudges}: model narrated intent without a tool call")
+                    self.context.append_user(
+                        "You described an action but did not call a tool. "
+                        "Proceed with the tool call now, or state clearly that you are finished."
+                    )
+                    continue
                 self._log(f"Exiting: finish_reason={turn.finish_reason}, has_tools={bool(turn.tool_calls)}")
                 if turn.finish_reason == "length" and not turn.text and not turn.tool_calls:
                     self._emit(

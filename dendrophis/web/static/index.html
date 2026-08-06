@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dendrophis — Cognitive Observability Interface</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- D3.js for visual rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="logo-icon">🐍</div>
+        <div class="brand-text">
+          <h1>DENDROPHIS</h1>
+          <span class="sub-brand">Cognitive Observability Platform</span>
+        </div>
+      </div>
+      <div class="header-stats">
+        <div class="stat-badge">
+          <span class="label">MODEL</span>
+          <span id="active-model-val" class="value">dendrophis-agent</span>
+        </div>
+        <div class="stat-badge">
+          <span class="label">EVENTS</span>
+          <span id="event-count-val" class="value">0</span>
+        </div>
+        <div class="connection-status" id="connection-status">
+          <span class="status-dot"></span>
+          <span class="status-text">CONNECTING</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Dashboard Grid -->
+    <main class="dashboard-grid">
+      <!-- Panel 1: Thought Stream -->
+      <section class="panel thought-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">🧠</span>
+            <h2>Thought Stream</h2>
+          </div>
+          <div class="panel-actions">
+            <button id="clear-stream-btn" class="btn-icon" title="Clear Stream">🧹</button>
+            <span class="badge live-badge">LIVE</span>
+          </div>
+        </div>
+        <div class="panel-body thought-body" id="thought-stream">
+          <div class="log-entry system-msg">
+            <span class="timestamp">[SYSTEM]</span>
+            <span class="msg-text">Awaiting event stream initialization...</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Panel 2: Subagent Orchestrator Graph -->
+      <section class="panel graph-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">🕸️</span>
+            <h2>Subagent Orchestrator</h2>
+          </div>
+          <div class="panel-actions">
+            <span class="node-legend"><span class="dot active"></span> Active</span>
+            <span class="node-legend"><span class="dot thinking"></span> Thinking</span>
+            <span class="node-legend"><span class="dot idle"></span> Idle</span>
+          </div>
+        </div>
+        <div class="panel-body graph-body">
+          <svg id="subagent-graph" width="100%" height="100%"></svg>
+        </div>
+      </section>
+
+      <!-- Panel 3: Memory Nebula -->
+      <section class="panel nebula-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">🌌</span>
+            <h2>Memory Nebula</h2>
+          </div>
+          <div class="panel-actions">
+            <span class="badge">SEMANTIC CLUSTER</span>
+          </div>
+        </div>
+        <div class="panel-body nebula-body">
+          <svg id="memory-nebula" width="100%" height="100%"></svg>
+          <div id="memory-tooltip" class="tooltip hidden"></div>
+        </div>
+      </section>
+
+      <!-- Panel 4: Filesystem Inspector -->
+      <section class="panel files-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">📁</span>
+            <h2>Filesystem Inspector</h2>
+          </div>
+          <div class="panel-actions">
+            <span id="file-count-badge" class="badge">0 Tracked</span>
+          </div>
+        </div>
+        <div class="panel-body files-body" id="file-inspector">
+          <div class="empty-state">No files tracked yet.</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

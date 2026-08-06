@@ -70,6 +70,10 @@ class LLMConfig(BaseModel):
     visual_user_prompts: bool = False
     # Minimum character threshold before tool results or user prompts are converted to 1-bit images
     visual_threshold_chars: int = 1000
+    # When the model stops with text but no tool call and the text signals it intended to act
+    # ("let me read...", "I'll check..."), append a short nudge and continue the turn instead of
+    # silently ending. Recovers from models that narrate intent but forget to call a tool.
+    continuation_nudge: bool = True
 
     @model_validator(mode="before")
     @classmethod

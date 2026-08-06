@@ -195,25 +195,52 @@ class ModelInfo:
         )
         return any(pattern in self.id.lower() for pattern in well_known)
 
-    @property
-    def cost_per_1k(self) -> float:
+    def _pricing(self) -> dict[str, Any]:
+        """Return the raw pricing dict from the /models endpoint (USD per token)."""
         metadata = self.extra.get("metadata") or {}
         pricing = metadata.get("pricing") or self.extra.get("pricing") or {}
+        return pricing if isinstance(pricing, dict) else {}
 
-        if isinstance(pricing, dict):
+    @staticmethod
+    def _per_token(pricing: dict[str, Any], *keys: str) -> float:
+        """Return the first positive numeric price among keys (USD per token)."""
+        for key in keys:
+            raw = pricing.get(key)
+            if raw is None:
+                continue
             try:
-                input_val = float(pricing.get("prompt") or pricing.get("input") or pricing.get("input_tokens") or 0)
-                output_val = float(
-                    pricing.get("completion") or pricing.get("output") or pricing.get("output_tokens") or 0
-                )
-                if input_val > 0 or output_val > 0:
-                    avg = (input_val + output_val) / 2
-                    if avg > 0.0001:
-                        return avg / 1000 if avg > 0.01 else avg
-                    return avg * 1000
+                value = float(raw)
             except (ValueError, TypeError):
-                pass
+                continue
+            if value > 0:
+                return value
         return 0.0
+
+    @property
+    def input_cost_per_token(self) -> float:
+        """USD per uncached input/prompt token."""
+        return self._per_token(self._pricing(), "prompt", "input", "input_tokens")
+
+    @property
+    def output_cost_per_token(self) -> float:
+        """USD per output/completion token."""
+        return self._per_token(self._pricing(), "completion", "output", "output_tokens")
+
+    @property
+    def cache_read_cost_per_token(self) -> float:
+        """USD per cached (cache-read) input token. Falls back to the input price."""
+        cache_read = self._per_token(self._pricing(), "input_cache_read", "cache_read", "cached")
+        return cache_read if cache_read > 0 else self.input_cost_per_token
+
+    @property
+    def cost_per_1k(self) -> float:
+        """Blended USD per 1k tokens (average of input/output), for display/back-compat."""
+        input_val = self.input_cost_per_token
+        output_val = self.output_cost_per_token
+        if input_val <= 0 and output_val <= 0:
+            return 0.0
+        avg_per_token = (input_val + output_val) / 2
+        return avg_per_token * 1000
 
     @property
     def cost_per_1m(self) -> float:
@@ -495,8 +522,11 @@ class LLMClient:
             strip_keys.add("tool_calls")
         from dendrophis.llm.calibration import is_param_rejected
 
-        if not is_direct_anthropic or is_param_rejected(self._config.model, "cache_control"):
-            # cache_control is Anthropic-specific or rejected; other providers/configs reject it.
+        # cache_control breakpoints are honored by direct Anthropic and forwarded by
+        # OpenRouter to cache-capable upstreams (Anthropic, OpenAI). Strip them for
+        # other providers, or when calibration has recorded a rejection for this model.
+        keeps_cache_control = is_direct_anthropic or is_openrouter
+        if not keeps_cache_control or is_param_rejected(self._config.model, "cache_control"):
             strip_keys.add("cache_control")
 
         if is_deepinfra:

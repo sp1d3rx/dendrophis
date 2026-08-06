@@ -19,12 +19,13 @@ if TYPE_CHECKING:
     from dendrophis.session.session import Session
 
 
-class SessionPickerScreen(ModalScreen[str]):
-    """Modal for switching to a previous saved session."""
+class SessionPickerScreen(ModalScreen[tuple[str, str] | str]):
+    """Modal for switching to or forking a previous saved session."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("escape", "dismiss_modal", "Cancel"),
         ("delete,d", "delete_session", "Delete"),
+        ("f", "fork_session", "Fork Session"),
     ]
 
     DEFAULT_CSS = """
@@ -66,8 +67,10 @@ class SessionPickerScreen(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-container"):
-            yield Static("Select Saved Session to Resume", classes="panel-title")
-            yield Input(placeholder="Search sessions (by ID, model, date, or prompt)...", id="session-search")
+            yield Static("Select Saved Session to Resume or Fork (Press 'f' to Fork)", classes="panel-title")
+            yield Input(
+                placeholder="Search sessions (by ID, fork name, model, date, or prompt)...", id="session-search"
+            )
             yield Label("", id="picker-status")
             yield OptionList(id="session-list")
 
@@ -109,6 +112,7 @@ class SessionPickerScreen(ModalScreen[str]):
                         session_data = json.loads(session_file.read_text())
 
                     session_id = session_data.get("session_id", "unknown")
+                    fork_name = session_data.get("fork_name")
                     timestamp = session_data.get("timestamp", "")
                     model = session_data.get("model", "unknown")
                     messages = session_data.get("messages", [])
@@ -129,6 +133,7 @@ class SessionPickerScreen(ModalScreen[str]):
                         {
                             "path": str(session_file),
                             "session_id": session_id,
+                            "fork_name": fork_name,
                             "timestamp": timestamp,
                             "model": model,
                             "message_count": message_count,
@@ -160,6 +165,7 @@ class SessionPickerScreen(ModalScreen[str]):
 
         for session_item in self._all_sessions:
             session_id = session_item["session_id"]
+            fork_name = session_item.get("fork_name") or ""
             short_id = session_id[:8]
             model = session_item["model"]
             preview = session_item["preview"]
@@ -175,7 +181,7 @@ class SessionPickerScreen(ModalScreen[str]):
                 except Exception:
                     readable_time = timestamp[:19].replace("T", " ")
 
-            match_text = f"{short_id} {model} {preview} {readable_time}".lower()
+            match_text = f"{short_id} {fork_name} {model} {preview} {readable_time}".lower()
 
             if not filter_text or filter_text in match_text:
                 from rich.box import ROUNDED
@@ -191,11 +197,14 @@ class SessionPickerScreen(ModalScreen[str]):
 
                 is_current = session_id == self._session.session_id
                 current_badge = " [green bold](Current)[/]" if is_current else ""
+                fork_badge = f" [magenta bold](Fork: {fork_name})[/]" if fork_name else ""
 
                 plural_suffix = "s" if message_count != 1 else ""
                 messages_count_text = f"{message_count} message{plural_suffix}"
 
-                id_text = f"[bold cyan]Session {short_id}[/]{current_badge}  •  [yellow]{messages_count_text}[/]"
+                id_text = (
+                    f"[bold cyan]Session {short_id}[/]{current_badge}{fork_badge}  •  [yellow]{messages_count_text}[/]"
+                )
                 date_text = f"[cyan]{readable_time}[/]"
                 header_table.add_row(id_text, date_text)
                 card_elements.append(header_table)
@@ -212,7 +221,7 @@ class SessionPickerScreen(ModalScreen[str]):
                     card_elements.append("[dim italic](No messages)[/]")
 
                 # Wrap card elements in a Panel
-                border_color = "green" if is_current else "blue"
+                border_color = "green" if is_current else ("magenta" if fork_name else "blue")
                 panel = Panel(
                     Group(*card_elements),
                     border_style=border_color,
@@ -230,11 +239,23 @@ class SessionPickerScreen(ModalScreen[str]):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Dismiss with the selected session's path."""
         if event.option.id:
-            self.dismiss(str(event.option.id))
+            self.dismiss(("load", str(event.option.id)))
 
     def action_dismiss_modal(self) -> None:
         """Close the picker without changing the session."""
         self.dismiss()
+
+    def action_fork_session(self) -> None:
+        """Fork the highlighted session into a new session branch."""
+        option_list = self.query_one("#session-list", OptionList)
+        highlighted_index = option_list.highlighted
+        if highlighted_index is None or highlighted_index < 0:
+            return
+
+        option = option_list.get_option_at_index(highlighted_index)
+        session_path = option.id
+        if session_path:
+            self.dismiss(("fork", str(session_path)))
 
     def action_delete_session(self) -> None:
         """Delete the highlighted session if it has 0 messages."""

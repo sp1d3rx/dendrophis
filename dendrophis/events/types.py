@@ -413,6 +413,23 @@ class WriteApprovalEvent(ConfirmationEvent):
     approved: bool
 
 
+@dataclass(frozen=True, slots=True)
+class AppendProposalEvent(ConfirmationEvent):
+    """Request human approval for appending to a file, showing the content to append."""
+
+    request_id: str
+    file_path: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class AppendApprovalEvent(ConfirmationEvent):
+    """Response to an AppendProposalEvent."""
+
+    request_id: str
+    approved: bool
+
+
 # =============================================================================
 # Python Exec Events
 # =============================================================================
@@ -704,6 +721,7 @@ class StatsUpdatedEvent(StatsEvent):
     total_cost_usd: float
     tokens_per_sec: float
     time_to_first_token: float
+    cached_tokens: int = 0
 
 
 # =============================================================================

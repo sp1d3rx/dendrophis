@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from dendrophis.events import get_event_bus
-from dendrophis.events.types import TodoRequestEvent
+from dendrophis.events.types import TodoRequestEvent, TodoUpdatedEvent
 from dendrophis.tools.base import BaseTool
+
+logger = logging.getLogger(__name__)
+
+_UPDATE_TIMEOUT = 5.0
 
 
 class TodoTool(BaseTool):
@@ -14,6 +20,7 @@ class TodoTool(BaseTool):
 
     def __init__(self, todo_manager: Any = None) -> None:
         super().__init__()
+        self._todo_manager = todo_manager
 
     @property
     def name(self) -> str:
@@ -23,7 +30,8 @@ class TodoTool(BaseTool):
     def description(self) -> str:
         return (
             "Manage an in-memory todo list for the current session. "
-            "You can add, toggle, remove, and list todo items by emitting events."
+            "You can add, toggle, remove, and list todo items. "
+            "Returns the current todo list after the action is applied."
         )
 
     @property
@@ -49,10 +57,43 @@ class TodoTool(BaseTool):
         }
 
     async def execute(self, action: str, text: str | None = None, todo_id: str | None = None) -> Any:
-        # Emitting the request event.
-        # The TodoManager (running elsewhere) will pick this up.
-        get_event_bus().publish(TodoRequestEvent(action=action, text=text, todo_id=todo_id))
+        # Validate up front; the manager silently ignores malformed requests,
+        # so this is the only place such errors can surface to the LLM.
+        if action == "add" and not text:
+            return {"status": "error", "action": action, "error": "'text' is required for action 'add'."}
+        if action in ("toggle", "remove") and not todo_id:
+            return {
+                "status": "error",
+                "action": action,
+                "error": f"'todo_id' is required for action '{action}'.",
+            }
 
-        # We return a placeholder. The actual result will come via TodoUpdatedEvent
-        # which the UI will listen to. For the LLM, we acknowledge the request.
-        return {"status": "request_sent", "action": action}
+        event_bus = get_event_bus()
+
+        if self._todo_manager is None:
+            # Defensive fallback: fire-and-forget (factory always injects the manager).
+            event_bus.publish(TodoRequestEvent(action=action, text=text, todo_id=todo_id))
+            return {"status": "request_sent", "action": action}
+
+        # The bus dispatches handlers asynchronously, so await the TodoUpdatedEvent
+        # that TodoManager publishes after applying the request.
+        updated = asyncio.Event()
+        result: dict[str, Any] = {}
+
+        def _on_updated(event: TodoUpdatedEvent) -> None:
+            result["todos"] = event.todos
+            updated.set()
+
+        subscription = event_bus.subscribe(TodoUpdatedEvent, _on_updated)
+        try:
+            event_bus.publish(TodoRequestEvent(action=action, text=text, todo_id=todo_id))
+            await asyncio.wait_for(updated.wait(), timeout=_UPDATE_TIMEOUT)
+        except TimeoutError:
+            # The mutation may have landed even if the event didn't round-trip;
+            # fall back to reading the manager directly.
+            logger.warning("Timed out waiting for TodoUpdatedEvent; reading manager state directly.")
+            result["todos"] = self._todo_manager.get_all()
+        finally:
+            subscription.unsubscribe()
+
+        return {"status": "ok", "action": action, "todos": result["todos"]}

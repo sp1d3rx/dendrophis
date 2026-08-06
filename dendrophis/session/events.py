@@ -140,6 +140,7 @@ class SessionEventHandler:
                 total_cost_usd=self._stats.total_cost_usd,
                 tokens_per_sec=0.0,
                 time_to_first_token=0.0,
+                cached_tokens=self._stats.cached_tokens,
             )
         )
 

@@ -17,6 +17,8 @@ from dendrophis.events.bus import (
 )
 from dendrophis.events.types import (
     AnyEvent,
+    AppendApprovalEvent,
+    AppendProposalEvent,
     AuthFailedEvent,
     CancelStreamingRequest,
     CompactRequest,
@@ -94,6 +96,8 @@ from dendrophis.events.types import (
 
 __all__ = [
     "AnyEvent",
+    "AppendApprovalEvent",
+    "AppendProposalEvent",
     "AuthFailedEvent",
     "CancelStreamingRequest",
     "CompactRequest",

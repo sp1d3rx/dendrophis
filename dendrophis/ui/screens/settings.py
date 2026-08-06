@@ -673,6 +673,16 @@ class SettingsScreen(Screen):
                                     ),
                                     classes="settings-row",
                                 )
+                                nudge_options = [("Disabled", "False"), ("Enabled", "True")]
+                                yield Horizontal(
+                                    Label("Continuation Nudge", classes="settings-label"),
+                                    Select(
+                                        nudge_options,
+                                        value=str(self._cfg.llm.continuation_nudge),
+                                        id="llm_continuation_nudge",
+                                    ),
+                                    classes="settings-row",
+                                )
 
                     with Vertical(classes="settings-group"):
                         yield Label("Generation Parameters", classes="settings-group-title")
@@ -1171,6 +1181,7 @@ class SettingsScreen(Screen):
                 set_nested(raw, ["llm", "use_responses_api"], None)
 
             set_nested(raw, ["llm", "preserve_reasoning"], self._get_val("llm_preserve_reasoning", "always"))
+            set_nested(raw, ["llm", "continuation_nudge"], self._get_val("llm_continuation_nudge", "True") == "True")
 
             # Save UI Config Settings
             set_nested(raw, ["ui", "theme"], self._get_val("ui_theme"))

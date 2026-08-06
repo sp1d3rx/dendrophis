@@ -55,6 +55,11 @@ except ImportError:
     WriteFileTool = None
 
 try:
+    from dendrophis.tools.builtins.filesystem.append import AppendTool
+except ImportError:
+    AppendTool = None
+
+try:
     from dendrophis.tools.builtins.filesystem.patch import PatchTool
 except ImportError:
     PatchTool = None
@@ -91,6 +96,8 @@ def get_filesystem_tools() -> list[BaseTool]:
         filesystem_tools.append(BashTool())
     if WriteTool is not None:
         filesystem_tools.append(WriteTool())
+    if AppendTool is not None:
+        filesystem_tools.append(AppendTool())
     if PatchTool is not None:
         filesystem_tools.append(PatchTool())
     return filesystem_tools
@@ -113,6 +120,8 @@ def get_agent_tools() -> list[BaseTool]:
         agent_tools.append(PatchTool())
     if WriteTool is not None:
         agent_tools.append(WriteTool())
+    if AppendTool is not None:
+        agent_tools.append(AppendTool())
     if ReadTool is not None:
         agent_tools.append(ReadTool())
     return agent_tools
