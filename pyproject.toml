@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dendrophis"
-version = "0.7.3"
+version = "0.7.4"
 description = "Python-native terminal coding agent"
 license = { text = "MPL-2.0" }
 authors = [{ name = "Derek S Wilson" }]
@@ -55,4 +55,9 @@ asyncio_mode = "auto"
 filterwarnings = [
     "error",
     "ignore::pytest.PytestConfigWarning",
+]
+
+[tool.uv.workspace]
+members = [
+    "twitch-chat",
 ]

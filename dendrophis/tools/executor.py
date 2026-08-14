@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -18,6 +20,7 @@ class ToolResult:
     tool_call_id: str
     name: str
     content: str
+    success: bool = True
 
 
 class ToolExecutor:
@@ -29,8 +32,6 @@ class ToolExecutor:
     async def execute(self, tool_call: Any) -> ToolResult:
         """Execute a tool call and return its result."""
         # Log tool execution
-        import sys
-
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
             from dendrophis.session.chat import _tool_log
 
@@ -40,18 +41,18 @@ class ToolExecutor:
 
         # --- Safety: Automatic Backup ---
         try:
-            args = json.loads(tool_call.arguments) if tool_call.arguments and tool_call.arguments.strip() else {}
-            file_path = args.get("file_path")
+            parsed_arguments = (
+                json.loads(tool_call.arguments) if tool_call.arguments and tool_call.arguments.strip() else {}
+            )
+            file_path = parsed_arguments.get("file_path")
 
             destructive_patterns = ["write", "edit", "replace", "delete", "remove"]
-            if file_path and any(p in tool_call.name.lower() for p in destructive_patterns):
-                from pathlib import Path
-
-                target = Path(file_path)
-                if target.exists() and target.suffix != ".bak":
-                    shutil.copy2(target, target.with_suffix(target.suffix + ".bak"))
-        except Exception as error:
-            print(f"[WARNING] Failed to create backup: {error}", file=sys.stderr)
+            if file_path and any(pattern in tool_call.name.lower() for pattern in destructive_patterns):
+                target_path = Path(file_path)
+                if target_path.exists() and target_path.suffix != ".bak":
+                    shutil.copy2(target_path, target_path.with_suffix(target_path.suffix + ".bak"))
+        except Exception as backup_error:
+            print(f"[WARNING] Failed to create backup: {backup_error}", file=sys.stderr)
         # ---------------------------------
 
         tool = self._registry.get(tool_call.name)
@@ -60,62 +61,67 @@ class ToolExecutor:
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
                 content=json.dumps({"error": f"Unknown tool: {tool_call.name}"}),
+                success=False,
             )
 
         try:
             # Parse arguments
-            args = {}
+            call_arguments = {}
             if tool_call.arguments and tool_call.arguments.strip():
-                args = json.loads(tool_call.arguments)
+                call_arguments = json.loads(tool_call.arguments)
 
             # Execute the tool
-            result = await tool.execute(**args)
+            raw_result = await tool.execute(**call_arguments)
 
             # Convert result to JSON string.
             # Ensure it is valid JSON by wrapping non-dict results.
-            if isinstance(result, dict):
-                content = json.dumps(result, indent=2)
-            elif isinstance(result, str):
+            if isinstance(raw_result, dict):
+                content = json.dumps(raw_result, indent=2)
+            elif isinstance(raw_result, str):
                 try:
                     # Validate if it's already a JSON string
-                    json.loads(result)
-                    content = result
+                    json.loads(raw_result)
+                    content = raw_result
                 except json.JSONDecodeError:
-                    content = json.dumps({"result": result})
+                    content = json.dumps({"result": raw_result})
             else:
-                content = json.dumps({"result": result})
+                content = json.dumps({"result": raw_result})
 
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
                 content=content,
+                success=True,
             )
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as json_decode_error:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=json.dumps({"error": f"Invalid JSON arguments: {e}"}),
+                content=json.dumps({"error": f"Invalid JSON arguments: {json_decode_error}"}),
+                success=False,
             )
-        except TypeError as e:
+        except TypeError as type_error:
             # Likely missing required arguments or invalid argument names
-            error_msg = str(e)
-            hint = self._build_hint(tool)
+            error_message = str(type_error)
+            argument_hint = self._build_hint(tool)
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
                 content=json.dumps(
                     {
-                        "error": f"Execution failed: {error_msg}",
-                        "hint": hint,
+                        "error": f"Execution failed: {error_message}",
+                        "hint": argument_hint,
                     },
                     indent=2,
                 ),
+                success=False,
             )
-        except Exception as e:
+        except Exception as execution_error:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=json.dumps({"error": f"Execution failed: {e}"}),
+                content=json.dumps({"error": f"Execution failed: {execution_error}"}),
+                success=False,
             )
 
     def _build_hint(self, tool: BaseTool) -> str:

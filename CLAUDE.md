@@ -154,9 +154,6 @@ hooks:
 
 tools:
   extra_paths: []                 # Paths to search for custom tools
-
-system_prompt: |
-  Custom system prompt for the LLM.
 ```
 
 ## Key Design Patterns
@@ -186,6 +183,6 @@ system_prompt: |
 
 **Modifying the Sidebar**: Edit config.yaml's `sidebar.panels` list and adjust `ui/widgets/sidebar.py` if adding new panel types.
 
-**Changing the System Prompt**: Edit `config.yaml`'s `system_prompt` field or pass via environment (though direct config is preferred).
+**Changing the System Prompt**: Create or edit `system.md` in the project root (preferred), or override via `system_prompt` field in `config.yaml`.
 
 **Debugging**: Use Ctrl+Shift+D to open the debug log screen, or monitor `.profiling/` if running with profiling enabled.

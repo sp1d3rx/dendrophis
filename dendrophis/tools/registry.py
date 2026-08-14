@@ -24,12 +24,14 @@ PREFERRED_TOOL_ORDER: tuple[str, ...] = (
 )
 
 
+PREFERRED_TOOL_ORDER_INDEX: dict[str, int] = {
+    tool_name: tool_order_index for tool_order_index, tool_name in enumerate(PREFERRED_TOOL_ORDER)
+}
+
+
 def _tool_sort_key(tool: BaseTool) -> int:
     """Sort key for tools according to PREFERRED_TOOL_ORDER."""
-    try:
-        return PREFERRED_TOOL_ORDER.index(tool.name)
-    except ValueError:
-        return len(PREFERRED_TOOL_ORDER)
+    return PREFERRED_TOOL_ORDER_INDEX.get(tool.name, len(PREFERRED_TOOL_ORDER_INDEX))
 
 
 class ToolRegistry:

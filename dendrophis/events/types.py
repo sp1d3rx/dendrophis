@@ -312,6 +312,9 @@ class ToolExecutionFinishedEvent(ToolExecutionEvent):
 
     tool_name: str
     success: bool
+    tool_call_id: str = ""
+    duration_seconds: float = 0.0
+    error_message: str | None = None
 
 
 # =============================================================================
@@ -358,6 +361,51 @@ class TodoChangedEvent(SessionEvent):
     todos: list[dict[str, Any]]
 
 
+@dataclass(frozen=True, slots=True)
+class SubagentTaskStartedEvent(SessionEvent):
+    """A subagent task has started execution."""
+
+    task_id: str
+    agent_name: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentProgressEvent(SessionEvent):
+    """Progress or log line emitted by a subagent."""
+
+    task_id: str
+    agent_name: str
+    log_line: str
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentTaskFinishedEvent(SessionEvent):
+    """A subagent task has finished execution."""
+
+    task_id: str
+    agent_name: str
+    success: bool
+    result: dict[str, Any] | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FileCreatedEvent(SessionEvent):
+    """A file was created by a tool or operation."""
+
+    file_path: str
+    bytes_written: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class FileModifiedEvent(SessionEvent):
+    """A file was modified by a tool or operation."""
+
+    file_path: str
+    diff: str = ""
+
+
 # =============================================================================
 # Confirmation Events
 # =============================================================================
@@ -378,6 +426,14 @@ class ToolConfirmationResponseEvent(ConfirmationEvent):
 
     request_id: str
     approved: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ToolConfirmationCancelledEvent(ConfirmationEvent):
+    """Signals that a tool confirmation request was cancelled, timed out, or dismissed."""
+
+    request_id: str
+    reason: str = "timeout"
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,6 +752,31 @@ class ContextUpdatedEvent(ContextEvent):
     full_chat_restored: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CompactionStartedEvent(ContextEvent):
+    """Context compaction has started."""
+
+    original_token_count: int
+    threshold: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionCompletedEvent(ContextEvent):
+    """Context compaction has completed successfully."""
+
+    previous_token_count: int
+    new_token_count: int
+    tokens_reclaimed: int
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionFailedEvent(ContextEvent):
+    """Context compaction failed or was skipped."""
+
+    reason: str
+
+
 # =============================================================================
 # Model Events
 # =============================================================================
@@ -794,9 +875,15 @@ AnyEvent = (
     # Session events
     | MessageSentEvent
     | WaitingForInputEvent
+    | SubagentTaskStartedEvent
+    | SubagentProgressEvent
+    | SubagentTaskFinishedEvent
+    | FileCreatedEvent
+    | FileModifiedEvent
     # Confirmation events
     | ToolConfirmationRequestEvent
     | ToolConfirmationResponseEvent
+    | ToolConfirmationCancelledEvent
     | EditProposalEvent
     | EditApprovalEvent
     | WriteProposalEvent
@@ -833,6 +920,9 @@ AnyEvent = (
     | MemoryAssociationEvent
     # Context events
     | ContextUpdatedEvent
+    | CompactionStartedEvent
+    | CompactionCompletedEvent
+    | CompactionFailedEvent
     # Model events
     | ModelSwitchedEvent
     # Stats events

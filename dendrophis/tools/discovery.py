@@ -125,9 +125,7 @@ def resolve_dependencies_and_instantiate(
             parameter_name, parameter_object, dependency_dictionary
         )
         if not resolved_successfully:
-            logger.debug(
-                "Could not resolve dependency parameter '%s' for tool %s", parameter_name, tool_class.__name__
-            )
+            logger.debug("Could not resolve dependency parameter '%s' for tool %s", parameter_name, tool_class.__name__)
             return None
 
         if resolved_value is not None:

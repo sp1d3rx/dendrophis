@@ -86,6 +86,8 @@ class ConfigLoader:
 
         raw = _yaml.load(resolved_path.read_text()) or {}
         raw = _apply_env_overrides(raw)
+        if system_md_path.exists():
+            raw["system_prompt"] = system_md_path.read_text()
         config = DendrophisConfig.model_validate(raw)
         return ConfigLoadResult(
             loader=cls(path=resolved_path, raw=raw, config=config), system_prompt_source=system_prompt_source
@@ -105,6 +107,9 @@ class ConfigLoader:
         """Re-read config file from disk and re-validate."""
         raw = _yaml.load(self._path.read_text()) or {}
         raw = _apply_env_overrides(raw)
+        system_md_path = Path("system.md")
+        if system_md_path.exists():
+            raw["system_prompt"] = system_md_path.read_text()
         self._raw = raw
         self.config = DendrophisConfig.model_validate(raw)
 

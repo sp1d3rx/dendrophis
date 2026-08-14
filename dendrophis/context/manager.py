@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -100,8 +101,6 @@ class ContextManager:
         # Skip duplicate read results (same tool + identical content per file path)
         if name == "read":
             try:
-                import json
-
                 result_data = json.loads(content)
                 if isinstance(result_data, dict) and result_data.get("type") == "file":
                     file_path = result_data.get("path")
@@ -116,7 +115,7 @@ class ContextManager:
                     if content_hash in self._read_file_hashes:
                         return
                     self._read_file_hashes[content_hash] = content_hash
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
                 if content_hash in self._read_file_hashes:
                     return

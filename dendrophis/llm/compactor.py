@@ -115,29 +115,58 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
         end -= 1
 
     compactable = messages[start:end]
+    from dendrophis.events import (
+        CompactionCompletedEvent,
+        CompactionFailedEvent,
+        CompactionStartedEvent,
+        ErrorEvent,
+        TextDeltaEvent,
+        get_event_bus,
+    )
+
+    event_bus = get_event_bus()
+    original_token_count = context.token_count
+    threshold = getattr(context._config, "compact_threshold", 0)
+
     if not compactable:
-        return {"compacted": False, "reason": "No messages to compact"}
+        reason = "No messages to compact"
+        if event_bus:
+            event_bus.publish(CompactionFailedEvent(reason=reason))
+        return {"compacted": False, "reason": reason}
 
     # Edge case: Check for excessively large compaction operations
     if len(compactable) > 1000:  # Safety limit
-        return {"compacted": False, "reason": "Too many messages to compact at once"}
+        reason = "Too many messages to compact at once"
+        if event_bus:
+            event_bus.publish(CompactionFailedEvent(reason=reason))
+        return {"compacted": False, "reason": reason}
+
+    if event_bus:
+        event_bus.publish(
+            CompactionStartedEvent(
+                original_token_count=original_token_count,
+                threshold=threshold,
+            )
+        )
 
     messages_compacted = len(compactable)
     history_text = _messages_to_text(compactable)
     summary_prompt = SUMMARY_PROMPT.format(history=history_text)
     summary_messages = [{"role": "user", "content": summary_prompt}]
 
-    from dendrophis.events import ErrorEvent, TextDeltaEvent
-
     summary_parts: list[str] = []
     async for event in llm.stream_chat(summary_messages, tools=None):
         if isinstance(event, TextDeltaEvent):
             summary_parts.append(event.delta)
         elif isinstance(event, ErrorEvent):
+            if event_bus:
+                event_bus.publish(CompactionFailedEvent(reason=f"LLM error: {event.message}"))
             raise RuntimeError(f"LLM error during compaction: {event.message}")
 
     summary = "".join(summary_parts).strip()
     if not summary:
+        if event_bus:
+            event_bus.publish(CompactionFailedEvent(reason="Compaction summary was empty"))
         raise RuntimeError(
             f"Compaction summary was empty — model returned no content "
             f"({messages_compacted} messages, {len(history_text)} chars of history)"
@@ -155,6 +184,17 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
     context.messages = [*messages[:start], summary_message, *messages[end:]]
     context.recalculate_tokens()
     context.clear_read_hashes()
+
+    tokens_reclaimed = max(0, original_token_count - context.token_count)
+    if event_bus:
+        event_bus.publish(
+            CompactionCompletedEvent(
+                previous_token_count=original_token_count,
+                new_token_count=context.token_count,
+                tokens_reclaimed=tokens_reclaimed,
+                summary=summary,
+            )
+        )
 
     return {
         "compacted": True,

@@ -525,8 +525,8 @@ async def calibrate_model(
     if any(keyword in model_lower for keyword in vlm_keywords):
         capabilities.supports_vlm = True
 
-    # Local MLC models don't support tool_calls in history
-    if provider == "local":
+    # Only legacy MLC models reject tool_calls in history (omlx, LM Studio, etc. support native tool_calls)
+    if provider == "local" and "mlc" in model_lower:
         capabilities.rejected_params.append("tool_calls")
 
     # DeepInfra Mistral models may have issues
