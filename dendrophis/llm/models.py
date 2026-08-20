@@ -57,6 +57,7 @@ _REASONING_EFFORT_FAMILIES: tuple[str, ...] = (
     "codestral",
     "o1",
     "o3",
+    "qwen",
 )
 
 
