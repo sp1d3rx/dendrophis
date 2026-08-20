@@ -258,6 +258,133 @@ def _emit_tool_call_events(callContent: str) -> list[StreamEvent]:
     return events
 
 
+def _extract_stream_error(chunk: dict[str, Any]) -> list[StreamEvent] | None:
+    """Return [ErrorEvent] if chunk is a provider error payload, else None."""
+    if "choices" not in chunk and ("error" in chunk or "error_type" in chunk):
+        errorDetails = chunk.get("error") or {}
+        errorMessage = errorDetails.get("message") or chunk.get("error_message") or str(chunk)
+        return [ErrorEvent(message=errorMessage)]
+    return None
+
+
+def _parse_responses_api_chunk(
+    chunk: dict[str, Any],
+    inProgressCalls: dict[int, ToolCall],
+    events: list[StreamEvent],
+    parsingState: dict[str, Any],
+) -> tuple[list[StreamEvent], dict[int, ToolCall], dict[str, Any]]:
+    """Handle OpenRouter Responses API SSE events (type starts with 'response.')."""
+    if not chunk.get("type", "").startswith("response."):
+        return events, inProgressCalls, parsingState
+
+    eventType = chunk.get("type", "")
+    updatedCalls = dict(inProgressCalls)
+
+    if eventType == "response.output_text.delta":
+        textDelta = chunk.get("delta", "")
+        if textDelta:
+            events.append(TextDeltaEvent(delta=textDelta))
+    elif eventType in (
+        "response.reasoning_text.delta",
+        "response.reasoning_summary_text.delta",
+        "response.refusal.delta",
+    ):
+        reasoningDelta = chunk.get("delta", "")
+        if reasoningDelta:
+            events.append(ReasoningDeltaEvent(delta=reasoningDelta))
+    elif eventType == "response.output_item.added":
+        outputItem = chunk.get("item", {})
+        if outputItem.get("type") == "function_call":
+            outputIndex = chunk.get("output_index", 0)
+            callId = outputItem.get("call_id") or outputItem.get("id", f"call_{outputIndex}")
+            toolName = outputItem.get("name", "")
+            updatedCalls[outputIndex] = ToolCall(index=outputIndex, id=callId, name=toolName, arguments="")
+            events.append(ToolCallStartEvent(index=outputIndex, id=callId, name=toolName))
+    elif eventType == "response.function_call_arguments.delta":
+        outputIndex = chunk.get("output_index", 0)
+        textDelta = chunk.get("delta", "")
+        if outputIndex in updatedCalls:
+            updatedCalls[outputIndex].arguments += textDelta
+        if textDelta:
+            events.append(ToolCallDeltaEvent(index=outputIndex, arguments_delta=textDelta))
+    elif eventType == "response.output_item.done":
+        outputItem = chunk.get("item", {})
+        if outputItem.get("type") == "function_call":
+            outputIndex = chunk.get("output_index", 0)
+            if outputIndex in updatedCalls:
+                toolCall = updatedCalls.pop(outputIndex)
+                toolCall.arguments = outputItem.get("arguments", toolCall.arguments)
+                events.append(ToolCallDoneEvent(tool_call=toolCall))
+    elif eventType == "response.completed":
+        responseDetails = chunk.get("response", {})
+        events.extend(ToolCallDoneEvent(tool_call=toolCall) for toolCall in updatedCalls.values())
+        updatedCalls = {}
+        usageDetails = responseDetails.get("usage", {})
+        if usageDetails:
+            events.append(
+                UsageEvent(
+                    prompt_tokens=usageDetails.get("input_tokens", 0),
+                    completion_tokens=usageDetails.get("output_tokens", 0),
+                    cached_tokens=_extract_cached_tokens(
+                        usageDetails, usageDetails.get("input_tokens_details") or {}
+                    ),
+                )
+            )
+        outputs = responseDetails.get("output", [])
+        hasToolCalls = any(outputItem.get("type") == "function_call" for outputItem in outputs)
+        events.append(DoneEvent(finish_reason="tool_calls" if hasToolCalls else "stop"))
+    return events, updatedCalls, parsingState
+
+
+def _handle_finish_reason(
+    finishReason: str | None,
+    parsingState: dict[str, Any],
+    inProgressCalls: dict[int, ToolCall],
+    events: list[StreamEvent],
+) -> tuple[list[StreamEvent], dict[int, ToolCall], dict[str, Any]]:
+    """Handle stream completion: flush buffers, emit DoneEvent."""
+    if finishReason not in ("tool_calls", "stop", "length", "eos"):
+        return events, inProgressCalls, parsingState
+
+    updatedCalls = dict(inProgressCalls)
+
+    # Flush pending tool call if the model stopped without a closing tag
+    if parsingState["mode"] == "tool_calling" and parsingState["buffer"]:
+        events.extend(_emit_tool_call_events(parsingState["buffer"]))
+        parsingState["buffer"] = ""
+        parsingState["mode"] = "text"
+
+    # If we had a pending fragment, emit it as text/reasoning now
+    if parsingState["pending"]:
+        if parsingState["mode"] == "thinking":
+            events.append(ReasoningDeltaEvent(delta=parsingState["pending"]))
+        else:
+            events.append(TextDeltaEvent(delta=parsingState["pending"]))
+        parsingState["pending"] = ""
+
+    normalizedReason = "stop" if finishReason == "eos" else finishReason
+    events.extend(ToolCallDoneEvent(tool_call=tc) for tc in updatedCalls.values())
+    updatedCalls = {}
+    events.append(DoneEvent(finish_reason=normalizedReason))
+
+    return events, updatedCalls, parsingState
+
+
+def _extract_usage(chunk: dict[str, Any]) -> list[StreamEvent]:
+    """Return [UsageEvent] if chunk contains usage data, else []."""
+    usage = chunk.get("usage")
+    if usage:
+        promptTokensDetails = usage.get("prompt_tokens_details") or {}
+        return [
+            UsageEvent(
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                cached_tokens=_extract_cached_tokens(usage, promptTokensDetails),
+            )
+        ]
+    return []
+
+
 def parse_sse_event(
     sseEvent: ServerSentEvent,
     inProgressCalls: dict[int, ToolCall],
@@ -283,70 +410,16 @@ def parse_sse_event(
         return [], inProgressCalls, parsingState
 
     # Surface provider error events (e.g. DeepInfra validation errors returned mid-stream)
-    if "choices" not in chunk and ("error" in chunk or "error_type" in chunk):
-        errorDetails = chunk.get("error") or {}
-        errorMessage = errorDetails.get("message") or chunk.get("error_message") or str(chunk)
-        return [ErrorEvent(message=errorMessage)], inProgressCalls, parsingState
+    events = _extract_stream_error(chunk)
+    if events is not None:
+        return events, inProgressCalls, parsingState
 
     events: list[StreamEvent] = []
     updatedCalls = dict(inProgressCalls)
 
     # OpenRouter Responses API SSE events — type is in the JSON payload, not the SSE event field
-    if chunk.get("type", "").startswith("response."):
-        eventType = chunk.get("type", "")
-        if eventType == "response.output_text.delta":
-            textDelta = chunk.get("delta", "")
-            if textDelta:
-                events.append(TextDeltaEvent(delta=textDelta))
-        elif eventType in (
-            "response.reasoning_text.delta",
-            "response.reasoning_summary_text.delta",
-            "response.refusal.delta",
-        ):
-            reasoningDelta = chunk.get("delta", "")
-            if reasoningDelta:
-                events.append(ReasoningDeltaEvent(delta=reasoningDelta))
-        elif eventType == "response.output_item.added":
-            outputItem = chunk.get("item", {})
-            if outputItem.get("type") == "function_call":
-                outputIndex = chunk.get("output_index", 0)
-                callId = outputItem.get("call_id") or outputItem.get("id", f"call_{outputIndex}")
-                toolName = outputItem.get("name", "")
-                updatedCalls[outputIndex] = ToolCall(index=outputIndex, id=callId, name=toolName, arguments="")
-                events.append(ToolCallStartEvent(index=outputIndex, id=callId, name=toolName))
-        elif eventType == "response.function_call_arguments.delta":
-            outputIndex = chunk.get("output_index", 0)
-            textDelta = chunk.get("delta", "")
-            if outputIndex in updatedCalls:
-                updatedCalls[outputIndex].arguments += textDelta
-            if textDelta:
-                events.append(ToolCallDeltaEvent(index=outputIndex, arguments_delta=textDelta))
-        elif eventType == "response.output_item.done":
-            outputItem = chunk.get("item", {})
-            if outputItem.get("type") == "function_call":
-                outputIndex = chunk.get("output_index", 0)
-                if outputIndex in updatedCalls:
-                    toolCall = updatedCalls.pop(outputIndex)
-                    toolCall.arguments = outputItem.get("arguments", toolCall.arguments)
-                    events.append(ToolCallDoneEvent(tool_call=toolCall))
-        elif eventType == "response.completed":
-            responseDetails = chunk.get("response", {})
-            events.extend(ToolCallDoneEvent(tool_call=toolCall) for toolCall in updatedCalls.values())
-            updatedCalls = {}
-            usageDetails = responseDetails.get("usage", {})
-            if usageDetails:
-                events.append(
-                    UsageEvent(
-                        prompt_tokens=usageDetails.get("input_tokens", 0),
-                        completion_tokens=usageDetails.get("output_tokens", 0),
-                        cached_tokens=_extract_cached_tokens(
-                            usageDetails, usageDetails.get("input_tokens_details") or {}
-                        ),
-                    )
-                )
-            outputs = responseDetails.get("output", [])
-            hasToolCalls = any(outputItem.get("type") == "function_call" for outputItem in outputs)
-            events.append(DoneEvent(finish_reason="tool_calls" if hasToolCalls else "stop"))
+    events, updatedCalls, parsingState = _parse_responses_api_chunk(chunk, inProgressCalls, events, parsingState)
+    if events:
         return events, updatedCalls, parsingState
 
     # Choices handling
@@ -539,37 +612,12 @@ def parse_sse_event(
                 events.append(ToolCallDeltaEvent(index=toolCallIndex, arguments_delta=argumentsDelta))
 
         # Finish handling
-        if finishReason in ("tool_calls", "stop", "length", "eos"):
-            # Flush pending tool call if the model stopped without a closing tag
-            if parsingState["mode"] == "tool_calling" and parsingState["buffer"]:
-                events.extend(_emit_tool_call_events(parsingState["buffer"]))
-                parsingState["buffer"] = ""
-                parsingState["mode"] = "text"
-
-            # If we had a pending fragment, emit it as text/reasoning now
-            if parsingState["pending"]:
-                if parsingState["mode"] == "thinking":
-                    events.append(ReasoningDeltaEvent(delta=parsingState["pending"]))
-                else:
-                    events.append(TextDeltaEvent(delta=parsingState["pending"]))
-                parsingState["pending"] = ""
-
-            normalizedReason = "stop" if finishReason == "eos" else finishReason
-            events.extend(ToolCallDoneEvent(tool_call=tc) for tc in updatedCalls.values())
-            updatedCalls = {}
-            events.append(DoneEvent(finish_reason=normalizedReason))
+        events, updatedCalls, parsingState = _handle_finish_reason(
+            finishReason, parsingState, updatedCalls, events
+        )
 
     # Usage
-    usage = chunk.get("usage")
-    if usage:
-        promptTokensDetails = usage.get("prompt_tokens_details") or {}
-        events.append(
-            UsageEvent(
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                cached_tokens=_extract_cached_tokens(usage, promptTokensDetails),
-            )
-        )
+    events.extend(_extract_usage(chunk))
 
     return events, updatedCalls, parsingState
 
