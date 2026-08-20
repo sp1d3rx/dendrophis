@@ -540,6 +540,26 @@ def _scan_tool_calling_mode(
     return remainingContent[firstIndex:]
 
 
+def _run_tag_state_machine(
+    remainingContent: str,
+    parsingState: dict[str, Any],
+    events: list[StreamEvent],
+) -> str:
+    """Run the tag state machine until all content is consumed.
+
+    Dispatches to the appropriate scanner based on parsingState["mode"].
+    Each scanner returns unconsumed content for the next iteration.
+    """
+    while remainingContent:
+        if parsingState["mode"] == "text":
+            remainingContent = _scan_text_mode(remainingContent, parsingState, events)
+        elif parsingState["mode"] == "thinking":
+            remainingContent = _scan_thinking_mode(remainingContent, parsingState, events)
+        elif parsingState["mode"] == "tool_calling":
+            remainingContent = _scan_tool_calling_mode(remainingContent, parsingState, events)
+    return remainingContent
+
+
 def parse_sse_event(
     sseEvent: ServerSentEvent,
     inProgressCalls: dict[int, ToolCall],
@@ -594,14 +614,7 @@ def parse_sse_event(
             # Add new content to any pending fragment from previous chunk
             remainingContent = parsingState.get("pending", "") + textDelta
             parsingState["pending"] = ""
-
-            while remainingContent:
-                if parsingState["mode"] == "text":
-                    remainingContent = _scan_text_mode(remainingContent, parsingState, events)
-                elif parsingState["mode"] == "thinking":
-                    remainingContent = _scan_thinking_mode(remainingContent, parsingState, events)
-                elif parsingState["mode"] == "tool_calling":
-                    remainingContent = _scan_tool_calling_mode(remainingContent, parsingState, events)
+            _run_tag_state_machine(remainingContent, parsingState, events)
 
         # 3. Standard Tool Calls (if provider supports them natively)
         for toolCall in delta.get("tool_calls") or []:
