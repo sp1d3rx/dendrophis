@@ -66,6 +66,7 @@ projects/
 .temp/
 test_*.py
 !dendrophis/**/test_*.py
+!tests/test_*.py
 story_john_smith/
 scratch/
 routerdash/
