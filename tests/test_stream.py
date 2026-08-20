@@ -117,7 +117,7 @@ def test_tool_call_pipe_streaming() -> None:
     """Test tool call parsing with pipe character in tags under streaming mode."""
     first_event = ServerSentEvent(
         event="message",
-        data='{"choices": [{"delta": {"content": "<tool_call|><function=test_tool><parameter=param>val</parameter></function>"}}]}',
+        data='{"choices": [{"delta": {"content": "<tool_call|><function=test_tool><parameter=param>val</parameter></function>"}}]}', # noqa: E501
         id="1",
     )
     second_event = ServerSentEvent(

@@ -30,16 +30,6 @@ async def test_multi_turn():
     # Second turn: Ask a follow-up question (should use the tool results)
     print("\n--- Turn 2: Follow-up question ---")
     
-    # Create a new message with the tool results in context
-    messages = [
-        {"role": "system", "content": "You are a helpful AI assistant."},
-        {"role": "user", "content": "List python files in the current directory"},
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "call_123", "type": "function", "function": {"name": "glob", "arguments": '{"pattern": "*"}'}}
-        ]},
-        {"role": "tool", "tool_call_id": "call_123", "name": "glob", "content": '["file1.py", "file2.py", "dir1/"]'}
-    ]
-    
     # This would be the follow-up turn with tool results in context
     print("Context now includes tool results...")
     print("Testing if LLM can respond appropriately to tool results...")

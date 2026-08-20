@@ -31,10 +31,6 @@ def test_config_loader_system_md_override(tmp_path: Path) -> None:
     system_md_content = "Custom prompt from system.md"
     system_md_file_path.write_text(system_md_content)
 
-    with patch("dendrophis.config.loader.Path") as mock_path_cls:
-        # We test loader with system.md in working directory
-        pass
-
     # Direct integration test with temporary working directory
     import os
     previous_directory = os.getcwd()

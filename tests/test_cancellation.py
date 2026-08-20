@@ -1,5 +1,4 @@
 import asyncio
-import os
 
 from dendrophis.config.loader import ConfigLoader
 from dendrophis.events import get_event_bus
