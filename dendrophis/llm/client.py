@@ -794,7 +794,7 @@ class LLMClient:
             payload["input"] = self._transform_messages_to_responses_input(payload.pop("messages"))
             if "max_tokens" in payload:
                 payload["max_output_tokens"] = payload.pop("max_tokens")
-            if any(f in self._config.model.lower() for f in ("o1", "o3", "kimi")):
+            if supports_reasoning_effort_by_id(self._config.model):
                 payload["include_reasoning"] = True
 
         # Tool definitions — format differs by provider
