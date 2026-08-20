@@ -385,6 +385,161 @@ def _extract_usage(chunk: dict[str, Any]) -> list[StreamEvent]:
     return []
 
 
+def _scan_text_mode(
+    remainingContent: str,
+    parsingState: dict[str, Any],
+    events: list[StreamEvent],
+) -> str:
+    """Scan text mode for tag starts. Returns unconsumed content."""
+    thinkStart = remainingContent.find("<think>")
+    toolStart = remainingContent.find("<tool_call>")
+    toolStartPipe = remainingContent.find("<tool_call|>")
+
+    # Check for partial tags at the very end of the string
+    potentialTagIndex = remainingContent.rfind("<")
+    if potentialTagIndex != -1:
+        foundTagIndex = max(thinkStart, toolStart, toolStartPipe)
+        if potentialTagIndex > foundTagIndex:
+            fragment = remainingContent[potentialTagIndex:]
+            if (
+                "<think>".startswith(fragment)
+                or "<tool_call>".startswith(fragment)
+                or "<tool_call|>".startswith(fragment)
+            ):
+                if potentialTagIndex > 0:
+                    events.append(TextDeltaEvent(delta=remainingContent[:potentialTagIndex]))
+                parsingState["pending"] = fragment
+                return ""
+
+    modeIndices = []
+    if thinkStart != -1:
+        modeIndices.append((thinkStart, "thinking", 7))
+    if toolStart != -1:
+        modeIndices.append((toolStart, "tool_calling", 11))
+    if toolStartPipe != -1:
+        modeIndices.append((toolStartPipe, "tool_calling", 12))
+
+    if not modeIndices:
+        events.append(TextDeltaEvent(delta=remainingContent))
+        return ""
+
+    firstIndex, nextMode, tagLength = min(modeIndices)
+    if firstIndex > 0:
+        events.append(TextDeltaEvent(delta=remainingContent[:firstIndex]))
+
+    parsingState["mode"] = nextMode
+    return remainingContent[firstIndex + tagLength :]
+
+
+def _scan_thinking_mode(
+    remainingContent: str,
+    parsingState: dict[str, Any],
+    events: list[StreamEvent],
+) -> str:
+    """Scan thinking mode for tag ends. Returns unconsumed content."""
+    thinkEnd = remainingContent.find("</think>")
+    nextToolStart = remainingContent.find("<tool_call>")
+    nextThinkStart = remainingContent.find("<think>")
+
+    interestingIndices = []
+    if thinkEnd != -1:
+        interestingIndices.append((thinkEnd, "end", 8))
+    if nextToolStart != -1:
+        interestingIndices.append((nextToolStart, "transition", 0))
+    if nextThinkStart != -1:
+        interestingIndices.append((nextThinkStart, "transition", 0))
+
+    if not interestingIndices:
+        potentialEndIndex = remainingContent.rfind("</")
+        if potentialEndIndex != -1:
+            fragment = remainingContent[potentialEndIndex:]
+            if "</think>".startswith(fragment):
+                if potentialEndIndex > 0:
+                    events.append(ReasoningDeltaEvent(delta=remainingContent[:potentialEndIndex]))
+                parsingState["pending"] = fragment
+                return ""
+
+        potentialStartIndex = remainingContent.rfind("<")
+        if potentialStartIndex != -1:
+            fragment = remainingContent[potentialStartIndex:]
+            if "<think>".startswith(fragment) or "<tool_call>".startswith(fragment):
+                if potentialStartIndex > 0:
+                    events.append(ReasoningDeltaEvent(delta=remainingContent[:potentialStartIndex]))
+                parsingState["pending"] = fragment
+                return ""
+
+        events.append(ReasoningDeltaEvent(delta=remainingContent))
+        return ""
+
+    firstIndex, typeName, tagLength = min(interestingIndices)
+    if firstIndex > 0:
+        events.append(ReasoningDeltaEvent(delta=remainingContent[:firstIndex]))
+
+    parsingState["mode"] = "text"
+    if typeName == "end":
+        return remainingContent[firstIndex + tagLength :]
+    return remainingContent[firstIndex:]
+
+
+def _scan_tool_calling_mode(
+    remainingContent: str,
+    parsingState: dict[str, Any],
+    events: list[StreamEvent],
+) -> str:
+    """Scan tool_calling mode for tag ends. Returns unconsumed content."""
+    toolEnd = remainingContent.find("</tool_call>")
+    toolEndPipe = remainingContent.find("</tool_call|>")
+    nextToolStart = remainingContent.find("<tool_call>")
+    nextToolStartPipe = remainingContent.find("<tool_call|>")
+    nextThinkStart = remainingContent.find("<think>")
+
+    interestingIndices = []
+    if toolEnd != -1:
+        interestingIndices.append((toolEnd, "end", 12))
+    if toolEndPipe != -1:
+        interestingIndices.append((toolEndPipe, "end", 13))
+    if nextToolStart != -1:
+        interestingIndices.append((nextToolStart, "transition", 0))
+    if nextToolStartPipe != -1:
+        interestingIndices.append((nextToolStartPipe, "transition", 0))
+    if nextThinkStart != -1:
+        interestingIndices.append((nextThinkStart, "transition", 0))
+
+    if not interestingIndices:
+        potentialEndIndex = remainingContent.rfind("</")
+        if potentialEndIndex != -1:
+            fragment = remainingContent[potentialEndIndex:]
+            if "</tool_call>".startswith(fragment) or "</tool_call|>".startswith(fragment):
+                parsingState["buffer"] += remainingContent[:potentialEndIndex]
+                parsingState["pending"] = fragment
+                return ""
+
+        potentialStartIndex = remainingContent.rfind("<")
+        if potentialStartIndex != -1:
+            fragment = remainingContent[potentialStartIndex:]
+            if (
+                "<tool_call>".startswith(fragment)
+                or "<tool_call|>".startswith(fragment)
+                or "<think>".startswith(fragment)
+            ):
+                parsingState["buffer"] += remainingContent[:potentialStartIndex]
+                parsingState["pending"] = fragment
+                return ""
+
+        parsingState["buffer"] += remainingContent
+        return ""
+
+    firstIndex, typeName, tagLength = min(interestingIndices)
+    callPayload = parsingState["buffer"] + remainingContent[:firstIndex]
+    events.extend(_emit_tool_call_events(callPayload))
+    parsingState["buffer"] = ""
+    parsingState["mode"] = "text"
+
+    if typeName == "end":
+        return remainingContent[firstIndex + tagLength :]
+    return remainingContent[firstIndex:]
+
+
 def parse_sse_event(
     sseEvent: ServerSentEvent,
     inProgressCalls: dict[int, ToolCall],
@@ -442,161 +597,11 @@ def parse_sse_event(
 
             while remainingContent:
                 if parsingState["mode"] == "text":
-                    # Look for start tags
-                    thinkStart = remainingContent.find("<think>")
-                    toolStart = remainingContent.find("<tool_call>")
-                    toolStartPipe = remainingContent.find("<tool_call|>")
-                    # Check for partial tags at the very end of the string
-                    potentialTagIndex = remainingContent.rfind("<")
-                    if potentialTagIndex != -1:
-                        # Only buffer if it's AFTER any complete tag found in this chunk
-                        foundTagIndex = max(thinkStart, toolStart, toolStartPipe)
-                        if potentialTagIndex > foundTagIndex:
-                            fragment = remainingContent[potentialTagIndex:]
-                            if (
-                                "<think>".startswith(fragment)
-                                or "<tool_call>".startswith(fragment)
-                                or "<tool_call|>".startswith(fragment)
-                            ):
-                                if potentialTagIndex > 0:
-                                    events.append(TextDeltaEvent(delta=remainingContent[:potentialTagIndex]))
-                                parsingState["pending"] = fragment
-                                break
-
-                    # Find whichever comes first
-                    modeIndices = []
-                    if thinkStart != -1:
-                        modeIndices.append((thinkStart, "thinking", 7))
-                    if toolStart != -1:
-                        modeIndices.append((toolStart, "tool_calling", 11))
-                    if toolStartPipe != -1:
-                        modeIndices.append((toolStartPipe, "tool_calling", 12))
-
-                    if not modeIndices:
-                        # No complete tags, just emit text
-                        events.append(TextDeltaEvent(delta=remainingContent))
-                        break
-
-                    firstIndex, nextMode, tagLength = min(modeIndices)
-                    # Emit text before the tag
-                    if firstIndex > 0:
-                        events.append(TextDeltaEvent(delta=remainingContent[:firstIndex]))
-
-                    # Enter new mode
-                    parsingState["mode"] = nextMode
-                    remainingContent = remainingContent[firstIndex + tagLength :]
-
+                    remainingContent = _scan_text_mode(remainingContent, parsingState, events)
                 elif parsingState["mode"] == "thinking":
-                    thinkEnd = remainingContent.find("</think>")
-
-                    # Robustness: look for new tags that might indicate an implicit end
-                    nextToolStart = remainingContent.find("<tool_call>")
-                    nextThinkStart = remainingContent.find("<think>")
-
-                    interestingIndices = []
-                    if thinkEnd != -1:
-                        interestingIndices.append((thinkEnd, "end", 8))
-                    if nextToolStart != -1:
-                        interestingIndices.append((nextToolStart, "transition", 0))
-                    if nextThinkStart != -1:
-                        interestingIndices.append((nextThinkStart, "transition", 0))
-
-                    if not interestingIndices:
-                        # Handle partial closing or start tags
-                        potentialEndIndex = remainingContent.rfind("</")
-                        if potentialEndIndex != -1:
-                            fragment = remainingContent[potentialEndIndex:]
-                            if "</think>".startswith(fragment):
-                                if potentialEndIndex > 0:
-                                    events.append(ReasoningDeltaEvent(delta=remainingContent[:potentialEndIndex]))
-                                parsingState["pending"] = fragment
-                                break
-
-                        potentialStartIndex = remainingContent.rfind("<")
-                        if potentialStartIndex != -1:
-                            fragment = remainingContent[potentialStartIndex:]
-                            if (
-                                "<think>".startswith(fragment)
-                                or "<tool_call>".startswith(fragment)
-                            ):
-                                if potentialStartIndex > 0:
-                                    events.append(ReasoningDeltaEvent(delta=remainingContent[:potentialStartIndex]))
-                                parsingState["pending"] = fragment
-                                break
-
-                        # Still thinking
-                        events.append(ReasoningDeltaEvent(delta=remainingContent))
-                        break
-                    firstIndex, typeName, tagLength = min(interestingIndices)
-                    # Thinking ends (explicitly or implicitly)
-                    if firstIndex > 0:
-                        events.append(ReasoningDeltaEvent(delta=remainingContent[:firstIndex]))
-
-                    parsingState["mode"] = "text"
-                    remainingContent = (
-                        remainingContent[firstIndex + tagLength :]
-                        if typeName == "end"
-                        else remainingContent[firstIndex:]
-                    )
-
+                    remainingContent = _scan_thinking_mode(remainingContent, parsingState, events)
                 elif parsingState["mode"] == "tool_calling":
-                    toolEnd = remainingContent.find("</tool_call>")
-                    toolEndPipe = remainingContent.find("</tool_call|>")
-
-                    # Robustness: look for new tags that might indicate an implicit end
-                    nextToolStart = remainingContent.find("<tool_call>")
-                    nextToolStartPipe = remainingContent.find("<tool_call|>")
-                    nextThinkStart = remainingContent.find("<think>")
-
-                    interestingIndices = []
-                    if toolEnd != -1:
-                        interestingIndices.append((toolEnd, "end", 12))
-                    if toolEndPipe != -1:
-                        interestingIndices.append((toolEndPipe, "end", 13))
-                    if nextToolStart != -1:
-                        interestingIndices.append((nextToolStart, "transition", 0))
-                    if nextToolStartPipe != -1:
-                        interestingIndices.append((nextToolStartPipe, "transition", 0))
-                    if nextThinkStart != -1:
-                        interestingIndices.append((nextThinkStart, "transition", 0))
-
-                    if not interestingIndices:
-                        # Handle partial closing or start tags
-                        potentialEndIndex = remainingContent.rfind("</")
-                        if potentialEndIndex != -1:
-                            fragment = remainingContent[potentialEndIndex:]
-                            if "</tool_call>".startswith(fragment) or "</tool_call|>".startswith(fragment):
-                                parsingState["buffer"] += remainingContent[:potentialEndIndex]
-                                parsingState["pending"] = fragment
-                                break
-
-                        potentialStartIndex = remainingContent.rfind("<")
-                        if potentialStartIndex != -1:
-                            fragment = remainingContent[potentialStartIndex:]
-                            if (
-                                "<tool_call>".startswith(fragment)
-                                or "<tool_call|>".startswith(fragment)
-                                or "<think>".startswith(fragment)
-                            ):
-                                parsingState["buffer"] += remainingContent[:potentialStartIndex]
-                                parsingState["pending"] = fragment
-                                break
-
-                        # Still buffering tool call
-                        parsingState["buffer"] += remainingContent
-                        break
-                    firstIndex, typeName, tagLength = min(interestingIndices)
-                    # Tool call ends (explicitly or implicitly)
-                    callPayload = parsingState["buffer"] + remainingContent[:firstIndex]
-                    events.extend(_emit_tool_call_events(callPayload))
-                    parsingState["buffer"] = ""
-                    parsingState["mode"] = "text"
-
-                    remainingContent = (
-                        remainingContent[firstIndex + tagLength :]
-                        if typeName == "end"
-                        else remainingContent[firstIndex:]
-                    )
+                    remainingContent = _scan_tool_calling_mode(remainingContent, parsingState, events)
 
         # 3. Standard Tool Calls (if provider supports them natively)
         for toolCall in delta.get("tool_calls") or []:
