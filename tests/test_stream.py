@@ -71,37 +71,7 @@ def test_parse_sse_event() -> None:
     assert parsingState == {"mode": "text", "buffer": "", "pending": ""}
 
 
-def test_parse_lfm_tool_calls() -> None:
-    """Test parsing LFM format python-like tool calls."""
-    lfm_text = '<|tool_call_start|>[read(why="Check files", file_path=".", why="To list files")]<|tool_call_end|>'
-    results = parse_text_tool_calls(lfm_text)
-    assert len(results) == 1
-    assert results[0].name == "read"
-    assert results[0].arguments == '{"why": "To list files", "file_path": "."}'
 
-
-def test_lfm_streaming_tool_call() -> None:
-    """Test LFM tool call parsing under streaming mode."""
-    first_event = ServerSentEvent(
-        event="message",
-        data='{"choices": [{"delta": {"content": "<|tool_call_start|>[read(why=\\"Check\\", file_path=\\".\\")]"}}]}',
-        id="1",
-    )
-    second_event = ServerSentEvent(
-        event="message",
-        data='{"choices": [{"delta": {"content": "<|tool_call_end|>"}}]}',
-        id="2",
-    )
-
-    in_progress: dict = {}
-    state = None
-
-    events_1, in_progress, state = parse_sse_event(first_event, in_progress, state)
-    assert len(events_1) == 0  # Still buffering tool call
-
-    events_2, in_progress, state = parse_sse_event(second_event, in_progress, state)
-    assert len(events_2) == 3  # ToolCallStart, ToolCallDelta, ToolCallDone
-    assert events_2[0].name == "read"
 
 
 def test_parse_text_tool_calls_with_pipe() -> None:
@@ -137,34 +107,4 @@ def test_tool_call_pipe_streaming() -> None:
     assert events_2[0].name == "test_tool"
 
 
-def test_lfm_short_tags_parsing() -> None:
-    """Test parsing tool calls from text output using short LFM tags."""
-    short_lfm_text = '<|tool_call>[read(why="Check files", file_path=".")]<tool_call|>'
-    results = parse_text_tool_calls(short_lfm_text)
-    assert len(results) == 1
-    assert results[0].name == "read"
-    assert results[0].arguments == '{"why": "Check files", "file_path": "."}'
 
-
-def test_lfm_short_tags_streaming() -> None:
-    """Test short LFM tool call parsing under streaming mode."""
-    first_event = ServerSentEvent(
-        event="message",
-        data='{"choices": [{"delta": {"content": "<|tool_call>[read(why=\\"Check\\", file_path=\\".\\")]"}}]}',
-        id="1",
-    )
-    second_event = ServerSentEvent(
-        event="message",
-        data='{"choices": [{"delta": {"content": "<tool_call|>"}}]}',
-        id="2",
-    )
-
-    in_progress: dict = {}
-    state = None
-
-    events_1, in_progress, state = parse_sse_event(first_event, in_progress, state)
-    assert len(events_1) == 0  # Still buffering tool call
-
-    events_2, in_progress, state = parse_sse_event(second_event, in_progress, state)
-    assert len(events_2) == 3  # ToolCallStart, ToolCallDelta, ToolCallDone
-    assert events_2[0].name == "read"

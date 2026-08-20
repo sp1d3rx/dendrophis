@@ -33,8 +33,7 @@ _CLOSE_TAGS = [pair[1] for pair in _THINK_TAG_PAIRS]
 _TOOL_TAG_PAIRS: list[tuple[str, str]] = [
     ("<tool_call>", "</tool_call>"),
     ("<tool_call|>", "</tool_call|>"),
-    ("<|tool_call_start|>", "<|tool_call_end|>"),
-    ("<|tool_call>", "<tool_call|>"),
+
 ]
 
 
@@ -1022,15 +1021,11 @@ class AssistantMessage(Vertical):
                 "</tool_call>",
                 "<tool_call|>",
                 "</tool_call|>",
-                "<|tool_call_start|>",
-                "<|tool_call_end|>",
-                "<|tool_call>",
+
             ]
             is_tag_content = (
                 self._pending_buf.startswith("<tool_call>")
                 or self._pending_buf.startswith("<tool_call|>")
-                or self._pending_buf.startswith("<|tool_call_start|>")
-                or self._pending_buf.startswith("<|tool_call>")
                 or any(known_tag.startswith(self._pending_buf) for known_tag in all_known_tags)
             )
             if not is_tag_content:
