@@ -22,19 +22,25 @@ if TYPE_CHECKING:
     from textual.widgets import Static as TextualStatic
 
 
-# Think-tag pairs — order matters: longer/more-specific first.
-# Each entry is (open_tag, close_tag).
+# Tag configuration — order matters: longer/more-specific first.
+# Each entry is (open_tag, close_tag, tag_type).
+_TAG_CONFIG: list[tuple[str, str, str]] = [
+    ("<|channel>thought\n", "<channel|>", "think"),  # Gemma 4
+    ("<think>", "</think>", "think"),  # DeepSeek / generic
+    ("<tool_call>", "</tool_call>", "tool"),
+    ("<tool_call|>", "</tool_call|>", "tool"),
+]
 _THINK_TAG_PAIRS: list[tuple[str, str]] = [
-    ("<|channel>thought\n", "<channel|>"),  # Gemma 4
-    ("<think>", "</think>"),  # DeepSeek / generic
+    (open_tag, close_tag) for open_tag, close_tag, tag_type in _TAG_CONFIG if tag_type == "think"
+]
+_TOOL_TAG_PAIRS: list[tuple[str, str]] = [
+    (open_tag, close_tag) for open_tag, close_tag, tag_type in _TAG_CONFIG if tag_type == "tool"
 ]
 _OPEN_TAGS = [pair[0] for pair in _THINK_TAG_PAIRS]
 _CLOSE_TAGS = [pair[1] for pair in _THINK_TAG_PAIRS]
-_TOOL_TAG_PAIRS: list[tuple[str, str]] = [
-    ("<tool_call>", "</tool_call>"),
-    ("<tool_call|>", "</tool_call|>"),
-
-]
+_ALL_OPEN_TAGS = [open_tag for open_tag, _, _ in _TAG_CONFIG]
+_ALL_CLOSE_TAGS = [close_tag for _, close_tag, _ in _TAG_CONFIG]
+_ALL_KNOWN_TAGS = _ALL_OPEN_TAGS + _ALL_CLOSE_TAGS
 
 
 def _clean_latex_shorthand(text: str) -> str:
@@ -548,6 +554,16 @@ class InlineToolStatus(Static):
     """
 
 
+def _find_earliest_tag(text: str, tags: list[str]) -> tuple[int, str]:
+    """Find the earliest occurrence of any tag in text. Returns (position, tag) or (len(text), "")."""
+    best_pos, best_tag = len(text), ""
+    for tag in tags:
+        pos = text.find(tag)
+        if 0 <= pos < best_pos:
+            best_pos, best_tag = pos, tag
+    return best_pos, best_tag
+
+
 class AssistantMessage(Vertical):
     """Streaming assistant response bubble with markdown rendering.
 
@@ -742,11 +758,7 @@ class AssistantMessage(Vertical):
         """Process text while inside a think tag, looking for close tags."""
         remaining = text
         while remaining:
-            best_pos, best_tag = len(remaining), ""
-            for tag in _CLOSE_TAGS:
-                pos = remaining.find(tag)
-                if 0 <= pos < best_pos:
-                    best_pos, best_tag = pos, tag
+            best_pos, best_tag = _find_earliest_tag(remaining, _CLOSE_TAGS)
 
             if best_tag:
                 if best_pos:
@@ -777,29 +789,33 @@ class AssistantMessage(Vertical):
 
         while remaining:
             # Find earliest think tag or tool_call tag
-            best_position, best_tag, tag_type = len(remaining), "", ""
+            think_pos, think_tag = _find_earliest_tag(remaining, _OPEN_TAGS)
+            tool_pos, tool_tag = _find_earliest_tag(remaining, _ALL_OPEN_TAGS)
+
+            # Determine which tag comes first
+            best_position = len(remaining)
+            best_tag = ""
+            tag_type = ""
             associated_close_tag = ""
 
-            for tag in _OPEN_TAGS:
-                position = remaining.find(tag)
-                if 0 <= position < best_position:
-                    best_position, best_tag = position, tag
-                    tag_type = "think"
+            if think_tag and think_pos < best_position:
+                best_position = think_pos
+                best_tag = think_tag
+                tag_type = "think"
 
-            for tool_open, tool_close in _TOOL_TAG_PAIRS:
-                tool_position = remaining.find(tool_open)
-                if tool_position != -1 and tool_position < best_position:
-                    best_position, best_tag = tool_position, tool_open
-                    tag_type = "tool"
-                    associated_close_tag = tool_close
+            if tool_tag and tool_pos < best_position:
+                best_position = tool_pos
+                best_tag = tool_tag
+                tag_type = "tool"
+                # Look up the close tag for this tool tag
+                for open_tag, close_tag, _ in _TAG_CONFIG:
+                    if open_tag == tool_tag:
+                        associated_close_tag = close_tag
+                        break
 
             if not best_tag:
                 # No tags found, emit all as text
-                all_possible_open_tags = [*_OPEN_TAGS]
-                for tool_open, _ in _TOOL_TAG_PAIRS:
-                    all_possible_open_tags.append(tool_open)
-
-                buffered = self._try_buffer_partial(remaining, all_possible_open_tags, self._route_text)
+                buffered = self._try_buffer_partial(remaining, _ALL_OPEN_TAGS, self._route_text)
                 if not buffered:
                     self._route_text(remaining)
                 return
@@ -1012,21 +1028,10 @@ class AssistantMessage(Vertical):
 
         # Flush any buffered partial tag text before finalizing
         if self._pending_buf:
-            all_known_tags = [
-                "<|channel>thought\n",
-                "<channel|>",
-                "<think>",
-                "</think>",
-                "<tool_call>",
-                "</tool_call>",
-                "<tool_call|>",
-                "</tool_call|>",
-
-            ]
             is_tag_content = (
                 self._pending_buf.startswith("<tool_call>")
                 or self._pending_buf.startswith("<tool_call|>")
-                or any(known_tag.startswith(self._pending_buf) for known_tag in all_known_tags)
+                or any(known_tag.startswith(self._pending_buf) for known_tag in _ALL_KNOWN_TAGS)
             )
             if not is_tag_content:
                 if was_thinking:
