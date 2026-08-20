@@ -1,8 +1,11 @@
 import asyncio
 import json
+import os
 import time
 
 import httpx
+
+OMLX_API_KEY = os.getenv("OMLX_API_KEY", "")
 
 
 async def get_session_cookie(base_url: str, api_key: str) -> str:
@@ -36,7 +39,7 @@ async def unload_model(base_url: str, model_id: str, cookie_value: str) -> None:
 
 async def run_query(base_url: str, model_id: str, prompt_text: str, is_warmup: bool = False) -> dict:
     completion_url = f"{base_url}/v1/chat/completions"
-    headers = {"Authorization": "Bearer vUYmhvvVwRSwW58", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {OMLX_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": prompt_text}],
@@ -159,7 +162,7 @@ async def run_benchmark_for_config(
 
 async def main():
     server_base_url = "http://127.0.0.1:8000"
-    server_api_key = "vUYmhvvVwRSwW58"
+    server_api_key = OMLX_API_KEY
     model_id = "Qwen3.6-27B-oQ4-fp16-mtp"
 
     print("Retrieving admin session cookie...")
