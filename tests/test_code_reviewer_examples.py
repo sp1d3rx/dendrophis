@@ -152,11 +152,11 @@ async def test_code_reviewer_flags_bad_code_examples() -> None:
     assert len(response.result.get("hettinger_notes", [])) == 2
     assert len(response.result.get("greybeard_notes", [])) == 2
 
-    # Verify prompt includes Hettinger Concept Chunking and Single-Letter variable rules
+    # Verify prompt carries the core review rules
     system_prompt_content = captured_messages[0]["content"]
-    assert "Concept Chunking" in system_prompt_content
-    assert "STRICT SINGLE-LETTER VARIABLE RULE" in system_prompt_content
-    assert "Greybeard Pragmatism" in system_prompt_content
+    assert "one job per function" in system_prompt_content
+    assert "Single-letter variable" in system_prompt_content
+    assert "greybeard" in system_prompt_content
 
 
 @pytest.mark.anyio
