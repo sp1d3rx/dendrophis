@@ -17,6 +17,8 @@ llm:
   model: "meta-llama/Meta-Llama-3.1-70B-Instruct"
   # The model dedicated to the code-writer subagent for executing code changes (null = fallback to default)
   code_writer_model: null
+  # The model dedicated to the code-reviewer subagent for reviewing diffs (null = fallback to default)
+  code_reviewer_model: null
 
   # --- Context & Compaction ---
   # Maximum context window limit in tokens

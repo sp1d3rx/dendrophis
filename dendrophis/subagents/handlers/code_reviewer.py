@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
 from pathlib import Path
 from typing import Any
 
-from dendrophis.config.schema import DendrophisConfig
+from dendrophis.config.schema import DendrophisConfig, LLMConfig
 from dendrophis.events import TextDeltaEvent
 from dendrophis.llm.client import LLMClient
 
@@ -69,6 +70,7 @@ class CodeReviewerHandler:
     ) -> None:
         self._llm_client = llm_client
         self._cached_llm: LLMClient | None = llm_client
+        self._dedicated_llm_client: LLMClient | None = None
         self._config = config
         self._logger = logger
 
@@ -77,7 +79,12 @@ class CodeReviewerHandler:
 
     @property
     def llm(self) -> LLMClient:
-        """Lazily obtain or create LLM client."""
+        """Lazily obtain or create LLM client; uses a dedicated client when code_reviewer_model is configured."""
+        if self._config is not None and self._config.llm.code_reviewer_model:
+            if self._dedicated_llm_client is None:
+                self._dedicated_llm_client = LLMClient(self._get_llm_config())
+            return self._dedicated_llm_client
+
         if self._cached_llm is not None:
             return self._cached_llm
 
@@ -88,8 +95,17 @@ class CodeReviewerHandler:
         from dendrophis.config.loader import ConfigLoader
 
         config_loader = ConfigLoader.load()
-        self._cached_llm = LLMClient(config_loader.config.llm)
+        cfg = config_loader.config
+        reviewer_llm_config = dataclasses.replace(cfg.llm, model=cfg.llm.code_reviewer_model or cfg.llm.model)
+        self._cached_llm = LLMClient(reviewer_llm_config)
         return self._cached_llm
+
+    def _get_llm_config(self) -> LLMConfig:
+        """Get LLM config for code-reviewer, honouring the code_reviewer_model override."""
+        if self._config is None:
+            raise ValueError("No config available to create LLM client")
+        llm_config = self._config.llm
+        return dataclasses.replace(llm_config, model=llm_config.code_reviewer_model or llm_config.model)
 
     async def execute(self, request: SubagentRequest) -> SubagentResponse:
         """Execute code review task."""

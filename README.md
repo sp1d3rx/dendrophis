@@ -87,6 +87,7 @@ llm:
   timeout: 120.0
   model: "meta-llama/Meta-Llama-3.1-70B-Instruct"
   code_writer_model: null   # dedicated subagent model (null = same as main)
+  code_reviewer_model: null # dedicated code-reviewer model (null = same as main)
   context_limit: 128000
   compaction_threshold: 0.85
   max_tokens: 4096

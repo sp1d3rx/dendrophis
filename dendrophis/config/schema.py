@@ -1,13 +1,70 @@
-"""Pydantic v2 config schema."""
+"""Config schema — plain dataclasses, no pydantic.
+
+Each config model carries a `from_dict` constructor (via the ConfigModel
+mixin) that builds an instance from a raw YAML mapping: unknown keys are
+ignored so config files can carry forward-looking settings, and nested
+models are coerced recursively through the field annotations.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Literal
+import dataclasses
+import types
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypeVar, Union, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel, Field, model_validator
+_ConfigT = TypeVar("_ConfigT", bound="ConfigModel")
 
 
-class LLMConfig(BaseModel):
+def _coerce_value(value: Any, target: Any) -> Any:
+    """Coerce a raw YAML value to the shape named by a resolved field annotation."""
+    if value is None:
+        return None
+
+    origin = get_origin(target)
+
+    if origin is Union or origin is types.UnionType:
+        members = [member for member in get_args(target) if member is not type(None)]
+        if len(members) == 1:
+            return _coerce_value(value, members[0])
+        return value
+
+    if origin is list:
+        (item_hint,) = get_args(target)
+        return [_coerce_value(item, item_hint) for item in value]
+
+    if origin is dict:
+        _, value_hint = get_args(target)
+        return {key: _coerce_value(item, value_hint) for key, item in value.items()}
+
+    if dataclasses.is_dataclass(target) and isinstance(target, type) and isinstance(value, dict):
+        return from_dict(target, value)
+
+    return value
+
+
+def from_dict(cls: type, data: dict[str, Any]) -> Any:
+    """Build a ConfigModel subclass from a raw mapping, ignoring unknown keys."""
+    hints = get_type_hints(cls)
+    known_kwargs = {
+        entry.name: _coerce_value(data[entry.name], hints[entry.name])
+        for entry in dataclasses.fields(cls)
+        if entry.name in data
+    }
+    return cls(**known_kwargs)
+
+
+class ConfigModel:
+    """Mixin giving any dataclass a from_dict() constructor for raw YAML data."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Any:
+        """Build an instance from a raw mapping, ignoring unknown keys."""
+        return from_dict(cls, data)
+
+
+@dataclass
+class LLMConfig(ConfigModel):
     """LLM provider connection and generation settings."""
 
     base_url: str = "https://api.deepinfra.com/v1/openai"
@@ -15,6 +72,8 @@ class LLMConfig(BaseModel):
     model: str = "meta-llama/Meta-Llama-3.1-70B-Instruct"
     # Override model specifically for code-writer subagent
     code_writer_model: str | None = None
+    # Override model specifically for code-reviewer subagent
+    code_reviewer_model: str | None = None
     max_tokens: int = 4096
     temperature: float = 0.2
     # Filter to top K tokens (None = disabled)
@@ -75,69 +134,72 @@ class LLMConfig(BaseModel):
     # silently ending. Recovers from models that narrate intent but forget to call a tool.
     continuation_nudge: bool = True
 
-    @model_validator(mode="before")
-    @classmethod
-    def validate_preserve_reasoning(cls, values: Any) -> Any:
-        if isinstance(values, dict):
-            val = values.get("preserve_reasoning")
-            if val is True:
-                values["preserve_reasoning"] = "always"
-            elif val is False:
-                values["preserve_reasoning"] = "never"
-        return values
+    def __post_init__(self) -> None:
+        # Legacy configs may carry a boolean here; normalise to the string form.
+        if self.preserve_reasoning is True:
+            self.preserve_reasoning = "always"
+        elif self.preserve_reasoning is False:
+            self.preserve_reasoning = "never"
 
 
-class HookEntry(BaseModel):
+@dataclass
+class HookEntry(ConfigModel):
     """Single hook definition with an optional tool-name matcher."""
 
-    matcher: str = ""
     command: str
+    matcher: str = ""
 
 
-class HooksConfig(BaseModel):
+@dataclass
+class HooksConfig(ConfigModel):
     """Pre/post tool-use hook lists."""
 
-    pre_tool_use: list[HookEntry] = Field(default_factory=list)
-    post_tool_use: list[HookEntry] = Field(default_factory=list)
+    pre_tool_use: list[HookEntry] = field(default_factory=list)
+    post_tool_use: list[HookEntry] = field(default_factory=list)
 
 
-class SidebarConfig(BaseModel):
+@dataclass
+class SidebarConfig(ConfigModel):
     """Sidebar layout and panel selection."""
 
     position: Literal["left", "right"] = "right"
     width: int = 28
-    panels: list[str] = Field(default_factory=list)
+    panels: list[str] = field(default_factory=list)
 
 
-class ToolsConfig(BaseModel):
+@dataclass
+class ToolsConfig(ConfigModel):
     """Tool execution limits."""
 
-    extra_paths: list[str] = Field(default_factory=list)
+    extra_paths: list[str] = field(default_factory=list)
     max_calls: int = 3
-    parallel_tools: bool = Field(default=True, description="Allow parallel tool execution")
+    parallel_tools: bool = True
 
 
-class BashPermissions(BaseModel):
+@dataclass
+class BashPermissions(ConfigModel):
     """Category-level allow/deny policy for bash commands."""
 
     # Empty allowed_categories means all categories are permitted (unless denied).
-    allowed_categories: list[str] = Field(default_factory=list)
-    denied_categories: list[str] = Field(default_factory=lambda: ["system_destructive"])
+    allowed_categories: list[str] = field(default_factory=list)
+    denied_categories: list[str] = field(default_factory=lambda: ["system_destructive"])
     # Commands whose effects fall entirely within auto_approve_categories skip confirmation.
-    auto_approve_categories: list[str] = Field(default_factory=lambda: ["filesystem_read"])
+    auto_approve_categories: list[str] = field(default_factory=lambda: ["filesystem_read"])
 
 
-class PermissionsConfig(BaseModel):
+@dataclass
+class PermissionsConfig(ConfigModel):
     """Tool-level and bash-category permission rules."""
 
     # Empty allowed_tools means all tools are permitted (unless denied).
-    allowed_tools: list[str] = Field(default_factory=list)
-    denied_tools: list[str] = Field(default_factory=list)
-    require_confirmation: list[str] = Field(default_factory=lambda: ["bash", "delete_memory"])
-    bash: BashPermissions = Field(default_factory=BashPermissions)
+    allowed_tools: list[str] = field(default_factory=list)
+    denied_tools: list[str] = field(default_factory=list)
+    require_confirmation: list[str] = field(default_factory=lambda: ["bash", "delete_memory"])
+    bash: BashPermissions = field(default_factory=BashPermissions)
 
 
-class CachingConfig(BaseModel):
+@dataclass
+class CachingConfig(ConfigModel):
     """Token caching configuration for prompt cache optimization."""
 
     enabled: bool = True
@@ -161,7 +223,8 @@ class CachingConfig(BaseModel):
     pr_enabled: bool = True  # Enable/disable primer saving/loading entirely
 
 
-class UIColors(BaseModel):
+@dataclass
+class UIColors(ConfigModel):
     """Custom color palette for the UI."""
 
     primary: str = "#3B82F6"
@@ -174,41 +237,42 @@ class UIColors(BaseModel):
     neutral: str = "#FFFFFF"
 
 
-class UIConfig(BaseModel):
+@dataclass
+class UIConfig(ConfigModel):
     """Configuration for the Textual TUI."""
 
     theme: str = "monokai"
-    colors: UIColors = Field(default_factory=UIColors)
-    sidebar: SidebarConfig = Field(default_factory=SidebarConfig)
+    colors: UIColors = field(default_factory=UIColors)
+    sidebar: SidebarConfig = field(default_factory=SidebarConfig)
     scrollback_limit: int = 100
 
 
-class MCPServerConfig(BaseModel):
+@dataclass
+class MCPServerConfig(ConfigModel):
     """Configuration for an individual MCP server."""
 
     command: str | None = None
-    args: list[str] = Field(default_factory=list)
+    args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
     enabled: bool = True
     url: str | None = None
 
-    @model_validator(mode="after")
-    def validate_command_or_url(self) -> MCPServerConfig:
+    def __post_init__(self) -> None:
         if not self.command and not self.url:
             raise ValueError("Either command or url must be specified for MCP server config.")
-        return self
 
 
-class DendrophisConfig(BaseModel):
+@dataclass
+class DendrophisConfig(ConfigModel):
     """Root configuration model for a Dendrophis session."""
 
-    llm: LLMConfig = Field(default_factory=LLMConfig)
-    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
-    ui: UIConfig = Field(default_factory=UIConfig)
-    hooks: HooksConfig = Field(default_factory=HooksConfig)
-    tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
-    caching: CachingConfig = Field(default_factory=CachingConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    mcp_servers: dict[str, MCPServerConfig] = field(default_factory=dict)
+    ui: UIConfig = field(default_factory=UIConfig)
+    hooks: HooksConfig = field(default_factory=HooksConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
+    permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
+    caching: CachingConfig = field(default_factory=CachingConfig)
     memory_db: str = "~/.config/dendrophis/memory.db"
     debug_log: str = "~/.config/dendrophis/debug.log"
     system_prompt: str = (
@@ -216,7 +280,10 @@ class DendrophisConfig(BaseModel):
         "Investigate first using search and read tools (ripgrep, glob, read). Never guess file paths or symbol names.\n"
         "File editing: Prefer edit/patch for surgical modifications, write for new files, and append for additions.\n"
         "Code execution: Use execute_code for Python and bash for system commands.\n"
-        "Subagents: Use invoke_subagent for isolated subtasks and parallel exploration.\n"
+        "Subagents: Use invoke_subagent to delegate focused implementation to code-writer "
+        '(with context={"files": [...]}), research to researcher (with focused queries, '
+        'context={"patterns": [...], "path": "...", "files": [...]}, and checking search_meta), '
+        "tests to test-runner, and reviews to code-reviewer.\n"
         "Memory: Use search_memory, recall_memory, and save_memory for persistent context.\n"
         "Communication: Be concise, precise, and direct. "
         "Use clean Markdown (no LaTeX math formatting; use unicode arrows like -> or →).\n"

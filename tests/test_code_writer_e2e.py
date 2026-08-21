@@ -42,7 +42,6 @@ def _load_config() -> DendrophisConfig:
         reasoning_effort=llm_raw.get("reasoning_effort"),
         thinking_start_mode=llm_raw.get("thinking_start_mode", "text"),
         tool_mode=llm_raw.get("tool_mode", "auto"),
-        max_tool_output_tokens=llm_raw.get("max_tool_output_tokens", 2000),
     )
     return DendrophisConfig(llm=llm_config)
 

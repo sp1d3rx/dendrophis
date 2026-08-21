@@ -88,7 +88,7 @@ class ConfigLoader:
         raw = _apply_env_overrides(raw)
         if system_md_path.exists():
             raw["system_prompt"] = system_md_path.read_text()
-        config = DendrophisConfig.model_validate(raw)
+        config = DendrophisConfig.from_dict(raw)
         return ConfigLoadResult(
             loader=cls(path=resolved_path, raw=raw, config=config), system_prompt_source=system_prompt_source
         )
@@ -98,7 +98,7 @@ class ConfigLoader:
         if new_yaml_text is not None:
             new_raw = _yaml.load(new_yaml_text) or {}
             self._raw = new_raw
-            self.config = DendrophisConfig.model_validate(dict(new_raw))
+            self.config = DendrophisConfig.from_dict(dict(new_raw))
         buf = __import__("io").StringIO()
         _yaml.dump(self._raw, buf)
         self._path.write_text(buf.getvalue())
@@ -111,7 +111,7 @@ class ConfigLoader:
         if system_md_path.exists():
             raw["system_prompt"] = system_md_path.read_text()
         self._raw = raw
-        self.config = DendrophisConfig.model_validate(raw)
+        self.config = DendrophisConfig.from_dict(raw)
 
     @property
     def raw_yaml(self) -> str:

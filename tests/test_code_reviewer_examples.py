@@ -204,3 +204,33 @@ async def test_code_reviewer_approves_good_code_examples() -> None:
     assert response.result.get("approval") == "approved"
     assert len(response.result.get("issues", [])) == 0
     assert "Great concept chunking" in response.result["hettinger_notes"][0]
+
+
+def test_code_reviewer_model_resolution() -> None:
+    from dendrophis.config.schema import DendrophisConfig, LLMConfig
+
+    # 1. Falls back to config.llm.model when code_reviewer_model is None
+    fallback_config = DendrophisConfig(
+        llm=LLMConfig(
+            model="meta-llama/Llama-3.3-70B-Instruct",
+            code_reviewer_model=None,
+            api_key="test-key",
+            base_url="https://api.example.com/v1",
+        )
+    )
+    handler_fallback = CodeReviewerHandler(config=fallback_config)
+    assert handler_fallback._get_llm_config().model == "meta-llama/Llama-3.3-70B-Instruct"
+
+    # 2. Uses dedicated code_reviewer_model when specified
+    dedicated_config = DendrophisConfig(
+        llm=LLMConfig(
+            model="meta-llama/Llama-3.3-70B-Instruct",
+            code_reviewer_model="gemma-4-26B-A4B-it-hettinger-8bit",
+            api_key="test-key",
+            base_url="https://api.example.com/v1",
+        )
+    )
+    handler_dedicated = CodeReviewerHandler(config=dedicated_config)
+    assert handler_dedicated._get_llm_config().model == "gemma-4-26B-A4B-it-hettinger-8bit"
+    # Original config must remain untouched (dataclasses.replace, not mutate)
+    assert dedicated_config.llm.model == "meta-llama/Llama-3.3-70B-Instruct"

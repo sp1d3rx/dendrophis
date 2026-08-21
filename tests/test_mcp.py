@@ -20,7 +20,7 @@ from dendrophis.ui.widgets.panels.mcp_status_panel import McpStatusPanel
 
 def test_mcp_config_schema() -> None:
     """Verify that MCP server configs are correctly parsed in DendrophisConfig."""
-    config = DendrophisConfig.model_validate(
+    config = DendrophisConfig.from_dict(
         {
             "mcp_servers": {
                 "test-server": {
@@ -48,7 +48,7 @@ def test_mcp_config_schema() -> None:
 @pytest.mark.asyncio
 async def test_mcp_manager_init_and_registration() -> None:
     """Verify that MCPManager connects to servers, registers tools, delegates calls, and closes resources."""
-    config = DendrophisConfig.model_validate(
+    config = DendrophisConfig.from_dict(
         {
             "mcp_servers": {
                 "test-server": {
@@ -120,7 +120,7 @@ async def test_mcp_manager_init_and_registration() -> None:
 @pytest.mark.asyncio
 async def test_mcp_manager_disabled_server() -> None:
     """Verify that disabled MCP servers are not initialized."""
-    config = DendrophisConfig.model_validate(
+    config = DendrophisConfig.from_dict(
         {
             "mcp_servers": {
                 "disabled-server": {
@@ -146,7 +146,7 @@ async def test_mcp_manager_disabled_server() -> None:
 @pytest.mark.asyncio
 async def test_mcp_manager_sync_servers() -> None:
     """Verify that sync_servers dynamically starts new and stops disabled/removed servers."""
-    config = DendrophisConfig.model_validate(
+    config = DendrophisConfig.from_dict(
         {
             "mcp_servers": {
                 "server-a": {
@@ -242,7 +242,7 @@ async def test_mcp_disabled_tool_validation() -> None:
 
     assert registry.is_disabled("disabled_mcp_tool") is True
 
-    config = DendrophisConfig.model_validate({})
+    config = DendrophisConfig.from_dict({})
 
     # Setup SessionToolExecutor
     cancel_flag = threading.Event()

@@ -9,7 +9,6 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from pydantic import BaseModel
 
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.tools.base import BaseTool
@@ -172,7 +171,7 @@ class MCPManager:
             # Register each tool
             for mcp_tool in tools_result.tools:
                 schema = mcp_tool.inputSchema
-                if isinstance(schema, BaseModel):
+                if hasattr(schema, "model_dump"):
                     schema = schema.model_dump()
                 elif hasattr(schema, "dict"):
                     schema = schema.dict()

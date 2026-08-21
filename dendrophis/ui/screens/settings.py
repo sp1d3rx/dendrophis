@@ -6,7 +6,6 @@ import io
 import re
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
 from ruamel.yaml import YAML
 from textual import events
 from textual.app import ComposeResult
@@ -596,6 +595,11 @@ class SettingsScreen(Screen):
                                     "Code Writer Model Override",
                                     self._cfg.llm.code_writer_model or "",
                                 )
+                                yield self._make_input(
+                                    "llm.code_reviewer_model",
+                                    "Code Reviewer Model Override",
+                                    self._cfg.llm.code_reviewer_model or "",
+                                )
 
                     with Vertical(classes="settings-group"):
                         yield Label("Reasoning & Tooling", classes="settings-group-title")
@@ -1148,6 +1152,7 @@ class SettingsScreen(Screen):
 
             # Save the new LLM settings
             set_nested(raw, ["llm", "code_writer_model"], get_nullable_str("llm_code_writer_model"))
+            set_nested(raw, ["llm", "code_reviewer_model"], get_nullable_str("llm_code_reviewer_model"))
             set_nested(raw, ["llm", "top_k"], get_nullable_int("llm_top_k"))
             set_nested(raw, ["llm", "min_p"], get_nullable_float("llm_min_p"))
             set_nested(raw, ["llm", "repetition_penalty"], get_nullable_float("llm_repetition_penalty"))
@@ -1264,7 +1269,7 @@ class SettingsScreen(Screen):
             self._session.reload_config()
             error_label.update("")
             self.dismiss()
-        except (ValueError, ValidationError, Exception) as save_exception:
+        except Exception as save_exception:
             from rich.markup import escape
 
             error_label.update(f"[red]Error: {escape(str(save_exception))}[/red]")
