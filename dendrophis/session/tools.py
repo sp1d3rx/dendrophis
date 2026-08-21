@@ -26,6 +26,7 @@ from dendrophis.tools.names import ToolName
 CONFIRMATION_TIMEOUT = 300.0  # 5 minutes
 POLL_INTERVAL = 0.1
 TOOL_EXECUTION_TIMEOUT = 120.0  # 2 minutes
+SUBAGENT_TOOL_EXECUTION_TIMEOUT = 300.0  # 5 minutes for subagents (matches LLM client timeout)
 
 # Alias for backwards compatibility
 FallbackToolResult = ToolResult
@@ -387,16 +388,22 @@ class SessionToolExecutor:
         try:
             if self._tool_executor is None:
                 raise ValueError("No tool executor provided")
+            timeout_limit = (
+                SUBAGENT_TOOL_EXECUTION_TIMEOUT
+                if tool_call.name in (ToolName.INVOKE_SUBAGENT.value, "invoke_subagent")
+                else TOOL_EXECUTION_TIMEOUT
+            )
             single_result = await asyncio.wait_for(
                 self._tool_executor.execute(tool_call),
-                timeout=TOOL_EXECUTION_TIMEOUT,
+                timeout=timeout_limit,
             )
         except TimeoutError:
-            error_details = "Tool execution timed out after 120 seconds"
+            timeout_seconds_integer = int(timeout_limit)
+            error_details = f"Tool execution timed out after {timeout_seconds_integer} seconds"
             single_result = ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content='{"error": "Tool execution timed out after 120 seconds"}',
+                content=json.dumps({"error": f"Tool execution timed out after {timeout_seconds_integer} seconds"}),
                 success=False,
             )
         except Exception as execution_error:
