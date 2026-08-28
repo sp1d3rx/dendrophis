@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint, try_unescape
 from dendrophis.tools.names import ToolName
 
 
@@ -65,18 +65,11 @@ class EditTool(BaseTool):
 
             content = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
 
-            # Attempt to unescape doubly-escaped sequences (common LLM mistake: \\n instead of \n)
-            def _try_unescape(string_value: str) -> str:
-                try:
-                    return string_value.encode("raw_unicode_escape").decode("unicode_escape")
-                except Exception:
-                    return string_value.replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")
-
             if old_string not in content:
-                unescaped = _try_unescape(old_string)
+                unescaped = try_unescape(old_string)
                 if unescaped != old_string and unescaped in content:
                     old_string = unescaped
-                    new_string = _try_unescape(new_string)
+                    new_string = try_unescape(new_string)
                 else:
                     return {
                         "error": "old_string not found in file",

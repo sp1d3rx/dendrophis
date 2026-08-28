@@ -33,6 +33,7 @@ def test_config_loader_system_md_override(tmp_path: Path) -> None:
 
     # Direct integration test with temporary working directory
     import os
+
     previous_directory = os.getcwd()
     try:
         os.chdir(tmp_path)

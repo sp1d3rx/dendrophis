@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from dendrophis.config.loader import ConfigLoader
+from dendrophis.config.schema import DendrophisConfig
 from dendrophis.events import ErrorEvent, TextDeltaEvent
 from dendrophis.llm.client import LLMClient
 
@@ -78,67 +79,112 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-async def execute(request: SubagentRequest) -> SubagentResponse:
-    """Execute planner task."""
-    config = ConfigLoader.load().config
-    client = LLMClient(config.llm)
+class PlannerHandler:
+    """Handler for planner subagent."""
 
-    task = request.payload.get("task", "")
-    constraints = request.payload.get("constraints", {})
-    context = request.payload.get("context", {})
+    def __init__(
+        self,
+        llm_client: LLMClient | None = None,
+        config: DendrophisConfig | None = None,
+    ) -> None:
+        self._llm_client = llm_client
+        self._config = config
 
-    user_prompt = f"""Task: {task}
+    async def __call__(self, request: SubagentRequest) -> SubagentResponse:
+        return await self.execute(request)
+
+    @property
+    def llm(self) -> LLMClient | None:
+        """Lazily obtain or create LLM client."""
+        if self._llm_client is not None:
+            return self._llm_client
+
+        if self._config is not None:
+            return LLMClient(self._config.llm)
+
+        try:
+            config_loader = ConfigLoader.load()
+            return LLMClient(config_loader.config.llm)
+        except Exception:
+            return None
+
+    async def execute(self, request: SubagentRequest) -> SubagentResponse:
+        """Execute planner task."""
+        client = self.llm
+        if client is None:
+            return SubagentResponse(
+                agent=request.agent,
+                task_id=request.task_id,
+                status="failure",
+                result={"error": "LLM client not available for planner subagent"},
+            )
+
+        task_description = request.payload.get("task", "")
+        constraints = request.payload.get("constraints", {})
+        context_data = request.payload.get("context", {})
+
+        user_prompt = f"""Task: {task_description}
 
 Constraints: {json.dumps(constraints, indent=2)}
 
-Context: {json.dumps(context, indent=2)}
+Context: {json.dumps(context_data, indent=2)}
 
 Provide a plan with steps, agent assignments, dependencies, and risk assessment."""
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
 
-    response_text = ""
-    errors: list[str] = []
+        response_text = ""
+        error_messages: list[str] = []
 
-    async for event in client.stream_chat(messages):
-        if isinstance(event, TextDeltaEvent):
-            response_text += event.delta
-        elif isinstance(event, ErrorEvent):
-            errors.append(event.message)
+        try:
+            async for event in client.stream_chat(messages):
+                if isinstance(event, TextDeltaEvent):
+                    response_text += event.delta
+                elif isinstance(event, ErrorEvent):
+                    error_messages.append(event.message)
+        except Exception as execution_error:
+            endpoint_url = getattr(client._config, "base_url", "unknown endpoint")
+            error_messages.append(f"LLM endpoint at '{endpoint_url}' unreachable: {execution_error}")
 
-    if errors:
+        if error_messages:
+            return SubagentResponse(
+                agent=request.agent,
+                task_id=request.task_id,
+                status="failure",
+                result={"error": "; ".join(error_messages)},
+            )
+
+        if not response_text.strip():
+            return SubagentResponse(
+                agent=request.agent,
+                task_id=request.task_id,
+                status="failure",
+                result={"error": "No response from LLM"},
+            )
+
+        # Parse JSON response - try multiple strategies
+        plan = _extract_json(response_text)
+        if plan is None:
+            # Fallback: wrap raw text as single-step plan
+            plan = {
+                "steps": [{"order": 1, "agent": "code-writer", "instruction": response_text[:500]}],
+                "parallel_groups": [[1]],
+                "estimated_cost": "medium",
+                "risks": ["Response was not valid JSON"],
+            }
+
         return SubagentResponse(
             agent=request.agent,
             task_id=request.task_id,
-            status="failure",
-            result={"error": "; ".join(errors)},
+            status="success",
+            result=plan,
         )
 
-    if not response_text.strip():
-        return SubagentResponse(
-            agent=request.agent,
-            task_id=request.task_id,
-            status="failure",
-            result={"error": "No response from LLM"},
-        )
 
-    # Parse JSON response - try multiple strategies
-    plan = _extract_json(response_text)
-    if plan is None:
-        # Fallback: wrap raw text as single-step plan
-        plan = {
-            "steps": [{"order": 1, "agent": "code-writer", "instruction": response_text[:500]}],
-            "parallel_groups": [[1]],
-            "estimated_cost": "medium",
-            "risks": ["Response was not valid JSON"],
-        }
-
-    return SubagentResponse(
-        agent=request.agent,
-        task_id=request.task_id,
-        status="success",
-        result=plan,
-    )
+async def execute(request: SubagentRequest) -> SubagentResponse:
+    """Execute planner task using default handler instance."""
+    handler = PlannerHandler()
+    return await handler.execute(request)

@@ -325,9 +325,7 @@ def _parse_responses_api_chunk(
                 UsageEvent(
                     prompt_tokens=usageDetails.get("input_tokens", 0),
                     completion_tokens=usageDetails.get("output_tokens", 0),
-                    cached_tokens=_extract_cached_tokens(
-                        usageDetails, usageDetails.get("input_tokens_details") or {}
-                    ),
+                    cached_tokens=_extract_cached_tokens(usageDetails, usageDetails.get("input_tokens_details") or {}),
                 )
             )
         outputs = responseDetails.get("output", [])
@@ -630,9 +628,7 @@ def parse_sse_event(
                 events.append(ToolCallDeltaEvent(index=toolCallIndex, arguments_delta=argumentsDelta))
 
         # Finish handling
-        events, updatedCalls, parsingState = _handle_finish_reason(
-            finishReason, parsingState, updatedCalls, events
-        )
+        events, updatedCalls, parsingState = _handle_finish_reason(finishReason, parsingState, updatedCalls, events)
 
     # Usage
     events.extend(_extract_usage(chunk))

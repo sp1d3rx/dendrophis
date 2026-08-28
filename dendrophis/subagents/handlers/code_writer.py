@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -21,46 +22,49 @@ logger = logging.getLogger(__name__)
 # System prompt for the CodeWriter agent
 # ---------------------------------------------------------------------------
 
-CODE_WRITER_SYSTEM_PROMPT = """You are Dendrophis CodeWriter, an agentic code worker.
+CODE_WRITER_SYSTEM_PROMPT = """You are Dendrophis CodeWriter, an expert autonomous coding subagent.
 
-Your job: implement changes precisely by calling tools. You operate in a loop:
-1. Call tools (read_file, list_dir, edit_function, write_file, bash) to gather context and make changes
-2. Receive tool results
-3. Decide next action based on results
-4. Repeat until the task is complete
-5. Return a summary when done
+Your goal is to inspect code, implement requested changes surgically, verify your work, and provide a clear summary.
 
-Rules:
-- Investigate first: use list_dir and read_file to understand the codebase before editing
-- Surgical edits: use edit_function for Python functions, write_file for new files, edit for text replacements
-- Verify after editing: read_file to confirm changes took effect
-- Run ruff check and ruff format via bash after any Python edits
-- If a tool call fails, read the error and retry with corrections
-- **If you lack sufficient information to proceed, call the `clarify` tool** — do not guess or hallucinate
-- Make minimal, targeted changes. Change only what is needed.
-- Follow existing code style and patterns in the files you read
-- Python Coding Style:
-  * Write clean, elegant, readable, and pythonic code in the style of Raymond Hettinger.
-    Prioritize simplicity, clarity, and PEP 8 compliance.
-  * Use built-ins and standard library modules effectively (e.g. `collections`, `itertools`,
-    generator expressions).
-  * **Strict Variable Naming Rule**: DO NOT use any single-letter variable names under any
-    circumstances (including loops, list comprehensions, exceptions, etc.). All variables
-    must be named appropriately, with the name chosen carefully. For example, use `datum`
-    for singular, `data` for plural, `index` for list iteration, etc.
+### Execution Workflow:
+1. **Explore & Understand First**:
+   - Inspect files before modifying them. Use `read_file(file_path, offset, limit)` to read existing content.
+   - Use `glob(pattern)` or `list_dir(path)` to locate files if you are unsure of their exact location.
+   - Use `ripgrep(pattern)` to search for function definitions, variable names, or references.
 
-Tool usage:
-- list_dir(path=".") — explore directory structure
-- read_file(file_path, offset=1, limit=2000) — read file contents
-- edit_function(file_path, function_name, new_source) — replace a Python function
-- write_file(file_path, content) — create or overwrite a file
-- edit(file_path, old_string, new_string) — text replacement in any file
-- glob(pattern, path=".") — find files by pattern
-- ripgrep(pattern, path, include) — search file contents
-- bash(command, description) — run shell commands (use for ruff, pytest, etc.)
-- clarify(questions) — ask the orchestrator for clarification (use when stuck or missing info)
+2. **Make Targeted, Surgical Edits**:
+   - For replacing exact text in existing files: use `edit(file_path, old_string, new_string)`.
+     * Provide 3 to 5 lines of surrounding context in `old_string` to ensure a unique match.
+     * DO NOT use escaped representations like `\\n` or `\\t` unless you are searching for literal backslashes.
+       Use real newlines.
+   - For multiple search/replace edits in one file: use `patch(file_path, edits=[...])`.
+   - For replacing whole Python functions: use `edit_function(file_path, function_name, new_source)`.
+   - For creating new files: use `write_file(file_path, content)` or `write(file_path, content)`.
+   - For appending to the end of files: use `append(file_path, content)`.
 
-When you are done, output a final summary message describing what you changed.
+3. **Verify Your Work**:
+   - After editing, verify your changes by reading the modified section with `read_file`.
+   - Run tests or linting with `bash` (e.g. `pytest tests/...` or `ruff check file.py`) when relevant.
+
+4. **Error Recovery & Clarification**:
+   - If a tool fails (e.g. "old_string not found" or "Ambiguous edit"), do NOT repeat the same tool call.
+     Re-read the file with `read_file`, inspect the actual file contents, adjust your context, and retry.
+   - If the task requirements are contradictory, fundamentally ambiguous, or missing critical specifications
+     that cannot be deduced from the codebase, call `clarify(questions=[...])`.
+
+5. **Python Coding Standards (Raymond Hettinger Principles)**:
+   - **Concept Chunking**: Structure logic into cohesive, bite-sized conceptual chunks at a single level of abstraction.
+     Avoid monolithic multi-responsibility functions or deeply nested loops. Extract helper functions and predicates.
+   - **No Silent Exception Swallowing**: NEVER swallow exceptions silently (`except: pass` or empty catch blocks).
+     Always log exceptions with descriptive context (`logger.exception` or `logger.error(..., exc_info=True)`).
+   - Write clean, readable, Pythonic code using built-ins, standard library tools, and clean iterators.
+   - STRICT VARIABLE NAMING RULE: DO NOT use any single-letter variable names under any circumstances
+     (including loop counters, exceptions, comprehensions, or helper variables). Use descriptive names like
+     `index`, `datum`, `item`, `file_path`, `exception_error`, `line_number`, etc.
+
+6. **Completion**:
+   - When all changes are implemented and verified, finish the task by returning a concise text explanation
+     of what was changed, without calling any more tools.
 """
 
 
@@ -99,7 +103,7 @@ class CodeWriterHandler:
         tool_registry: ToolRegistry | None = None,
         tool_executor: ToolExecutor | None = None,
         config: DendrophisConfig | None = None,
-        model: str = "qwen/qwen3-coder:latest",
+        model: str | None = None,
     ) -> None:
         """Initialize with dependency injection.
 
@@ -108,9 +112,10 @@ class CodeWriterHandler:
             tool_registry: Tool registry for available tools. If None, created lazily.
             tool_executor: Tool executor for executing tool calls. If None, created lazily.
             config: Dendrophis configuration. If None, loaded lazily.
-            model: Model name for code-writer (used if no llm_client provided).
+            model: Optional model name override for code-writer.
         """
         self._llm_client = llm_client
+        self._dedicated_llm_client: LLMClient | None = None
         self._tool_registry = tool_registry
         self._tool_executor = tool_executor
         self._config = config
@@ -119,7 +124,13 @@ class CodeWriterHandler:
 
     @property
     def llm(self) -> LLMClient:
-        """Lazily create LLM client if not injected."""
+        """Lazily create LLM client if not injected, or use dedicated client if code_writer_model is configured."""
+        if self._config is not None and self._config.llm.code_writer_model:
+            if self._dedicated_llm_client is None:
+                llm_config = self._get_llm_config()
+                self._dedicated_llm_client = LLMClient(llm_config)
+            return self._dedicated_llm_client
+
         if self._llm_client is not None:
             return self._llm_client
 
@@ -128,15 +139,15 @@ class CodeWriterHandler:
             self._llm_client = LLMClient(llm_config)
             return self._llm_client
 
-        # Last resort: create with hardcoded defaults
         from dendrophis.config.loader import ConfigLoader
 
         config_loader = ConfigLoader.load()
         cfg = config_loader.config
         from dendrophis.config.schema import LLMConfig
 
+        model_name = self._model_override or cfg.llm.code_writer_model or cfg.llm.model
         llm_config = LLMConfig(
-            model=self._model_override,
+            model=model_name,
             api_key=cfg.llm.api_key,
             base_url=cfg.llm.base_url,
             temperature=0.1,
@@ -150,7 +161,6 @@ class CodeWriterHandler:
     def tool_registry(self) -> ToolRegistry:
         """Lazily create tool registry if not injected."""
         if self._tool_registry is None:
-            # Create a minimal registry with only agent-friendly tools
             self._tool_registry = ToolRegistry()
             try:
                 from dendrophis.tools.builtins.filesystem import get_agent_tools
@@ -201,7 +211,7 @@ class CodeWriterHandler:
     @property
     def tool_executor(self) -> ToolExecutor:
         """Return the tool executor."""
-        _ = self.tool_registry  # Ensures executor is created
+        _ = self.tool_registry
         return self._tool_executor
 
     @property
@@ -216,9 +226,9 @@ class CodeWriterHandler:
 
         from dendrophis.config.schema import LLMConfig
 
-        model = self._config.llm.code_writer_model or self._model_override
+        model_name = self._config.llm.code_writer_model or self._model_override or self._config.llm.model
         return LLMConfig(
-            model=model,
+            model=model_name,
             api_key=self._config.llm.api_key,
             base_url=self._config.llm.base_url,
             temperature=0.1,
@@ -229,28 +239,18 @@ class CodeWriterHandler:
         )
 
     async def execute(self, request: SubagentRequest) -> SubagentResponse:
-        """Execute code-writing task using an agentic tool-based loop.
-
-        This replaces the old text-parsing approach. The CodeWriter now:
-        1. Creates its own isolated context with the system prompt
-        2. Calls the LLM with tool definitions
-        3. Executes any tool calls returned by the LLM
-        4. Feeds tool results back to the LLM
-        5. Repeats until the task is complete or max iterations reached
-
-        Returns a structured result with changes made and any blockers.
-        """
+        """Execute code-writing task using an agentic tool-based loop."""
         task = request.payload.get("task", "")
         files = request.payload.get("files", [])
         context = request.context
 
-        # Build isolated context
+        # Build isolated context with system prompt and consolidated task details
         context_manager = self._build_isolated_context(task, files, context)
 
         changes: list[dict[str, Any]] = []
-        blockers: list[str] = []
-        max_iterations = 20  # Prevent infinite loops
+        max_iterations = 20
         iteration = 0
+        final_summary: str = ""
 
         try:
             while iteration < max_iterations:
@@ -260,25 +260,25 @@ class CodeWriterHandler:
                 turn = await self._call_llm(context_manager)
 
                 if not turn.tool_calls:
-                    # No tool calls — LLM is done
-                    self._logger.debug(f"[CODE-WRITER] Done after {iteration} iterations")
-                    blockers = []  # Clear blockers since LLM decided it is successfully done
+                    # No tool calls — LLM completed the task
+                    self._logger.debug(f"[CODE-WRITER] Completed in {iteration} iteration(s)")
+                    final_summary = turn.text or "Task completed successfully."
                     break
 
                 # Execute tool calls
                 tool_results = await self._execute_tool_calls(turn.tool_calls, context_manager)
 
                 # Check if the code-writer called the clarify tool
-                clarify_results = [result for result in tool_results if result.name == "clarify"]
+                clarify_results = [tool_result for tool_result in tool_results if tool_result.name == "clarify"]
                 if clarify_results:
-                    questions = []
-                    for result in clarify_results:
+                    questions: list[str] = []
+                    for tool_result in clarify_results:
                         try:
-                            content = json.loads(result.content)
-                            questions.extend(content.get("questions", []))
-                        except (json.JSONDecodeError, AttributeError):
+                            clarify_payload = json.loads(tool_result.content)
+                            questions.extend(clarify_payload.get("questions", []))
+                        except (json.JSONDecodeError, AttributeError, TypeError):
                             pass
-                    self._logger.info(f"[CODE-WRITER] Clarification requested: {len(questions)} questions")
+                    self._logger.info(f"[CODE-WRITER] Clarification requested: {len(questions)} question(s)")
                     return SubagentResponse(
                         agent="code-writer",
                         task_id=request.task_id,
@@ -290,28 +290,20 @@ class CodeWriterHandler:
                     )
 
                 # Track changes from successful tool executions
-                changes.extend(info for result in tool_results if (info := self._extract_change_info(result)))
+                for tool_result in tool_results:
+                    change_information = self._extract_change_info(tool_result)
+                    if change_information is not None:
+                        changes.append(change_information)
 
-                # Check for blockers (failed tool calls)
-                blockers.extend(
-                    f"Tool {result.name} failed: {result.content[:200]}"
-                    for result in tool_results
-                    if self._is_tool_error(result)
-                )
-
-            if iteration >= max_iterations:
+            if iteration >= max_iterations and not final_summary:
                 self._logger.warning(f"[CODE-WRITER] Hit max iterations ({max_iterations})")
-                blockers.append(f"Hit maximum iteration limit ({max_iterations}). Task may be incomplete.")
-
-            if blockers:
-                self._logger.warning(f"[CODE-WRITER] Blockers: {blockers}")
                 return SubagentResponse(
                     agent="code-writer",
                     task_id=request.task_id,
-                    status="needs_clarification",
+                    status="failure",
                     result={
                         "changes": changes,
-                        "blockers": blockers,
+                        "error": f"Hit maximum iteration limit ({max_iterations}). Task may be incomplete.",
                     },
                 )
 
@@ -321,9 +313,9 @@ class CodeWriterHandler:
                 status="success",
                 result={
                     "changes": changes,
-                    "diff_summary": f"Modified {len(changes)} file(s)",
+                    "summary": final_summary,
+                    "diff_summary": f"Modified {len(changes)} file(s)" if changes else "No files modified",
                     "verification": {"syntax_ok": True, "tests_status": "skipped"},
-                    "blockers": [],
                 },
             )
 
@@ -353,41 +345,46 @@ class CodeWriterHandler:
             )
 
     def _build_isolated_context(self, task: str, files: list[str], context: dict[str, Any]) -> ContextManager:
-        """Build an isolated context for the CodeWriter agent."""
-        # Create a minimal config for the isolated context
-        from dendrophis.config.schema import DendrophisConfig
+        """Build an isolated context for the CodeWriter agent with system prompt and task content."""
+        configuration = copy.deepcopy(self._config) if self._config else DendrophisConfig()
+        configuration.system_prompt = CODE_WRITER_SYSTEM_PROMPT
+        context_manager = ContextManager(configuration)
 
-        cfg = self._config if self._config else DendrophisConfig()
-        cm = ContextManager(cfg)
+        prompt_sections: list[str] = []
 
-        # Add files to context if provided
+        # Add referenced files if provided
         if files:
-            file_parts = []
+            file_sections: list[str] = []
             for file_path in files:
                 path = Path(file_path)
                 if path.exists():
                     try:
-                        content = path.read_text(encoding="utf-8")[:5000]  # Limit file size
-                        file_parts.append(f"\n--- {file_path} ---\n{content}...")
+                        file_content = path.read_text(encoding="utf-8")[:5000]
+                        file_sections.append(f"--- {file_path} ---\n{file_content}\n--- end {file_path} ---")
                     except Exception as read_error:
-                        file_parts.append(f"\n--- {file_path} ---\n[Error reading: {read_error}]")
+                        file_sections.append(f"--- {file_path} ---\n[Error reading file: {read_error}]")
+                else:
+                    file_sections.append(f"--- {file_path} ---\n[File does not exist yet]")
 
-            if file_parts:
-                cm.messages.append({"role": "user", "content": "Files provided:\n" + "\n".join(file_parts)})
+            if file_sections:
+                prompt_sections.append("Referenced Files:\n" + "\n\n".join(file_sections))
 
-        # Add task description
-        cm.messages.append({"role": "user", "content": f"Task: {task}"})
-
-        # Add context constraints if provided
+        # Add contextual patterns and constraints if provided
         if context.get("patterns"):
-            cm.messages.append({"role": "user", "content": "Patterns to follow:\n" + "\n".join(context["patterns"])})
+            patterns_text = "\n".join(f"- {pattern}" for pattern in context["patterns"])
+            prompt_sections.append(f"Patterns to follow:\n{patterns_text}")
         if context.get("constraints"):
-            cm.messages.append({"role": "user", "content": "Constraints:\n" + "\n".join(context["constraints"])})
+            constraints_text = "\n".join(f"- {constraint}" for constraint in context["constraints"])
+            prompt_sections.append(f"Constraints:\n{constraints_text}")
 
-        return cm
+        # Add primary task instruction
+        prompt_sections.append(f"Task Instruction:\n{task}")
+
+        context_manager.append_user("\n\n".join(prompt_sections))
+        return context_manager
 
     async def _call_llm(self, context_manager: ContextManager) -> TurnResult:
-        """Call the LLM and return the turn result."""
+        """Call the LLM and return the turn result, appending proper tool_calls payload to context."""
         tools_schema = self.tool_registry.all_schema()
 
         try:
@@ -398,8 +395,15 @@ class CodeWriterHandler:
         except Exception as llm_error:
             raise LLMCallError(f"LLM call failed: {llm_error}") from llm_error
 
+        # Format assistant tool calls payload for context storage
+        tool_calls_payload = None
+        if turn.tool_calls:
+            from dendrophis.session.tools import tool_call_to_payload
+
+            tool_calls_payload = [tool_call_to_payload(tool_call) for tool_call in turn.tool_calls]
+
         # Append assistant response to context
-        context_manager.append_assistant(turn.text, None, turn.reasoning)
+        context_manager.append_assistant(turn.text, tool_calls_payload, turn.reasoning)
 
         return turn
 
@@ -411,19 +415,10 @@ class CodeWriterHandler:
         for tool_call in tool_calls:
             try:
                 result = await executor.execute(tool_call)
-
-                # Append result to context
                 context_manager.append_tool_result(result.tool_call_id, result.name, result.content)
-
-                # Emit tool result event if we have an event bus (for logging/UI)
-                # Note: CodeWriter doesn't have direct event bus access, so we skip UI events
-
                 results.append(result)
 
             except Exception as execution_error:
-                # Create error result
-                import json
-
                 error_content = json.dumps({"error": f"Tool execution failed: {execution_error}"})
                 error_result = type(
                     "FallbackToolResult",
@@ -435,55 +430,54 @@ class CodeWriterHandler:
                     },
                 )()
                 results.append(error_result)
-
-                # Append error to context for self-correction
                 context_manager.append_tool_result(tool_call.id, tool_call.name, error_content)
 
         return results
 
-    def _extract_summary(self, text: str) -> str:
-        """Extract a summary from the LLM's final text response."""
-        # Look for common summary patterns
-        if "Summary:" in text:
-            return text[text.index("Summary:") + len("Summary:") :].strip()
-        if "summary:" in text.lower():
-            idx = text.lower().index("summary:")
-            return text[idx + len("summary:") :].strip()
-        return text[:500] if text else "No summary provided"
-
     def _extract_change_info(self, result: Any) -> dict[str, Any] | None:
-        """Extract change information from a tool result."""
+        """Extract structured change information from a tool result."""
         try:
             content = json.loads(result.content)
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, AttributeError, TypeError):
             return None
 
-        if not isinstance(content, dict):
+        if not isinstance(content, dict) or not content.get("success"):
             return None
 
-        # Track successful writes and edits
-        if content.get("success") and result.name in ("write_file", "write", "edit_function", "replace_function"):
+        tool_name = getattr(result, "name", "")
+        file_path = content.get("file", "")
+
+        if tool_name in ("write_file", "write"):
             return {
-                "action": "edited" if result.name in ("edit_function", "replace_function") else "created",
-                "file": content.get("file", ""),
-                "function": content.get("function", content.get("replaced", "")),
-                "description": content.get("file", ""),
+                "action": "created" if content.get("created", False) else "written",
+                "file": file_path,
+                "description": f"Wrote {file_path}",
             }
 
-        if content.get("success") and result.name == "edit":
+        if tool_name in ("edit", "edit_function", "replace_function"):
             return {
                 "action": "edited",
-                "file": content.get("file", ""),
-                "description": f"Modified {content.get('file', '')}",
+                "file": file_path,
+                "function": content.get("function", content.get("replaced", "")),
+                "description": f"Edited {file_path}",
+            }
+
+        if tool_name in ("patch", "append"):
+            return {
+                "action": "patched" if tool_name == "patch" else "appended",
+                "file": file_path,
+                "description": f"{tool_name.capitalize()} applied to {file_path}",
             }
 
         return None
 
     @staticmethod
     def _is_tool_error(result: Any) -> bool:
-        """Check if a tool result indicates an error."""
+        """Check if a tool result indicates an error without false positives on raw text."""
         try:
             content = json.loads(result.content)
-            return isinstance(content, dict) and "error" in content
-        except (json.JSONDecodeError, AttributeError):
-            return "error" in str(result.content).lower()
+            if isinstance(content, dict):
+                return "error" in content
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+        return False

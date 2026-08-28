@@ -41,22 +41,48 @@ class SkillManager:
 
     def _parse_skill(self, content: str) -> Skill | None:
         """Extract name, description and aliases from Markdown frontmatter."""
-        fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
-        if not fm_match:
+        frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        if not frontmatter_match:
             return None
 
-        fm = fm_match.group(1)
-        name = self._extract_frontmatter_value(fm, "name")
-        if not name:
+        frontmatter_text = frontmatter_match.group(1)
+        try:
+            from ruamel.yaml import YAML
+
+            yaml_parser = YAML(typ="safe")
+            frontmatter_data = yaml_parser.load(frontmatter_text)
+            if isinstance(frontmatter_data, dict):
+                skill_name = str(frontmatter_data.get("name", "")).strip()
+                if not skill_name:
+                    return None
+                skill_description = str(frontmatter_data.get("description", "")).strip()
+                raw_aliases = frontmatter_data.get("aliases", ())
+                if isinstance(raw_aliases, list):
+                    aliases = tuple(str(alias_item).strip() for alias_item in raw_aliases if str(alias_item).strip())
+                elif isinstance(raw_aliases, str):
+                    aliases = (raw_aliases.strip(),)
+                else:
+                    aliases = ()
+                return Skill(
+                    name=skill_name,
+                    description=skill_description,
+                    raw_content=content,
+                    aliases=aliases,
+                )
+        except Exception:
+            pass
+
+        skill_name = self._extract_frontmatter_value(frontmatter_text, "name")
+        if not skill_name:
             return None
 
-        description = self._extract_frontmatter_value(fm, "description")
-        if description is None:
-            description = ""
-        description = description.replace("\\n", "\n")
+        skill_description = self._extract_frontmatter_value(frontmatter_text, "description")
+        if skill_description is None:
+            skill_description = ""
+        skill_description = skill_description.replace("\\n", "\n")
 
-        aliases = self._extract_aliases(fm)
-        return Skill(name=name, description=description, raw_content=content, aliases=aliases)
+        aliases = self._extract_aliases(frontmatter_text)
+        return Skill(name=skill_name, description=skill_description, raw_content=content, aliases=aliases)
 
     def _extract_frontmatter_value(self, fm: str, key: str) -> str | None:
         """Extract a single-line frontmatter value for ``key``."""

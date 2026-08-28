@@ -13,7 +13,7 @@ from dendrophis.events.types import (
     EditProposalEvent,
 )
 from dendrophis.tools.builtins.filesystem import EditTool
-from dendrophis.tools.builtins.filesystem.utils import run_auto_lint
+from dendrophis.tools.builtins.filesystem.utils import try_unescape
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -33,6 +33,13 @@ class InteractiveEditTool(InteractiveBaseTool):
 
     async def execute(self, file_path: str, old_string: str, new_string: str) -> dict[str, Any]:
         try:
+            if self.silent:
+                return await self._base_tool.execute(
+                    file_path=file_path,
+                    old_string=old_string,
+                    new_string=new_string,
+                )
+
             path = Path(file_path)
             if not (path.exists() and path.is_file()):
                 return {"error": f"Path is not a valid file: {file_path}"}
@@ -40,10 +47,15 @@ class InteractiveEditTool(InteractiveBaseTool):
             content = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
 
             if old_string not in content:
-                return {
-                    "error": "old_string not found in file",
-                    "hint": "Text must match exactly",
-                }
+                unescaped_old = try_unescape(old_string)
+                if unescaped_old != old_string and unescaped_old in content:
+                    old_string = unescaped_old
+                    new_string = try_unescape(new_string)
+                else:
+                    return {
+                        "error": "old_string not found in file",
+                        "hint": "Text must match exactly, using raw characters not escape sequences",
+                    }
 
             count = content.count(old_string)
             if count > 1:
@@ -67,28 +79,6 @@ class InteractiveEditTool(InteractiveBaseTool):
             if not diff_text:
                 return {"success": True, "message": "No changes detected."}
 
-            added = sum(1 for diff_line in diff_lines if diff_line.startswith("+") and not diff_line.startswith("+++"))
-            removed = sum(
-                1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
-            )
-
-            if self.silent:
-                # Auto-approved: apply immediately, return diff stats
-                await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
-                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
-                result = {
-                    "success": True,
-                    "file": str(path),
-                    "lines_added": added,
-                    "lines_removed": removed,
-                    "changes": f"+{added}/-{removed}",
-                    "diff": diff_text,
-                }
-                if lint_errors:
-                    result["lint_errors"] = lint_errors
-                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
-                return result
-
             # Propose via event bus and wait for human approval
             request_id = str(uuid.uuid4())
             proposal_event = EditProposalEvent(
@@ -104,19 +94,12 @@ class InteractiveEditTool(InteractiveBaseTool):
                 return {"error": "Edit approval timed out after 5 minutes"}
 
             if approved:
-                await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
-                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
-                result = {
-                    "success": True,
-                    "file": str(path),
-                    "replaced": (old_string[:100] + "..." if len(old_string) > 100 else old_string),
-                    "changes": f"+{added}/-{removed}",
-                    "diff": diff_text,
-                }
-                if lint_errors:
-                    result["lint_errors"] = lint_errors
-                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
-                return result
+                return await self._base_tool.execute(
+                    file_path=file_path,
+                    old_string=old_string,
+                    new_string=new_string,
+                )
+
             return {"error": "Edit denied by user"}
 
         except Exception as exception_error:

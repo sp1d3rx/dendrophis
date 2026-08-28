@@ -224,6 +224,3 @@ def test_render_caching_and_deterministic_filenames() -> None:
 
     assert data_uri_first is not None
     assert data_uri_first == data_uri_second
-
-
-

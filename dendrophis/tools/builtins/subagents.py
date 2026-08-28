@@ -21,7 +21,12 @@ class InvokeSubagentTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Invoke a subagent (researcher, planner, etc.) to perform a task. Returns complete result."
+        return (
+            "Invoke a specialized subagent (researcher, planner, code-writer, code-reviewer, test-runner, debugger). "
+            "Supported context keys: 'diff' (unified diff string for code-reviewer), 'files' (file paths list), "
+            "'patterns' (search regexes list), 'path' (scoping directory), 'include' (file glob filter), "
+            "'sources' (['files', 'memory', 'codebase']), and 'depth' ('quick' | 'thorough')."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -39,7 +44,11 @@ class InvokeSubagentTool(BaseTool):
                 },
                 "context": {
                     "type": "object",
-                    "description": "Additional context (file paths, memory tags, etc.)",
+                    "description": (
+                        "Additional context parameters: 'diff' (unified diff for review), 'files' (file list), "
+                        "'patterns' (regex list), 'path' (directory scope), 'include' (glob pattern), "
+                        "and 'depth' ('quick' | 'thorough')."
+                    ),
                 },
             },
             "required": ["agent", "task"],
@@ -94,6 +103,15 @@ class InvokeSubagentTool(BaseTool):
                 "query": task,
                 "sources": context.get("sources", ["files", "memory", "codebase"]),
                 "depth": context.get("depth", "quick"),
+                "context": context,
+            }
+        if agent == "code-reviewer":
+            return {
+                "task": task,
+                "diff": context.get("diff", ""),
+                "files": context.get("files") or context.get("file_paths", []),
+                "changes": context.get("changes", []),
+                "focus": context.get("focus", ["correctness", "robustness", "maintainability", "pythonic_style"]),
                 "context": context,
             }
         # Default: pass task through

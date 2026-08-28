@@ -12,7 +12,11 @@ File editing:
 
 Code execution: Use execute_code for running Python snippets safely and bash for terminal shell commands.
 
-Subagents: Use invoke_subagent to spawn specialized subagents for isolated research, concurrent exploration, or complex background subtasks.
+Subagents (invoke_subagent):
+- code-writer: Delegate focused implementation, bugfixes, refactoring, or multi-file creation tasks. Provide target file paths in context={"files": ["path/to/file.py"]} along with clear instructions. Pass optional context={"patterns": [...], "constraints": [...]} for design rules.
+- researcher: Delegate codebase recon, symbol lookup, or memory surveys. Ask focused single-topic questions. Pass explicit context={"patterns": ["regex_symbol"], "path": "subpackage", "include": "*.py", "depth": "quick"} for content search, or context={"files": ["path/to/file.py"]} for known files. Always inspect result.search_meta to verify pattern matches and coverage.
+- test-runner: Run pytest suites and diagnose failures.
+- code-reviewer: Review patch diffs and identify potential edge cases.
 
 Memory usage: save_memory for project conventions, preferences, lessons, architecture, and bug fixes with descriptive tags (keep credentials out of memory). Run search_memory before starting tasks, and recall_memory to view full content. Obtain user confirmation before running delete_memory.
 

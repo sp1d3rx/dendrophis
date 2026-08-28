@@ -353,6 +353,11 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.config:
+        import os
+
+        os.environ["DENDROPHIS_CONFIG"] = str(args.config)
+
     # Handle calibration/list commands first (they don't need full UI)
     if args.calibrate:
         _cmd_calibrate(args.calibrate, config_path=args.config, force=args.force)

@@ -62,11 +62,20 @@ class MainScreenAutocomplete:
 
         commands.append(("/set", "Override the last assistant response"))
 
-        for name, skill in self._session._skill_manager._all_skills.items():
-            short_description = skill.description.splitlines()[0][:60]
-            commands.append((f"/{name}", short_description))
-        matched = [(cmd, desc) for cmd, desc in commands if cmd.startswith("/" + prefix)]
-        suggestions = [f"{cmd}  \u2014 {desc}" for cmd, desc in matched]
+        if hasattr(self._session, "_skill_manager") and self._session._skill_manager:
+            for skill_name, skill_instance in self._session._skill_manager._all_skills.items():
+                description_lines = skill_instance.description.splitlines()
+                first_line = description_lines[0] if description_lines else ""
+                short_description = " ".join(first_line.split())[:60]
+                commands.append((f"/{skill_name}", short_description))
+        matched_commands = [
+            (command_name, command_description)
+            for command_name, command_description in commands
+            if command_name.startswith("/" + prefix)
+        ]
+        suggestions = [
+            f"{command_name}  \u2014 {command_description}" for command_name, command_description in matched_commands
+        ]
         autocomplete_widget.set_suggestions(suggestions, kind="command")
 
     def _complete_files(self, autocomplete_widget: FileAutocomplete, prefix: str) -> None:

@@ -115,8 +115,7 @@ async def test_interactive_patch_tool_silent(local_tmp_dir) -> None:
     )
 
     assert execution_result.get("success") is True
-    assert execution_result.get("lines_added") == 1
-    assert execution_result.get("lines_removed") == 1
+    assert execution_result.get("applied_edits_count") == 1
 
     updated_content = sample_file_path.read_text(encoding="utf-8")
     assert "first line updated" in updated_content
@@ -124,11 +123,13 @@ async def test_interactive_patch_tool_silent(local_tmp_dir) -> None:
 
 def test_dynamic_discovery_and_di() -> None:
     # Discover all tool classes
-    discovered_classes = discover_tool_classes([
-        "dendrophis.tools.builtins",
-        "dendrophis.tools.builtins.filesystem",
-        "dendrophis.tools.interactive",
-    ])
+    discovered_classes = discover_tool_classes(
+        [
+            "dendrophis.tools.builtins",
+            "dendrophis.tools.builtins.filesystem",
+            "dendrophis.tools.interactive",
+        ]
+    )
 
     # Ensure PatchTool and InteractivePatchTool are discovered
     discovered_names = {cls.__name__ for cls in discovered_classes}
@@ -155,9 +156,11 @@ def test_dynamic_discovery_and_di() -> None:
 
     # SaveMemoryTool should resolve successfully when memory_store is provided (as string annotation)
     from dendrophis.memory import MemoryStore
+
     class DummyMemoryStore(MemoryStore):
         def __init__(self) -> None:
             pass
+
     dummy_store = DummyMemoryStore()
     memory_dependencies = {
         "memory_store": dummy_store,
@@ -186,8 +189,7 @@ async def test_patch_tool_auto_lint(local_tmp_dir) -> None:
 
     assert execution_result.get("success") is True
 
-    # Verify formatting and unused import were fixed by Ruff auto-linting
+    # Verify formatting is fixed and unused import is preserved
     updated_content = sample_file_path.read_text(encoding="utf-8")
-    assert "import os" not in updated_content
+    assert "import os" in updated_content
     assert "x = 2" in updated_content
-

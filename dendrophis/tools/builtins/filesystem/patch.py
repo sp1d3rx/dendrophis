@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint, try_unescape
 from dendrophis.tools.names import ToolName
 
 
@@ -70,13 +70,6 @@ class PatchTool(BaseTool):
 
             content = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
 
-            # Try to unescape doubly-escaped sequences (common LLM mistake: \\n instead of \n)
-            def _try_unescape(string_value: str) -> str:
-                try:
-                    return string_value.encode("raw_unicode_escape").decode("unicode_escape")
-                except Exception:
-                    return string_value.replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")
-
             new_content = content
             applied_edits = []
 
@@ -85,10 +78,10 @@ class PatchTool(BaseTool):
                 replace_string = edit.get("replace", "")
 
                 if search_string not in new_content:
-                    unescaped_search = _try_unescape(search_string)
+                    unescaped_search = try_unescape(search_string)
                     if unescaped_search != search_string and unescaped_search in new_content:
                         search_string = unescaped_search
-                        replace_string = _try_unescape(replace_string)
+                        replace_string = try_unescape(replace_string)
                     else:
                         return {
                             "error": f"Search block at edit_index {edit_index} not found in file",

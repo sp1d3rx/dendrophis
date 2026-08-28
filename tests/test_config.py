@@ -26,12 +26,7 @@ def test_load_explicit_env_missing_config_raises_file_not_found(
 
 def test_load_valid_config(tmp_path: Path) -> None:
     config_file = tmp_path / "custom_config.yaml"
-    config_file.write_text(
-        "llm:\n"
-        "  provider: openai\n"
-        "  model: gpt-4o\n"
-        "  api_key: test-key\n"
-    )
+    config_file.write_text("llm:\n  provider: openai\n  model: gpt-4o\n  api_key: test-key\n")
     result = ConfigLoader.load(config_path=str(config_file))
     assert result.config.llm.model == "gpt-4o"
     assert result.config.llm.api_key == "test-key"

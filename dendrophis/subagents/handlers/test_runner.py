@@ -1,14 +1,21 @@
-"""Test-runner subagent handler — execute tests, analyze failures."""
+"""Test-runner subagent handler — execute tests, analyze failures, and diagnose root causes."""
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import re
+import shutil
 from typing import Any
 
+from dendrophis.config.schema import DendrophisConfig
+from dendrophis.events import TextDeltaEvent
+from dendrophis.llm.client import LLMClient
 from dendrophis.subagents.messages import SubagentRequest, SubagentResponse
 from dendrophis.tools.builtins.filesystem import BashTool, ReadTool
+
+logger = logging.getLogger(__name__)
 
 
 class TestRunnerHandler:
@@ -20,16 +27,41 @@ class TestRunnerHandler:
         self,
         bash_tool: BashTool | None = None,
         read_tool: ReadTool | None = None,
+        llm_client: LLMClient | None = None,
+        config: DendrophisConfig | None = None,
     ) -> None:
         self.bash_tool = bash_tool or BashTool()
         self.read_tool = read_tool or ReadTool()
+        self._llm_client = llm_client
+        self._config = config
+        self._logger = logger
+
+    async def __call__(self, request: SubagentRequest) -> SubagentResponse:
+        return await self.execute(request)
+
+    @property
+    def llm(self) -> LLMClient | None:
+        """Lazily obtain or create LLM client."""
+        if self._llm_client is not None:
+            return self._llm_client
+
+        if self._config is not None:
+            return LLMClient(self._config.llm)
+
+        try:
+            from dendrophis.config.loader import ConfigLoader
+
+            config_loader = ConfigLoader.load()
+            return LLMClient(config_loader.config.llm)
+        except Exception:
+            return None
 
     async def execute(self, request: SubagentRequest) -> SubagentResponse:
         """Execute test task."""
         command = request.payload.get("command", "pytest")
-        target = request.payload.get("target", ".")
+        target = request.payload.get("target") or request.payload.get("task") or "."
         options = request.payload.get("options", {})
-        context = request.context
+        context = request.context or {}
 
         try:
             # Build test command
@@ -46,9 +78,9 @@ class TestRunnerHandler:
             output = result.get("stdout", "") + "\n" + result.get("stderr", "")
             returncode = result.get("returncode", 1)
 
-            if command == "pytest":
+            if "pytest" in command:
                 parsed = self._parse_pytest_output(output, returncode)
-            elif command == "unittest":
+            elif "unittest" in command:
                 parsed = self._parse_unittest_output(output, returncode)
             else:
                 parsed = self._parse_generic_output(output, returncode)
@@ -68,7 +100,13 @@ class TestRunnerHandler:
             # Generate recommendations
             parsed["recommendations"] = self._generate_recommendations(parsed)
 
-            status = "success" if parsed.get("summary", {}).get("failed", 0) == 0 else "failure"
+            status = "success" if parsed.get("summary", {}).get("failed", 0) == 0 and returncode == 0 else "failure"
+
+            # If tests failed, perform LLM diagnosis if available
+            if status == "failure" and parsed.get("failures"):
+                diagnosis = await self._diagnose_failures(parsed, context)
+                if diagnosis:
+                    parsed["diagnosis"] = diagnosis
 
             return SubagentResponse(
                 agent="test-runner",
@@ -77,34 +115,92 @@ class TestRunnerHandler:
                 result=parsed,
             )
 
-        except Exception as e:
+        except Exception as test_execution_error:
+            self._logger.error(f"TestRunner execution failed: {test_execution_error}", exc_info=True)
             return SubagentResponse(
                 agent="test-runner",
                 task_id=request.task_id,
                 status="failure",
-                result={"error": str(e), "summary": {"total": 0, "passed": 0, "failed": 0, "skipped": 0}},
+                result={
+                    "error": str(test_execution_error),
+                    "summary": {"total": 0, "passed": 0, "failed": 0, "skipped": 0},
+                },
             )
 
-    def _build_command(self, command: str, target: str, options: dict[str, Any]) -> str:
-        """Build test command with options."""
-        parts = [command]
+    async def _diagnose_failures(
+        self,
+        parsed_results: dict[str, Any],
+        context_data: dict[str, Any],
+    ) -> str | None:
+        """Use LLM to diagnose failure root causes and suggest fixes."""
+        client = self.llm
+        if client is None:
+            return None
 
-        if options.get("verbose"):
-            parts.append("-v")
+        failure_summaries = [
+            (
+                f"- Test: {failure_item.get('test')}\n"
+                f"  Location: {failure_item.get('location')}\n"
+                f"  Error: {failure_item.get('error')}"
+            )
+            for failure_item in parsed_results.get("failures", [])[:5]
+        ]
+
+        user_prompt = (
+            "Analyze the following test failures and provide a concise diagnosis with root causes "
+            "and concrete fix recommendations:\n\n" + "\n\n".join(failure_summaries)
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Dendrophis TestRunner diagnostic assistant. "
+                    "Provide concise root cause diagnosis and concrete fix suggestions."
+                ),
+            },
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            response_text = ""
+            async for event in client.stream_chat(messages):
+                if isinstance(event, TextDeltaEvent):
+                    response_text += event.delta
+            return response_text.strip() if response_text.strip() else None
+        except Exception as diagnosis_error:
+            self._logger.debug(f"Diagnosis generation failed: {diagnosis_error}")
+            return None
+
+    def _build_command(self, command: str, target: str, options: dict[str, Any]) -> str:
+        """Build test command with options and virtual environment awareness."""
+        parts: list[str] = []
 
         if command == "pytest":
-            # JSON output for parsing if available
+            if shutil.which("uv"):
+                parts.extend(["uv", "run", "pytest"])
+            else:
+                parts.append("pytest")
             parts.append("--tb=short")
+            if options.get("verbose"):
+                parts.append("-v")
             if options.get("parallel"):
                 parts.append("-n auto")
             if options.get("coverage"):
                 parts.append("--cov")
-
         elif command == "unittest":
-            parts.append("-v" if options.get("verbose") else "")
+            parts.append("python -m unittest")
+            if options.get("verbose"):
+                parts.append("-v")
+        else:
+            parts.append(command)
+            if options.get("verbose"):
+                parts.append("-v")
 
-        parts.append(target)
-        return " ".join(p for p in parts if p)
+        if target and target != ".":
+            parts.append(target)
+
+        return " ".join(part for part in parts if part)
 
     def _parse_pytest_output(self, output: str, returncode: int) -> dict[str, Any]:
         """Parse pytest output."""
@@ -279,8 +375,9 @@ class TestRunnerHandler:
                 # Fallback: parse text output
                 return self._parse_coverage_text(result.get("stdout", ""))
 
-        except Exception as e:
-            return {"overall": 0.0, "by_file": {}, "error": str(e)}
+        except Exception as coverage_error:
+            self._logger.error(f"Coverage analysis failed: {coverage_error}", exc_info=True)
+            return {"overall": 0.0, "by_file": {}, "error": str(coverage_error)}
 
     def _parse_coverage_text(self, output: str) -> dict[str, Any]:
         """Parse text coverage output."""

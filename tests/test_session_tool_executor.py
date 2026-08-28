@@ -364,4 +364,3 @@ async def test_execute_parallel_tool_calls_ordering() -> None:
     assert results[0].name == "write"
     assert results[1].tool_call_id == "call_read_002"
     assert results[1].name == "read"
-

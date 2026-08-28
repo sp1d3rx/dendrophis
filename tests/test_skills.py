@@ -57,3 +57,41 @@ def test_unknown_command_returns_false(skills_dir: Path) -> None:
 
     assert not manager.activate("unknown-skill")
     assert not manager.is_active("caveman")
+
+
+def test_parse_folded_yaml_description(skills_dir: Path) -> None:
+    _write_skill(
+        skills_dir,
+        "caveman.md",
+        (
+            "---\nname: caveman\ndescription: >\n"
+            "  Ultra-compressed communication mode.\n  Cuts token usage ~75%.\n"
+            "---\n\nTerse rules.\n"
+        ),
+    )
+    manager = SkillManager(skills_dir)
+    manager.load_skills()
+
+    assert "caveman" in manager._all_skills
+    caveman_skill = manager._all_skills["caveman"]
+    assert "Ultra-compressed communication mode." in caveman_skill.description
+    assert ">" not in caveman_skill.description
+    assert manager.activate("caveman")
+    instructions = manager.get_instructions()
+    assert "Terse rules." in instructions
+
+
+def test_deactivate_skill(skills_dir: Path) -> None:
+    _write_skill(
+        skills_dir,
+        "caveman.md",
+        "---\nname: caveman\ndescription: Terse mode\n---\n\nTerse rules.\n",
+    )
+    manager = SkillManager(skills_dir)
+    manager.load_skills()
+
+    assert manager.activate("caveman")
+    assert manager.is_active("caveman")
+    assert manager.deactivate("caveman")
+    assert not manager.is_active("caveman")
+    assert manager.get_instructions() == ""

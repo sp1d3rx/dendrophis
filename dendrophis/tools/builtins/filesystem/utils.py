@@ -34,8 +34,13 @@ def run_auto_lint(file_path: str) -> str | None:
         # 1. Run ruff format
         subprocess.run(["ruff", "format", file_path], capture_output=True, text=True, check=False)
 
-        # 2. Run ruff check with --fix
-        subprocess.run(["ruff", "check", "--fix", file_path], capture_output=True, text=True, check=False)
+        # 2. Run ruff check with --fix, preserving unused imports for multi-step edits
+        subprocess.run(
+            ["ruff", "check", "--fix", "--unfixable", "F401", file_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
         # 3. Check for any remaining errors
         result = subprocess.run(["ruff", "check", file_path], capture_output=True, text=True, check=False)
@@ -45,3 +50,11 @@ def run_auto_lint(file_path: str) -> str | None:
         return f"Auto-linting failed: {exception_error}"
 
     return None
+
+
+def try_unescape(string_value: str) -> str:
+    """Attempt to unescape doubly-escaped sequences (e.g. \\n to literal newline)."""
+    try:
+        return string_value.encode("raw_unicode_escape").decode("unicode_escape")
+    except Exception:
+        return string_value.replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")

@@ -13,7 +13,7 @@ from dendrophis.events.types import (
     EditProposalEvent,
 )
 from dendrophis.tools.builtins.filesystem.patch import PatchTool
-from dendrophis.tools.builtins.filesystem.utils import run_auto_lint
+from dendrophis.tools.builtins.filesystem.utils import try_unescape
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -33,18 +33,14 @@ class InteractivePatchTool(InteractiveBaseTool):
 
     async def execute(self, file_path: str, edits: list[dict[str, str]]) -> dict[str, Any]:
         try:
+            if self.silent:
+                return await self._base_tool.execute(file_path=file_path, edits=edits)
+
             path = Path(file_path)
             if not (path.exists() and path.is_file()):
                 return {"error": f"Path is not a valid file: {file_path}"}
 
             content = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
-
-            # Try to unescape doubly-escaped sequences (common LLM mistake: \\n instead of \n)
-            def _try_unescape(string_value: str) -> str:
-                try:
-                    return string_value.encode("raw_unicode_escape").decode("unicode_escape")
-                except Exception:
-                    return string_value.replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")
 
             new_content = content
             for edit_index, edit in enumerate(edits):
@@ -52,10 +48,10 @@ class InteractivePatchTool(InteractiveBaseTool):
                 replace_string = edit.get("replace", "")
 
                 if search_string not in new_content:
-                    unescaped_search = _try_unescape(search_string)
+                    unescaped_search = try_unescape(search_string)
                     if unescaped_search != search_string and unescaped_search in new_content:
                         search_string = unescaped_search
-                        replace_string = _try_unescape(replace_string)
+                        replace_string = try_unescape(replace_string)
                     else:
                         return {
                             "error": f"Search block at edit_index {edit_index} not found in file",
@@ -86,27 +82,6 @@ class InteractivePatchTool(InteractiveBaseTool):
             if not diff_text:
                 return {"success": True, "message": "No changes detected."}
 
-            if self.silent:
-                # Auto-approved: apply immediately, return diff stats
-                added_lines = sum(
-                    1 for diff_line in diff_lines if diff_line.startswith("+") and not diff_line.startswith("+++")
-                )
-                removed_lines = sum(
-                    1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
-                )
-                await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
-                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
-                result = {
-                    "success": True,
-                    "file": str(path),
-                    "lines_added": added_lines,
-                    "lines_removed": removed_lines,
-                }
-                if lint_errors:
-                    result["lint_errors"] = lint_errors
-                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
-                return result
-
             # Propose via event bus and wait for human approval
             request_id = str(uuid.uuid4())
             proposal_event = EditProposalEvent(
@@ -122,17 +97,8 @@ class InteractivePatchTool(InteractiveBaseTool):
                 return {"error": "Patch approval timed out after 5 minutes"}
 
             if approved:
-                await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
-                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
-                result = {
-                    "success": True,
-                    "file": str(path),
-                    "applied_edits_count": len(edits),
-                }
-                if lint_errors:
-                    result["lint_errors"] = lint_errors
-                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
-                return result
+                return await self._base_tool.execute(file_path=file_path, edits=edits)
+
             return {"error": "Patch denied by user"}
 
         except Exception as exception_error:

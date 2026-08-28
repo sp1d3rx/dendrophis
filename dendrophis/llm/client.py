@@ -180,7 +180,6 @@ class ModelInfo:
             "olmo",
             "gemma",
             "phi",
-
             "devstral",
             "dolphin",
             "command",

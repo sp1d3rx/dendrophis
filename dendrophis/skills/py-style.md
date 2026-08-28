@@ -66,6 +66,66 @@ apiResponseJson = fetch_api()
 
 ---
 
+### 3. Concept Chunking (Raymond Hettinger)
+
+**Why it matters:** Functions and methods should operate at a single, consistent level of abstraction (SLAP). When high-level orchestration is mixed with low-level indexing, parsing, or data munging, cognitive load spikes and bugs hide easily. Break complex logic into bite-sized, cohesive conceptual chunks where each step does exactly one thought.
+
+**Bad:**
+```python
+def process_user_batches(batch_data):
+    # Mixing batch validation, DB queries, line-by-line parsing, and email dispatch in one monolithic loop
+    for batch in batch_data:
+        if batch.get("is_active") and not batch.get("is_deleted") and batch.get("count", 0) > 0:
+            for record in batch.get("records", []):
+                fields = record.split(",")
+                user_id = int(fields[0].strip())
+                user_email = fields[1].strip()
+                database.execute(f"UPDATE users SET email = '{user_email}' WHERE id = {user_id}")
+                send_notification_email(user_email, "Updated")
+```
+
+**Good:**
+```python
+def is_valid_batch(batchRecord):
+    return batchRecord.get("is_active") and not batchRecord.get("is_deleted") and batchRecord.get("count", 0) > 0
+
+def parse_user_record(rawRecordText):
+    fields = [field.strip() for field in rawRecordText.split(",")]
+    return int(fields[0]), fields[1]
+
+def process_user_batches(batchList):
+    for batchRecord in filter(is_valid_batch, batchList):
+        for rawRecordText in batchRecord.get("records", []):
+            userId, userEmail = parse_user_record(rawRecordText)
+            update_user_email(userId, userEmail)
+            send_notification_email(userEmail, "Updated")
+```
+
+---
+
+### 4. No Silent Exception Swallowing (Always Log Exceptions)
+
+**Why it matters:** Silently catching and discarding exceptions with `except: pass` or `except Exception: pass` destroys debuggability, creates phantom bugs, and hides root causes. Every caught exception must be logged with context or re-raised.
+
+**Bad:**
+```python
+try:
+    configurationData = load_user_config(configFilePath)
+except Exception:
+    pass
+```
+
+**Good:**
+```python
+try:
+    configurationData = load_user_config(configFilePath)
+except Exception as configurationError:
+    logger.error(f"Failed to load user config from {configFilePath}: {configurationError}", exc_info=True)
+    configurationData = get_default_config()
+```
+
+---
+
 ## Naming Conventions
 
 ### 3. Casing Rules

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dendrophis.events.types import WriteApprovalEvent, WriteProposalEvent
 from dendrophis.tools.builtins.filesystem import WriteTool
-from dendrophis.tools.builtins.filesystem.utils import run_auto_lint
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -29,37 +26,14 @@ class InteractiveWriteTool(InteractiveBaseTool):
 
     async def execute(self, file_path: str, content: str) -> dict[str, Any]:
         try:
-            path = Path(file_path)
-
-            try:
-                resolved = path.resolve()
-                cwd = Path.cwd().resolve()
-                if not str(resolved).startswith(str(cwd)):
-                    return {"error": f"File path must be within working directory: {file_path}"}
-            except Exception:
-                pass
-
             if self.silent:
-                # Auto-approved: write immediately, return stats
-                path.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(path.write_text, content, encoding="utf-8")
-                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
-                result = {
-                    "success": True,
-                    "file": str(path),
-                    "lines_written": len(content.splitlines()),
-                    "written_bytes": len(content.encode("utf-8")),
-                }
-                if lint_errors:
-                    result["lint_errors"] = lint_errors
-                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
-                return result
+                return await self._base_tool.execute(file_path=file_path, content=content)
 
             # Propose via event bus and wait for human approval
             request_id = str(uuid.uuid4())
             proposal_event = WriteProposalEvent(
                 request_id=request_id,
-                file_path=str(path),
+                file_path=file_path,
                 content=content,
             )
 
@@ -69,20 +43,9 @@ class InteractiveWriteTool(InteractiveBaseTool):
                 return {"error": "Write approval timed out after 5 minutes"}
 
             if approved:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(path.write_text, content, encoding="utf-8")
-                lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
-                result = {
-                    "success": True,
-                    "file": str(path),
-                    "lines_written": len(content.splitlines()),
-                    "written_bytes": len(content.encode("utf-8")),
-                }
-                if lint_errors:
-                    result["lint_errors"] = lint_errors
-                    result["hint"] = "Code formatted/auto-fixed. Please fix remaining lint/syntax errors."
-                return result
+                return await self._base_tool.execute(file_path=file_path, content=content)
+
             return {"error": "Write denied by user"}
 
-        except Exception as error:
-            return {"error": str(error)}
+        except Exception as exception_error:
+            return {"error": str(exception_error)}

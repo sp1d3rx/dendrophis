@@ -281,6 +281,9 @@ class MainScreenCommands:
             else:
                 chat.add_system_message("No assistant message to override.")
             return
+        if event.text.strip().startswith("/"):
+            self._execute_slash_command(event.text.strip())
+            return
 
         chat = self.query_one(ChatView)
 
@@ -428,13 +431,13 @@ class MainScreenCommands:
                 "Hello! 👋 I'm Dendrophis, your coding assistant."
             ),
             "help": self._show_help,
-            "clear": lambda: self._process_input(InputBar.Submitted("/clear", [])),
-            "fresh": lambda: self._process_input(InputBar.Submitted("/fresh", [])),
-            "compact": lambda: self._process_input(InputBar.Submitted("/compact", [])),
+            "clear": self.action_clear_chat,
+            "fresh": self._fresh_chat,
+            "compact": self._compact_context,
             "fork": lambda: self._process_input(InputBar.Submitted(command, [])),
-            "export": lambda: self._process_input(InputBar.Submitted("/export", [])),
-            "save-primer": lambda: self._process_input(InputBar.Submitted("/save-primer", [])),
-            "load-primer": lambda: self._process_input(InputBar.Submitted("/load-primer", [])),
+            "export": self._export_session,
+            "save-primer": self._save_primer,
+            "load-primer": self._load_primer,
             "track": lambda: self._process_input(InputBar.Submitted(command, [])),
             "untrack": lambda: self._process_input(InputBar.Submitted(command, [])),
             "set": lambda: self._process_input(InputBar.Submitted(command, [])),
@@ -444,9 +447,23 @@ class MainScreenCommands:
             builtin_commands[command_name]()
             feedback_message = f"[bold]✅[/bold] Command [code]/{command_name}[/code] executed"
         else:
-            if hasattr(self, "_session") and self._session and hasattr(self._session, "_skill_manager"):
-                if command_name in self._session._skill_manager._all_skills:
-                    skill_instance = self._session._skill_manager._all_skills[command_name]
+            skill_manager_available = (
+                hasattr(self, "_session")
+                and self._session
+                and hasattr(self._session, "_skill_manager")
+                and self._session._skill_manager
+            )
+            if skill_manager_available:
+                canonical_name = self._session._skill_manager._resolve_name(command_name)
+                if canonical_name in self._session._skill_manager._all_skills:
+                    skill_instance = self._session._skill_manager._all_skills[canonical_name]
+                    argument_parts = command_parts[1].split() if len(command_parts) > 1 else []
+                    self._session._skill_manager.activate(command_name, args=argument_parts)
+                    skill_instructions = self._session._skill_manager.get_instructions()
+                    intensity_label = f" (intensity: {' '.join(argument_parts)})" if argument_parts else ""
+                    self._session.context.append_user(
+                        f"[System: Skill '{canonical_name}' activated{intensity_label}]\n{skill_instructions}"
+                    )
                     skill_message = (
                         f"[bold]📚 Skill Activated: {skill_instance.name}[/bold]\n\n"
                         f"[italic]{skill_instance.description}[/italic]"
@@ -460,8 +477,14 @@ class MainScreenCommands:
                         f"The skill documentation has been added to your context. "
                         f"You can now use its capabilities."
                     )
+                elif command_name in ("stop", "normal"):
+                    self._session._skill_manager.active_skills.clear()
+                    self._session.context.append_user("[System: Skills deactivated. Returning to normal mode.]")
+                    chat = self.query_one(ChatView)
+                    chat.add_system_message("Skills deactivated. Returning to normal mode.")
+                    feedback_message = "[bold][green]✓[/green][/bold] Normal mode activated."
                 else:
-                    feedback_message = f"[bold][red]✗[/red][/bold] Unknown skill: [code]/{command_name}[/code]"
+                    feedback_message = f"[bold][red]✗[/red][/bold] Unknown command: [code]/{command_name}[/code]"
             else:
                 feedback_message = (
                     f"[bold][yellow]⚠[/yellow][/bold] Skills not available yet. "

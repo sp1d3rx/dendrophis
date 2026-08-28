@@ -9,12 +9,12 @@ from dendrophis.llm.client import LLMClient
 from dendrophis.memory.memory import MemoryStore
 from dendrophis.subagents import SubagentExecutor, get_registry, set_session_executor
 from dendrophis.subagents.handlers import (
+    CodeReviewerHandler,
     CodeWriterHandler,
+    DebuggerHandler,
+    PlannerHandler,
     ResearcherHandler,
     TestRunnerHandler,
-    code_reviewer_execute,
-    debugger_execute,
-    planner_execute,
 )
 
 
@@ -36,8 +36,12 @@ class SubagentBootstrapper:
         """Register subagent handlers and set global session executor."""
         registry = get_registry()
 
-        # Register researcher handler with memory store
-        researcher = ResearcherHandler(memory_store=self._memory_store)
+        # Register researcher handler with memory store, LLM client, and config
+        researcher = ResearcherHandler(
+            memory_store=self._memory_store,
+            llm_client=self._llm_client,
+            config=self._config,
+        )
         registry.register_handler("researcher", researcher.execute)
 
         # Register code-writer handler with session's LLM client and config
@@ -47,14 +51,33 @@ class SubagentBootstrapper:
         )
         registry.register_handler("code-writer", code_writer.execute)
 
-        # Register test-runner handler
-        test_runner = TestRunnerHandler()
+        # Register test-runner handler with LLM client and config
+        test_runner = TestRunnerHandler(
+            llm_client=self._llm_client,
+            config=self._config,
+        )
         registry.register_handler("test-runner", test_runner.execute)
 
-        # Register planner, code-reviewer, debugger (LLM-only handlers)
-        registry.register_handler("planner", planner_execute)
-        registry.register_handler("code-reviewer", code_reviewer_execute)
-        registry.register_handler("debugger", debugger_execute)
+        # Register code-reviewer handler with LLM client and config
+        code_reviewer = CodeReviewerHandler(
+            llm_client=self._llm_client,
+            config=self._config,
+        )
+        registry.register_handler("code-reviewer", code_reviewer.execute)
+
+        # Register planner handler with LLM client and config
+        planner = PlannerHandler(
+            llm_client=self._llm_client,
+            config=self._config,
+        )
+        registry.register_handler("planner", planner.execute)
+
+        # Register debugger handler with LLM client and config
+        debugger = DebuggerHandler(
+            llm_client=self._llm_client,
+            config=self._config,
+        )
+        registry.register_handler("debugger", debugger.execute)
 
         # Register executor globally for tools to access
         set_session_executor(self._executor)

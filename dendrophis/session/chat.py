@@ -379,25 +379,30 @@ class ChatOrchestrator:
             command_parts = text[1:].split()
             if not command_parts:
                 return
-            command = command_parts[0].lower()
-            arguments = command_parts[1:]
-            if command in self.skill_manager._all_skills:
-                self.skill_manager.activate(command, args=arguments)
-                instructions = self.skill_manager.get_instructions()
+            command_name = command_parts[0].lower()
+            argument_parts = command_parts[1:]
+            if self.skill_manager and (
+                command_name in self.skill_manager._all_skills or command_name in self.skill_manager._aliases
+            ):
+                canonical_skill_name = self.skill_manager._resolve_name(command_name)
+                self.skill_manager.activate(command_name, args=argument_parts)
+                skill_instructions = self.skill_manager.get_instructions()
+                intensity_label = f" (intensity: {' '.join(argument_parts)})" if argument_parts else ""
                 self.context.append_user(
-                    f"[System: Skill '{command}' activated]{arguments if arguments else ''}\n{instructions}"
+                    f"[System: Skill '{canonical_skill_name}' activated{intensity_label}]\n{skill_instructions}"
                 )
-                message_text = f"Skill '{command}' activated"
-                if arguments:
-                    message_text += f" {' '.join(arguments)}"
-                self._emit(MessageSentEvent(message_text=f"{message_text}."))
+                notification_text = f"Skill '{canonical_skill_name}' activated"
+                if argument_parts:
+                    notification_text += f" {' '.join(argument_parts)}"
+                self._emit(MessageSentEvent(message_text=f"{notification_text}."))
                 return
-            if command in ("stop", "normal"):
-                self.skill_manager.active_skills.clear()
+            if command_name in ("stop", "normal"):
+                if self.skill_manager:
+                    self.skill_manager.active_skills.clear()
                 self.context.append_user("[System: Skills deactivated. Returning to normal mode.]")
                 self._emit(MessageSentEvent(message_text="Normal mode activated."))
                 return
-            self._emit(ErrorEvent(message=f"Unknown command: /{command}"))
+            self._emit(ErrorEvent(message=f"Unknown command: /{command_name}"))
             return
 
         with self.stream_lock:

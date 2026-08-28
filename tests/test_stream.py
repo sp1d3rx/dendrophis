@@ -71,9 +71,6 @@ def test_parse_sse_event() -> None:
     assert parsingState == {"mode": "text", "buffer": "", "pending": ""}
 
 
-
-
-
 def test_parse_text_tool_calls_with_pipe() -> None:
     """Test parsing tool calls from text output containing pipe character in tags."""
     pipe_text = "<tool_call|><function=test_tool><parameter=param>val</parameter></function></tool_call|>"
@@ -87,7 +84,7 @@ def test_tool_call_pipe_streaming() -> None:
     """Test tool call parsing with pipe character in tags under streaming mode."""
     first_event = ServerSentEvent(
         event="message",
-        data='{"choices": [{"delta": {"content": "<tool_call|><function=test_tool><parameter=param>val</parameter></function>"}}]}', # noqa: E501
+        data='{"choices": [{"delta": {"content": "<tool_call|><function=test_tool><parameter=param>val</parameter></function>"}}]}',  # noqa: E501
         id="1",
     )
     second_event = ServerSentEvent(
@@ -105,6 +102,3 @@ def test_tool_call_pipe_streaming() -> None:
     events_2, in_progress, state = parse_sse_event(second_event, in_progress, state)
     assert len(events_2) == 3  # ToolCallStart, ToolCallDelta, ToolCallDone
     assert events_2[0].name == "test_tool"
-
-
-
