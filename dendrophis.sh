@@ -38,7 +38,8 @@ if [[ "${DENDROPHIS_PROFILE:-0}" == "1" ]]; then
     echo "Profiling enabled - output will be written to $PROFILING_DIR"
     
     # Run with cProfile, output to timestamped file
-    "$SCRIPT_DIR/.venv/bin/python" -m cProfile -o "$PROFILING_DIR/profile_${RUN_TIMESTAMP}.prof" -m dendrophis "${REMAINING_ARGS[@]}"
+    # (bash 3.2 safe empty-array expansion under set -u)
+    "$SCRIPT_DIR/.venv/bin/python" -m cProfile -o "$PROFILING_DIR/profile_${RUN_TIMESTAMP}.prof" -m dendrophis ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
     
     # Generate human-readable stats summary
     "$SCRIPT_DIR/.venv/bin/python" -c "
@@ -54,7 +55,8 @@ with open('$PROFILING_DIR/profile_${RUN_TIMESTAMP}_summary.txt', 'w') as f:
 print(f'Profile summary written to: $PROFILING_DIR/profile_${RUN_TIMESTAMP}_summary.txt')
 "
 else
-    "$SCRIPT_DIR/.venv/bin/dendrophis" "${REMAINING_ARGS[@]}"
+    # (bash 3.2 safe empty-array expansion under set -u)
+    "$SCRIPT_DIR/.venv/bin/dendrophis" ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 fi
 
 
