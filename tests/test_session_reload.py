@@ -8,6 +8,8 @@ released in Session.aclose().
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -32,9 +34,9 @@ def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def _make_session(config_file: Path) -> Session:
+def _make_session(config_file: Path, mcp_manager: object | None = None) -> Session:
     load_result = ConfigLoader.load(str(config_file))
-    return Session(config_loader=load_result.loader)
+    return Session(config_loader=load_result.loader, mcp_manager=mcp_manager)
 
 
 async def test_reload_retires_previous_client_and_aclose_releases_it(config_file: Path) -> None:
@@ -105,3 +107,99 @@ async def test_reload_config_failure_keeps_current_client_active(
 
     await session.aclose()
     assert original_client._http.is_closed is True
+
+
+# ---------------------------------------------------------------------------
+# MCP background sync task: exception observation + deterministic drain on close
+# ---------------------------------------------------------------------------
+class _FakeMCPManager:
+    """Minimal MCP manager stand-in recording the sync/close lifecycle."""
+
+    def __init__(self, sync_behavior: str = "ok") -> None:
+        self.sync_behavior = sync_behavior
+        self.events: list[str] = []
+        self.aclose_called = False
+        self._hold = asyncio.Event()
+
+    async def sync_servers(self) -> None:
+        self.events.append("sync_start")
+        if self.sync_behavior == "fail":
+            raise RuntimeError("simulated sync failure")
+        if self.sync_behavior == "hang":
+            try:
+                await self._hold.wait()
+            except asyncio.CancelledError:
+                self.events.append("sync_cancelled")
+                raise
+        self.events.append("sync_done")
+
+    async def aclose(self) -> None:
+        self.aclose_called = True
+        self.events.append("manager_aclose")
+
+
+async def test_reload_sync_failure_is_logged_not_swallowed(config_file: Path, caplog) -> None:
+    """A failing background MCP sync must be observed (logged), not lost."""
+    manager = _FakeMCPManager(sync_behavior="fail")
+    session = _make_session(config_file, mcp_manager=manager)
+    original_client = session.llm
+
+    with caplog.at_level(logging.WARNING):
+        _write_config(config_file, "model-after")
+        session.reload_config()
+        task = session._mcp_sync_task
+        assert task is not None
+        await asyncio.wait([task])
+
+    # Failure observed: the task raised and the done callback logged it.
+    assert isinstance(task.exception(), RuntimeError)
+    assert any("MCP config sync failed" in record.message for record in caplog.records)
+    # Contract unchanged: reload still retired the previous client.
+    assert session.llm is not original_client
+    assert session._retired_llm_clients == [original_client]
+
+
+async def test_aclose_drains_inflight_sync_before_manager_close(config_file: Path) -> None:
+    """aclose must cancel+await an in-flight sync before closing the manager."""
+    manager = _FakeMCPManager(sync_behavior="hang")
+    session = _make_session(config_file, mcp_manager=manager)
+
+    _write_config(config_file, "model-after")
+    session.reload_config()
+    task = session._mcp_sync_task
+    assert task is not None
+    await asyncio.sleep(0)  # let the sync task start, then block on the hold event
+    assert "sync_start" in manager.events
+    assert not task.done()  # in flight (hung)
+
+    await session.aclose()
+
+    # The in-flight sync was cancelled and fully unwound before manager close.
+    assert task.cancelled()
+    assert manager.aclose_called
+    assert "sync_cancelled" in manager.events
+    assert manager.events.index("sync_cancelled") < manager.events.index("manager_aclose")
+
+
+async def test_reload_successful_sync_not_flagged(config_file: Path, caplog) -> None:
+    """A healthy sync completes normally and is not logged as a failure."""
+    manager = _FakeMCPManager(sync_behavior="ok")
+    session = _make_session(config_file, mcp_manager=manager)
+    original_client = session.llm
+
+    with caplog.at_level(logging.WARNING):
+        _write_config(config_file, "model-after")
+        session.reload_config()
+        task = session._mcp_sync_task
+        assert task is not None
+        await asyncio.wait([task])
+
+    assert task.done()
+    assert not task.cancelled()
+    assert task.exception() is None
+    assert "sync_done" in manager.events
+    # No spurious failure log for a healthy sync.
+    assert not any("MCP config sync failed" in record.message for record in caplog.records)
+    # Contract unchanged: reload still retired the previous client.
+    assert session.llm is not original_client
+    assert session._retired_llm_clients == [original_client]

@@ -9,7 +9,9 @@ Responsibilities:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -39,6 +41,8 @@ from dendrophis.session.primer import PrimerManager
 from dendrophis.session.subagents import SubagentBootstrapper
 from dendrophis.session.tools import SessionToolExecutor
 from dendrophis.skills.manager import SkillManager
+
+logger = logging.getLogger(__name__)
 
 
 class Session:
@@ -76,6 +80,9 @@ class Session:
         self.llm = llm or LLMClient(self.config.llm)
         # LLM clients retired by reload_config(); released in aclose().
         self._retired_llm_clients: list[LLMClient] = []
+        # Background MCP config sync started by reload_config(); observed by
+        # _on_mcp_sync_done and drained in aclose().
+        self._mcp_sync_task: asyncio.Task | None = None
         self.stats = stats or SessionStats()
         self._memory_store = memory_store
         self._skill_manager = skill_manager
@@ -475,14 +482,37 @@ class Session:
         self.context._config = self.config
 
         if getattr(self, "mcp_manager", None):
-            import asyncio
-
-            self._mcp_sync_task = asyncio.create_task(self.mcp_manager.sync_servers())
+            sync_task = asyncio.create_task(self.mcp_manager.sync_servers())
+            self._mcp_sync_task = sync_task
+            sync_task.add_done_callback(self._on_mcp_sync_done)
 
         self._emit(ConfigReloadedEvent())
 
+    def _on_mcp_sync_done(self, task: asyncio.Task) -> None:
+        """Done callback: observe the outcome of the background MCP sync task.
+
+        Retrieves the task's exception so a failed sync is logged instead of
+        silently swallowed (asyncio's 'Task exception was never retrieved').
+        Cancellation (e.g. from aclose) is expected and not logged.
+        """
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            logger.warning("MCP config sync failed: %s", exception)
+
     async def aclose(self) -> None:
         """Close the LLM client and release resources."""
+        # Drain any in-flight MCP config sync before closing the manager, so it
+        # cannot spawn new connect tasks after cleanup has begun. Its outcome
+        # was already observed by _on_mcp_sync_done; suppress here so a failed
+        # or cancelled sync cannot break shutdown.
+        sync_task = self._mcp_sync_task
+        self._mcp_sync_task = None
+        if sync_task is not None and not sync_task.done():
+            sync_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await sync_task
         if getattr(self, "mcp_manager", None):
             await self.mcp_manager.aclose()
         for retired_client in self._retired_llm_clients:

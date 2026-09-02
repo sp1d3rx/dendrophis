@@ -31,6 +31,12 @@ from dendrophis.events.types import (
 
 logger = logging.getLogger(__name__)
 
+# Bound on a single WebSocket send. A blackholed peer (a connection that never RSTs)
+# would otherwise leave client.send_text() awaiting forever, so its done callback
+# never fires and the client is never retired -> one stuck send task per broadcast
+# (unbounded). After this many seconds the send is abandoned and the client dropped.
+_SEND_TIMEOUT_S = 10.0
+
 
 class EventBridge:
     """Subscribes to EventBus events and broadcasts formatted JSON to WebSocket clients."""
@@ -144,9 +150,10 @@ class EventBridge:
         # which would otherwise mutate the set mid-iteration.
         for client in list(self._clients):
             try:
-                # FastAPI WebSocket send_text is async, so this is fire-and-forget;
+                # FastAPI WebSocket send_text is async, so this is fire-and-forget,
+                # bounded by _SEND_TIMEOUT_S so a blackholed peer can't stall forever;
                 # the done callback retrieves its exception and drops dead clients.
-                task = asyncio.create_task(client.send_text(message))
+                task = asyncio.create_task(self._send_with_timeout(client, message))
             except Exception:
                 # create_task itself failed (e.g. no running loop) — nothing to schedule.
                 self.unregister_client(client)
@@ -154,12 +161,23 @@ class EventBridge:
             self._send_tasks.add(task)
             task.add_done_callback(lambda t, c=client: self._on_send_done(c, t))
 
+    async def _send_with_timeout(self, client: Any, message: str) -> None:
+        """Send one message to a client with a bounded wait.
+
+        A blackholed peer (a connection that never RSTs) would leave send_text()
+        awaiting forever, so its done callback never fires and the client is never
+        retired. wait_for cancels the stuck send after _SEND_TIMEOUT_S and raises
+        TimeoutError; _on_send_done then retires the client, keeping in-flight send
+        tasks bounded instead of accumulating one per broadcast.
+        """
+        await asyncio.wait_for(client.send_text(message), timeout=_SEND_TIMEOUT_S)
+
     def _on_send_done(self, client: Any, task: asyncio.Task[Any]) -> None:
         """Done callback for a broadcast send.
 
-        Drops the strong ref, and if the send failed (the client hung up) retires it.
-        Calling task.exception() retrieves the error so asyncio doesn't log
-        'Task exception was never retrieved'.
+        Drops the strong ref, and if the send failed (the client hung up, or its send
+        timed out) retires it. Calling task.exception() retrieves the error so asyncio
+        doesn't log 'Task exception was never retrieved'.
         """
         self._send_tasks.discard(task)
         if task.cancelled():
