@@ -474,6 +474,30 @@ class TestProjectMemorySystem:
         primer.remove_file("main.py")
         assert len(primer.key_files) == 1
 
+    def test_from_dict_does_not_mutate_input(self, tmp_path):
+        """from_dict must not mutate the caller's dict (no destructive pop)."""
+        data = {
+            "project_id": "p1",
+            "project_root": str(tmp_path),
+            "key_files": [{"path": "a.py", "content_hash": "h1"}],
+        }
+        snapshot = dict(data)
+
+        primer = ProjectPrimer.from_dict(data)
+
+        assert primer.project_id == "p1"
+        assert len(primer.key_files) == 1
+        assert primer.key_files[0].path == "a.py"
+        # The caller's dict must be untouched: key_files preserved, no keys removed
+        assert data == snapshot
+        assert data["key_files"] == [{"path": "a.py", "content_hash": "h1"}]
+
+        # An explicit _stale_files key must also be absorbed without removal
+        data_with_stale = {"project_id": "p2", "project_root": str(tmp_path), "_stale_files": ["a.py"]}
+        before = dict(data_with_stale)
+        ProjectPrimer.from_dict(data_with_stale)
+        assert data_with_stale == before
+
     def test_project_root_detection(self, tmp_path, monkeypatch):
         """Verify project root detection logic."""
         git_dir = tmp_path / "subdir" / ".git"

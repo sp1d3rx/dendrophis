@@ -116,9 +116,11 @@ class ProjectPrimer:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectPrimer:
-        file_entries = [FileEntry(**entry) for entry in data.pop("key_files", [])]
-        data.pop("_stale_files", None)
-        primer = cls(**data)
+        # Operate on a copy so the caller's dict is never mutated.
+        payload = dict(data)
+        file_entries = [FileEntry(**entry) for entry in payload.pop("key_files", [])]
+        payload.pop("_stale_files", None)
+        primer = cls(**payload)
         primer.key_files = file_entries
         return primer
 
