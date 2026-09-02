@@ -9,6 +9,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import uuid
 from collections.abc import Callable
@@ -73,6 +74,8 @@ class Session:
         # DI-provided or default
         self.context = context or ContextManager(self.config)
         self.llm = llm or LLMClient(self.config.llm)
+        # LLM clients retired by reload_config(); released in aclose().
+        self._retired_llm_clients: list[LLMClient] = []
         self.stats = stats or SessionStats()
         self._memory_store = memory_store
         self._skill_manager = skill_manager
@@ -461,7 +464,14 @@ class Session:
         """Re-read config from disk and reinitialise the LLM client."""
         self.config_loader.reload()
         self.config = self.config_loader.config
-        self.llm = LLMClient(self.config.llm)
+        # Build the replacement first: if construction fails, the current
+        # client stays active and nothing is retired.
+        new_llm = LLMClient(self.config.llm)
+        # The previous client may still be referenced by the chat
+        # orchestrator and subagent handlers, so it is retired here and
+        # deterministically released in aclose().
+        self._retired_llm_clients.append(self.llm)
+        self.llm = new_llm
         self.context._config = self.config
 
         if getattr(self, "mcp_manager", None):
@@ -475,6 +485,14 @@ class Session:
         """Close the LLM client and release resources."""
         if getattr(self, "mcp_manager", None):
             await self.mcp_manager.aclose()
+        for retired_client in self._retired_llm_clients:
+            with contextlib.suppress(Exception):
+                await retired_client.aclose()
+        self._retired_llm_clients.clear()
         await self.llm.aclose()
+        # Subagent handlers may own dedicated LLM clients (e.g. code_writer_model);
+        # release them now so no per-session client outlives the session.
+        if getattr(self, "_subagent_bootstrapper", None) is not None:
+            await self._subagent_bootstrapper.aclose()
         if self._event_handler:
             self._event_handler.close()
