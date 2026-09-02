@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dendrophis.config.schema import LLMConfig
-from dendrophis.llm.client import LLMClient, ModelInfo
+from dendrophis.llm.client import WELL_KNOWN_MODELS, LLMClient, ModelInfo
 
 
 def test_model_info_from_api_with_max_model_len() -> None:
@@ -53,3 +53,32 @@ def test_tool_mode_auto_resolution() -> None:
     client_remote = LLMClient(config=config_remote)
     context_remote = client_remote._make_provider_context()
     assert context_remote.use_xml_tools is False
+
+
+class _FailingHttpClient:
+    """Stand-in httpx client whose get() always fails, forcing the fetch_models fallback."""
+
+    async def get(self, *args, **kwargs):
+        raise RuntimeError("network down")
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_fetch_models_fallback_returns_copy_not_module_constant() -> None:
+    """C4: fetch_models fallback must not hand back the module-level WELL_KNOWN_MODELS
+    by reference; a consumer (session.models) must not be able to corrupt the constant."""
+    config = LLMConfig(base_url="http://127.0.0.1:9/v1", api_key="k", model="gpt-4o")
+    client = LLMClient(config=config, http_client=_FailingHttpClient())
+
+    result = await client.fetch_models()
+
+    # Correct content, in order ...
+    assert [m.id for m in result] == [m.id for m in WELL_KNOWN_MODELS]
+    # ... but a distinct list object, not the shared module constant.
+    assert result is not WELL_KNOWN_MODELS
+
+    # Mutating the returned list must not corrupt the module-level constant.
+    original_len = len(WELL_KNOWN_MODELS)
+    result.pop()
+    assert len(WELL_KNOWN_MODELS) == original_len

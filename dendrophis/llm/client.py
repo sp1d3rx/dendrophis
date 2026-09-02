@@ -398,7 +398,8 @@ class LLMClient:
                     return [ModelInfo.from_api(model_data) for model_data in models_data.get("data", [])]
             except Exception:
                 pass
-            return WELL_KNOWN_MODELS
+            # Return a copy so callers (e.g. session.models) can't mutate the shared constant.
+            return list(WELL_KNOWN_MODELS)
         finally:
             await self._close_retired_http(self._release_http(client))
 
