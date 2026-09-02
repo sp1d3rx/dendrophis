@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import json
 import os
@@ -322,16 +323,63 @@ class LLMClient:
     def __init__(self, config: LLMConfig, http_client: httpx.AsyncClient | None = None) -> None:
         self._config = config
         self.last_visual_tokens_saved: int = 0
-        self._http = http_client or httpx.AsyncClient(
+        self._http = http_client or self._new_http_client()
+        self._http_inflight: dict[int, int] = {}
+        self._retired_http: list[httpx.AsyncClient] = []
+
+    def _new_http_client(self) -> httpx.AsyncClient:
+        """Create a fresh httpx client with the standard Dendrophis timeouts."""
+        return httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0,
                 write=30.0,
-                read=config.timeout,
+                read=self._config.timeout,
                 pool=5.0,
             )
         )
 
+    def _acquire_http(self) -> httpx.AsyncClient:
+        """Return the current http client and mark one in-flight use on it."""
+        client = self._http
+        self._http_inflight[id(client)] = self._http_inflight.get(id(client), 0) + 1
+        return client
+
+    def _release_http(self, client: httpx.AsyncClient) -> list[httpx.AsyncClient]:
+        """Mark one in-flight use as done.
+
+        Returns retired clients whose in-flight uses have all drained and
+        which are therefore safe to close now.
+        """
+        key = id(client)
+        remaining = self._http_inflight.get(key, 1) - 1
+        if remaining > 0:
+            self._http_inflight[key] = remaining
+            return []
+        self._http_inflight.pop(key, None)
+        if client in self._retired_http:
+            self._retired_http.remove(client)
+            return [client]
+        return []
+
+    async def _close_retired_http(self, clients: list[httpx.AsyncClient]) -> None:
+        for client in clients:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+
+    def _retire_http(self, old: httpx.AsyncClient) -> None:
+        """Swap in a fresh client and retire ``old`` for deferred close.
+
+        The replacement is created before the swap so ``self._http`` never
+        points at a dead client. If other requests are still in flight on
+        ``old``, closing it now would tear down their live streams, so it is
+        only closed once the last in-flight use releases it (or in aclose).
+        """
+        self._http = self._new_http_client()
+        self._retired_http.append(old)
+
     async def aclose(self) -> None:
+        await self._close_retired_http(self._retired_http)
+        self._retired_http.clear()
         await self._http.aclose()
 
     async def fetch_models(self) -> list[ModelInfo]:
@@ -341,14 +389,18 @@ class LLMClient:
             "HTTP-Referer": "https://github.com/sp1d3rx/dendrophis",
             "X-Title": "Dendrophis IDE",
         }
+        client = self._acquire_http()
         try:
-            response = await self._http.get(url, headers=headers)
-            if response.status_code == 200:
-                models_data = response.json()
-                return [ModelInfo.from_api(model_data) for model_data in models_data.get("data", [])]
-        except Exception:
-            pass
-        return WELL_KNOWN_MODELS
+            try:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    models_data = response.json()
+                    return [ModelInfo.from_api(model_data) for model_data in models_data.get("data", [])]
+            except Exception:
+                pass
+            return WELL_KNOWN_MODELS
+        finally:
+            await self._close_retired_http(self._release_http(client))
 
     # -- Provider context ----------------------------------------------------
 
@@ -922,6 +974,20 @@ class LLMClient:
         payload: dict[str, Any],
     ) -> AsyncIterator[StreamEvent | RetryEvent]:
         """Send one HTTP request and stream SSE events, with retry on transient errors."""
+        client = self._acquire_http()
+        try:
+            async for event in self._stream_raw_on_client(provider_context, payload, client):
+                yield event
+        finally:
+            await self._close_retired_http(self._release_http(client))
+
+    async def _stream_raw_on_client(
+        self,
+        provider_context: _ProviderContext,
+        payload: dict[str, Any],
+        client: httpx.AsyncClient,
+    ) -> AsyncIterator[StreamEvent | RetryEvent]:
+        """Stream one request on a specific http client instance (see _stream_raw for lifecycle)."""
         headers = {
             "Authorization": f"Bearer {self._config.api_key}",
             "Content-Type": "application/json",
@@ -946,7 +1012,7 @@ class LLMClient:
 
                 # EAFP: Try to build and send request, handle potential failures
                 try:
-                    req = self._http.build_request(
+                    req = client.build_request(
                         "POST", provider_context.url, headers=headers, content=json.dumps(payload)
                     )
                 except Exception as exc:
@@ -955,15 +1021,13 @@ class LLMClient:
 
                 _chat_log("CLIENT [attempt]", "sending request")
                 try:
-                    http_response = await asyncio.wait_for(
-                        self._http.send(req, stream=True), timeout=self._config.timeout
-                    )
+                    http_response = await asyncio.wait_for(client.send(req, stream=True), timeout=self._config.timeout)
                 except TimeoutError:
                     _chat_log("CLIENT [attempt]", f"send() timed out after {self._config.timeout}s")
-                    await self._http.aclose()
-                    self._http = httpx.AsyncClient(
-                        timeout=httpx.Timeout(connect=10.0, write=30.0, read=self._config.timeout, pool=5.0)
-                    )
+                    # A timed-out send can leave stuck connections in this client's pool, so
+                    # swap in a fresh one. Retire (do not close) the old client while other
+                    # in-flight requests may still be streaming on it.
+                    self._retire_http(client)
                     yield ErrorEvent(
                         message=f"Server did not respond within {self._config.timeout}s — context may be too large"
                     )
