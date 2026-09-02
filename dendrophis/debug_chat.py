@@ -56,6 +56,7 @@ from dendrophis.events import (
     UsageEvent,
     get_event_bus,
     set_event_bus,
+    shutdown_global_event_bus,
 )
 from dendrophis.events.bus import EventBus
 
@@ -691,6 +692,9 @@ async def main():
         printer.stop()
         await session.llm_client.aclose()
         bus.shutdown(wait=False)
+        # main() installed this bus as the global; clear it so the
+        # shut-down bus is never reused and no pool outlives the CLI.
+        shutdown_global_event_bus()
 
 
 # ---------------------------------------------------------------------------

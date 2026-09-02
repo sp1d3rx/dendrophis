@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import contextlib
 import contextvars
 import heapq
 import inspect
@@ -452,9 +453,31 @@ def get_event_bus() -> EventBus:
 
 
 def set_event_bus(bus: EventBus) -> None:
-    """Set the global event bus instance."""
+    """Set the global event bus instance.
+
+    Replacing a previously installed bus deterministically shuts down the
+    previous one so its thread pool is not leaked for the process lifetime.
+    Passing the same bus back is a no-op that does not shut it down.
+    """
     global _event_bus
+    if _event_bus is not None and _event_bus is not bus:
+        with contextlib.suppress(Exception):
+            _event_bus.shutdown(wait=False)
     _event_bus = bus
+
+
+def shutdown_global_event_bus() -> None:
+    """Deterministically shut down and clear the global event bus.
+
+    Safe to call when no global bus is set. After this call, the next
+    get_event_bus() creates a fresh bus instead of reusing a shut-down one
+    (which would silently drop events).
+    """
+    global _event_bus
+    if _event_bus is not None:
+        with contextlib.suppress(Exception):
+            _event_bus.shutdown(wait=False)
+        _event_bus = None
 
 
 def publish(event: AnyEvent) -> None:

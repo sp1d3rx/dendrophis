@@ -15,6 +15,7 @@ from dendrophis.events import (
     ModelSwitchedEvent,
     listen,
     set_event_bus,
+    shutdown_global_event_bus,
 )
 from dendrophis.session.factory import SessionFactory
 from dendrophis.ui.screens.debug_log import DebugLogScreen
@@ -189,6 +190,9 @@ class DendrophisApp(App):
                 await self._web_server.stop()
         await self._session.aclose()
         self._event_bus.shutdown(wait=False)
+        # Clear the global so a shut-down bus is never reused (publishing to
+        # it would silently drop events).
+        shutdown_global_event_bus()
 
     def _show_system_prompt_toast(self) -> None:
         """Show toast notification about system prompt source."""

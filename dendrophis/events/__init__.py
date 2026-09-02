@@ -12,6 +12,7 @@ from dendrophis.events.bus import (
     on,
     publish,
     set_event_bus,
+    shutdown_global_event_bus,
     subscribe,
     unsubscribe,
 )
@@ -198,6 +199,7 @@ __all__ = [
     "on",
     "publish",
     "set_event_bus",
+    "shutdown_global_event_bus",
     "subscribe",
     "unsubscribe",
 ]
