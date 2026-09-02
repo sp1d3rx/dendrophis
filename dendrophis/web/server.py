@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from dendrophis.web.bridge import EventBridge
 
 logger = logging.getLogger(__name__)
+
+# How long to give uvicorn's graceful shutdown (should_exit) before force-cancelling.
+_SHUTDOWN_TIMEOUT_S = 5.0
 
 
 def create_app(bridge: EventBridge) -> FastAPI:
@@ -81,13 +85,42 @@ class WebObservabilityServer:
         await self._server.serve()
 
     def start_background(self) -> asyncio.Task:
-        """Launch the server in a background asyncio task."""
+        """Launch the server in a background asyncio task.
+
+        A done callback retrieves the task's result/exception so a start failure
+        (e.g. the port is already in use) is logged rather than lost, even if
+        stop() is never called.
+        """
         self._task = asyncio.create_task(self.start())
+        self._task.add_done_callback(self._on_server_done)
         return self._task
 
+    def _on_server_done(self, task: asyncio.Task) -> None:
+        """Log a finished background server task so its exception isn't lost."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("Web observability server failed: %s", exc)
+
     async def stop(self) -> None:
-        """Shutdown the web server cleanly."""
-        if self._server:
+        """Shutdown the web server and wait for the background task to finish.
+
+        Prefers uvicorn's graceful shutdown (should_exit) and awaits the task so the
+        caller can rely on the server actually being stopped. If the graceful path
+        stalls, a hard cancel is the fallback. The task's exception is always
+        retrieved (see _on_server_done).
+        """
+        if self._server is not None:
             self._server.should_exit = True
-        if self._task:
-            self._task.cancel()
+
+        task = self._task
+        self._task = None
+        if task is None or task.done():
+            return
+
+        _, pending = await asyncio.wait({task}, timeout=_SHUTDOWN_TIMEOUT_S)
+        if task in pending:
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task

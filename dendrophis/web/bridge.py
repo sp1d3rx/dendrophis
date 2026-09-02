@@ -139,19 +139,35 @@ class EventBridge:
             return
 
         message = json.dumps(event_data)
-        dead_clients = set()
 
-        for client in self._clients:
+        # Iterate a copy: a failed send retires the client via its done callback,
+        # which would otherwise mutate the set mid-iteration.
+        for client in list(self._clients):
             try:
-                # FastAPI WebSocket send_text
+                # FastAPI WebSocket send_text is async, so this is fire-and-forget;
+                # the done callback retrieves its exception and drops dead clients.
                 task = asyncio.create_task(client.send_text(message))
-                self._send_tasks.add(task)
-                task.add_done_callback(self._send_tasks.discard)
             except Exception:
-                dead_clients.add(client)
+                # create_task itself failed (e.g. no running loop) — nothing to schedule.
+                self.unregister_client(client)
+                continue
+            self._send_tasks.add(task)
+            task.add_done_callback(lambda t, c=client: self._on_send_done(c, t))
 
-        for dead in dead_clients:
-            self.unregister_client(dead)
+    def _on_send_done(self, client: Any, task: asyncio.Task[Any]) -> None:
+        """Done callback for a broadcast send.
+
+        Drops the strong ref, and if the send failed (the client hung up) retires it.
+        Calling task.exception() retrieves the error so asyncio doesn't log
+        'Task exception was never retrieved'.
+        """
+        self._send_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.debug("WebSocket send failed, dropping client: %s", exc)
+            self.unregister_client(client)
 
     # -------------------------------------------------------------------------
     # Event Handlers
