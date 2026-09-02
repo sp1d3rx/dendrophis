@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from collections.abc import Callable
 from typing import Any
@@ -64,14 +65,36 @@ class HTTPClientContextManager:
         self.http_client = httpx.AsyncClient(verify=self.verify_ssl)
         await self.http_client.__aenter__()
         self.stream_ctx = streamable_http_client(url=self.url, http_client=self.http_client)
-        read_stream, write_stream, _get_session_id = await self.stream_ctx.__aenter__()
+        try:
+            read_stream, write_stream, _get_session_id = await self.stream_ctx.__aenter__()
+        except BaseException:
+            # Entry failed: release the already-opened HTTP client so a failed
+            # connect cannot leak its socket pool.
+            with contextlib.suppress(Exception):
+                await self.http_client.__aexit__(None, None, None)
+            self.http_client = None
+            self.stream_ctx = None
+            raise
         return read_stream, write_stream
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        # Release both resources even if one fails, so a stream teardown error
+        # cannot leave the HTTP client's socket pool open.
+        errors: list[BaseException] = []
         if self.stream_ctx:
-            await self.stream_ctx.__aexit__(exc_type, exc_val, exc_tb)
+            try:
+                await self.stream_ctx.__aexit__(exc_type, exc_val, exc_tb)
+            except BaseException as error:
+                errors.append(error)
         if self.http_client:
-            await self.http_client.__aexit__(exc_type, exc_val, exc_tb)
+            try:
+                await self.http_client.__aexit__(exc_type, exc_val, exc_tb)
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            raise ExceptionGroup("MCP HTTP context teardown failed", errors)
 
 
 class MCPManager:
@@ -139,15 +162,17 @@ class MCPManager:
                 self.log(f"Failed to open debug log for MCP redirection: {exc}")
 
         try:
-            # Enter the async context manager
+            # Enter the async context manager. Register the context before
+            # entering it so a failed entry is still released by
+            # _cleanup_server() instead of leaking a partial connection.
             if cfg.url:
-                read, write = await ctx.__aenter__()
                 self._contexts[name] = ctx
+                read, write = await ctx.__aenter__()
             else:
                 try:
                     ctx = stdio_client(server_params, errlog=log_file)
-                    read, write = await ctx.__aenter__()
                     self._contexts[name] = ctx
+                    read, write = await ctx.__aenter__()
                 finally:
                     if log_file:
                         log_file.close()
@@ -265,10 +290,14 @@ class MCPManager:
 
     async def aclose(self) -> None:
         self.log("Closing all MCP servers...")
-        # Cancel any pending connection tasks
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
+        # Cancel pending connection tasks and wait for them to unwind (also
+        # retrieving their exceptions) so no in-flight connect can register
+        # sessions, contexts, or tools after the cleanup below.
+        pending_tasks = [task for task in self._tasks if not task.done()]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
 
         # Close all active connections
         servers = list(self._sessions.keys()) + list(self._contexts.keys())
