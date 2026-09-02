@@ -507,8 +507,13 @@ class ChatOrchestrator:
             except Exception as finalise_error:
                 self._emit(ErrorEvent(message=f"Failed to finalize turn: {finalise_error!s}"))
         except asyncio.CancelledError:
+            # Emit user-facing state first, then propagate: swallowing a
+            # CancelledError makes the task report success and breaks asyncio's
+            # cancel/uncancel contract (the caller can't tell a cancel from a
+            # clean return). Emits are sync, so this is safe to do before raise.
             self._emit(ErrorEvent(message="Streaming cancelled"))
             self._emit(WaitingForInputEvent())
+            raise
         except Exception as exception:
             import traceback
 
