@@ -7,6 +7,10 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+from dataclasses import MISSING, fields
+
+from dendrophis.caching.file_tracker import FileBlock, FileBlockTracker
+from dendrophis.caching.understanding import UnderstandingPhaseDetector
 from dendrophis.config.schema import CachingConfig, DendrophisConfig
 from dendrophis.context.manager import ContextManager
 from dendrophis.llm.client import LLMClient
@@ -72,6 +76,43 @@ def test_tool_cache_control():
     print("✓ stream_chat has enable_cache_control parameter")
 
 
+def _assert_no_none_sentinel_defaults(cls):
+    """C1/C2 invariant: no dataclass field may use None as an implicit empty-container default."""
+    for f in fields(cls):
+        if f.default_factory is not MISSING:
+            continue  # default_factory fields get a fresh container per construction
+        assert f.default is not None, f"{cls.__name__}.{f.name}: None sentinel default (use field(default_factory=...))"
+
+
+def test_tracker_and_detector_have_no_none_sentinel_defaults():
+    """FileBlockTracker and UnderstandingPhaseDetector must not default container fields to None."""
+    _assert_no_none_sentinel_defaults(FileBlockTracker)
+    _assert_no_none_sentinel_defaults(UnderstandingPhaseDetector)
+
+
+def test_file_block_tracker_instances_are_independent():
+    """Each FileBlockTracker gets its own _files dict; one instance's state never leaks to another."""
+    t1 = FileBlockTracker()
+    t2 = FileBlockTracker()
+    t1.track_file("a.py", "print(1)", turn=1, message_index=0)
+    assert t1.get_stats()["total_files_tracked"] == 1
+    assert t2.get_stats()["total_files_tracked"] == 0, "instances must not share mutable state"
+
+    # Explicit constructor injection is still honored
+    seeded = FileBlockTracker(_files={"b.py": FileBlock(path="b.py", content_hash="h", turn_added=1)})
+    assert seeded.get_stats()["total_files_tracked"] == 1
+
+
+def test_understanding_detector_instances_are_independent():
+    """Each UnderstandingPhaseDetector gets its own message-type list; no cross-instance leakage."""
+    d1 = UnderstandingPhaseDetector()
+    d2 = UnderstandingPhaseDetector()
+    d1.record_user_message("fix the bug", turn=5)
+    assert d1.is_established()
+    assert not d2.is_established(), "instances must not share mutable state"
+    assert d2._last_user_message_types == []
+
+
 if __name__ == "__main__":
     print("Testing Phase 1 token caching implementation...\n")
 
@@ -80,5 +121,8 @@ if __name__ == "__main__":
     test_system_prompt_cache_control()
     test_system_prompt_no_cache_control_when_disabled()
     test_tool_cache_control()
+    test_tracker_and_detector_have_no_none_sentinel_defaults()
+    test_file_block_tracker_instances_are_independent()
+    test_understanding_detector_instances_are_independent()
 
     print("\n✓ All Phase 1 caching tests passed!")

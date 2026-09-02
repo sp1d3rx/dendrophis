@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -14,11 +14,7 @@ class UnderstandingPhaseDetector:
     established: bool = False
     checkpoint_turn: int = -1
     min_turns_before_established: int = 5
-    _last_user_message_types: list[str] = None
-
-    def __post_init__(self) -> None:
-        if self._last_user_message_types is None:
-            self._last_user_message_types = []
+    _last_user_message_types: list[str] = field(default_factory=list)
 
     def record_user_message(self, content: str, turn: int) -> None:
         """Record a user message and check if understanding is established."""

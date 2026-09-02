@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from dendrophis.utils import _hash_content
@@ -34,12 +34,8 @@ class FileBlock:
 class FileBlockTracker:
     """Tracks file reads, hashing, and cache state."""
 
-    _files: dict[str, FileBlock] = None  # path -> FileBlock
+    _files: dict[str, FileBlock] = field(default_factory=dict)  # path -> FileBlock
     _stable_threshold: int = 3  # Mark cacheable after N turns
-
-    def __post_init__(self) -> None:
-        if self._files is None:
-            self._files = {}
 
     def track_file(self, path: str, content: str, turn: int, message_index: int) -> None:
         """Register a file read at current turn."""
