@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -19,6 +20,9 @@ from dendrophis.memory.models import MemoryEntry, MemoryStats
 
 if TYPE_CHECKING:
     from spacy.language import Language
+
+
+logger = logging.getLogger(__name__)
 
 
 # Vector-to-BLOB helpers (SQLite stores BLOBs, not arrays)
@@ -244,8 +248,9 @@ class MemoryStore:
                                        ON CONFLICT(name) DO UPDATE SET memory_count = memory_count + 1""",
                                 (tag,),
                             )
-                        except sqlite3.Error:
-                            # Log but don't fail for individual tag errors
+                        except sqlite3.Error as tag_error:
+                            # Don't fail the whole save for one bad tag, but record it.
+                            logger.warning("Failed to upsert tag %r for memory %s: %s", tag, entry_id, tag_error)
                             continue
 
                     # Link tag -> memory with error handling
@@ -257,14 +262,19 @@ class MemoryStore:
                                 "INSERT OR IGNORE INTO tag_memories (tag_name, memory_id) VALUES (?, ?)",
                                 (tag, entry_id),
                             )
-                        except sqlite3.Error:
-                            # Log but don't fail for individual link errors
+                        except sqlite3.Error as link_error:
+                            # Don't fail the whole save for one bad link, but record it.
+                            logger.warning("Failed to link tag %r to memory %s: %s", tag, entry_id, link_error)
                             continue
                 finally:
                     cursor.close()
 
-            with contextlib.suppress(Exception):
+            try:
                 self.increment_score(entry_id)
+            except Exception as score_error:
+                # Score is a best-effort ranking hint; a failure here must not fail the
+                # save, but it should be visible rather than silently swallowed.
+                logger.warning("Failed to increment score for memory %s: %s", entry_id, score_error)
 
             return MemoryEntry(
                 id=entry_id,

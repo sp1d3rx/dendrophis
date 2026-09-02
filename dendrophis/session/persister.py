@@ -126,7 +126,10 @@ class SessionPersister:
             with lzma.open(filepath, "wb", preset=0) as file_handle:
                 file_handle.write(data)
             return filepath
-        except Exception:
+        except Exception as save_error:
+            # A failed save means the session did not persist — record why instead
+            # of dropping the error silently (the caller only sees None).
+            self._log(f"save_session failed for {filepath}: {save_error!s}")
             return None
 
     def load(
@@ -211,5 +214,8 @@ class SessionPersister:
 
             return info, session_id, session_file
 
-        except Exception:
+        except Exception as load_error:
+            # A failed load corrupts nothing, but the caller only sees (None, "", None)
+            # without this — record why the session failed to restore.
+            self._log(f"load_session failed for {filepath}: {load_error!s}")
             return None, "", None
