@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import logging
@@ -71,6 +72,7 @@ class CodeReviewerHandler:
         self._llm_client = llm_client
         self._cached_llm: LLMClient | None = llm_client
         self._dedicated_llm_client: LLMClient | None = None
+        self._owned_llm_clients: set[LLMClient] = set()
         self._config = config
         self._logger = logger
 
@@ -83,6 +85,7 @@ class CodeReviewerHandler:
         if self._config is not None and self._config.llm.code_reviewer_model:
             if self._dedicated_llm_client is None:
                 self._dedicated_llm_client = LLMClient(self._get_llm_config())
+                self._owned_llm_clients.add(self._dedicated_llm_client)
             return self._dedicated_llm_client
 
         if self._cached_llm is not None:
@@ -90,6 +93,7 @@ class CodeReviewerHandler:
 
         if self._config is not None:
             self._cached_llm = LLMClient(self._config.llm)
+            self._owned_llm_clients.add(self._cached_llm)
             return self._cached_llm
 
         from dendrophis.config.loader import ConfigLoader
@@ -98,7 +102,23 @@ class CodeReviewerHandler:
         cfg = config_loader.config
         reviewer_llm_config = dataclasses.replace(cfg.llm, model=cfg.llm.code_reviewer_model or cfg.llm.model)
         self._cached_llm = LLMClient(reviewer_llm_config)
+        self._owned_llm_clients.add(self._cached_llm)
         return self._cached_llm
+
+    async def aclose(self) -> None:
+        """Close LLM clients this handler created itself.
+
+        Injected clients are owned by the caller and are not closed here.
+        Owned client slots are reset so a later use recreates a fresh client.
+        """
+        for client in self._owned_llm_clients:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+        if self._dedicated_llm_client in self._owned_llm_clients:
+            self._dedicated_llm_client = None
+        if self._cached_llm in self._owned_llm_clients:
+            self._cached_llm = None
+        self._owned_llm_clients.clear()
 
     def _get_llm_config(self) -> LLMConfig:
         """Get LLM config for code-reviewer, honouring the code_reviewer_model override."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import logging
@@ -116,6 +117,7 @@ class CodeWriterHandler:
         """
         self._llm_client = llm_client
         self._dedicated_llm_client: LLMClient | None = None
+        self._owned_llm_clients: set[LLMClient] = set()
         self._tool_registry = tool_registry
         self._tool_executor = tool_executor
         self._config = config
@@ -129,6 +131,7 @@ class CodeWriterHandler:
             if self._dedicated_llm_client is None:
                 llm_config = self._get_llm_config()
                 self._dedicated_llm_client = LLMClient(llm_config)
+                self._owned_llm_clients.add(self._dedicated_llm_client)
             return self._dedicated_llm_client
 
         if self._llm_client is not None:
@@ -137,6 +140,7 @@ class CodeWriterHandler:
         if self._config is not None:
             llm_config = self._get_llm_config()
             self._llm_client = LLMClient(llm_config)
+            self._owned_llm_clients.add(self._llm_client)
             return self._llm_client
 
         from dendrophis.config.loader import ConfigLoader
@@ -155,7 +159,23 @@ class CodeWriterHandler:
             min_p=0.05,
         )
         self._llm_client = LLMClient(llm_config)
+        self._owned_llm_clients.add(self._llm_client)
         return self._llm_client
+
+    async def aclose(self) -> None:
+        """Close LLM clients this handler created itself.
+
+        Injected clients are owned by the caller and are not closed here.
+        Owned client slots are reset so a later use recreates a fresh client.
+        """
+        for client in self._owned_llm_clients:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+        if self._dedicated_llm_client in self._owned_llm_clients:
+            self._dedicated_llm_client = None
+        if self._llm_client in self._owned_llm_clients:
+            self._llm_client = None
+        self._owned_llm_clients.clear()
 
     @property
     def tool_registry(self) -> ToolRegistry:

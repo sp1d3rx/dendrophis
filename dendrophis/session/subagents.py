@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from dendrophis.config.schema import DendrophisConfig
@@ -31,6 +32,7 @@ class SubagentBootstrapper:
         self._memory_store = memory_store
         self._config = config
         self._executor = SubagentExecutor()
+        self._handlers: list[Any] = []
 
     def initialize(self) -> None:
         """Register subagent handlers and set global session executor."""
@@ -79,8 +81,23 @@ class SubagentBootstrapper:
         )
         registry.register_handler("debugger", debugger.execute)
 
+        # Keep handler instances for deterministic cleanup of
+        # LLM clients they created themselves (e.g. dedicated models).
+        self._handlers = [researcher, code_writer, test_runner, code_reviewer, planner, debugger]
+
         # Register executor globally for tools to access
         set_session_executor(self._executor)
+
+    async def aclose(self) -> None:
+        """Release LLM clients owned by handlers created in initialize().
+
+        Injected (session-owned) clients are not touched here.
+        """
+        for handler in self._handlers:
+            closer = getattr(handler, "aclose", None)
+            if closer is not None:
+                with contextlib.suppress(Exception):
+                    await closer()
 
     @property
     def executor(self) -> SubagentExecutor:

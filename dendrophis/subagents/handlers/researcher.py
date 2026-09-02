@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from pathlib import Path
@@ -51,6 +52,7 @@ class ResearcherHandler:
         self.ripgrep_tool = RipgrepTool() if RipgrepTool is not None else None
         self._memory_store = memory_store
         self._llm_client = llm_client
+        self._owned_llm_clients: set[LLMClient] = set()
         self._config = config
         self._logger = logger
 
@@ -59,20 +61,37 @@ class ResearcherHandler:
 
     @property
     def llm(self) -> LLMClient | None:
-        """Lazily obtain or create LLM client."""
+        """Lazily obtain or create LLM client (cached; closed by aclose)."""
         if self._llm_client is not None:
             return self._llm_client
 
         if self._config is not None:
-            return LLMClient(self._config.llm)
+            self._llm_client = LLMClient(self._config.llm)
+            self._owned_llm_clients.add(self._llm_client)
+            return self._llm_client
 
         try:
             from dendrophis.config.loader import ConfigLoader
 
             config_loader = ConfigLoader.load()
-            return LLMClient(config_loader.config.llm)
+            self._llm_client = LLMClient(config_loader.config.llm)
+            self._owned_llm_clients.add(self._llm_client)
+            return self._llm_client
         except Exception:
             return None
+
+    async def aclose(self) -> None:
+        """Close LLM clients this handler created itself.
+
+        Injected clients are owned by the caller and are not closed here.
+        The owned client slot is reset so a later use recreates a fresh client.
+        """
+        for client in self._owned_llm_clients:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+        if self._llm_client in self._owned_llm_clients:
+            self._llm_client = None
+        self._owned_llm_clients.clear()
 
     def _get_memory_tools(self):
         """Lazy init memory tools if store available."""
