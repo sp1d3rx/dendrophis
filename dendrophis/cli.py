@@ -136,7 +136,8 @@ def _list_sessions() -> None:
             model = data.get("model", "unknown")[:30]
             msg_count = len([msg for msg in data.get("messages", []) if msg.get("role") != "system"])
             print(f"{session_id:12} {fork_name:18} {timestamp:20} {model:32} {msg_count:>8}")
-        except Exception:
+        except Exception as exc:
+            print(f"Warning: skipping unreadable session file {path.name}: {exc}", file=sys.stderr)
             continue
 
 
@@ -180,7 +181,8 @@ def _list_forks() -> None:
             model = data.get("model", "unknown")[:28]
             msg_count = len([msg for msg in data.get("messages", []) if msg.get("role") != "system"])
             print(f"{fork_name[:20]:20} {session_id:12} {timestamp:20} {model:30} {msg_count:>8}")
-        except Exception:
+        except Exception as exc:
+            print(f"Warning: skipping unreadable session file {path.name}: {exc}", file=sys.stderr)
             continue
 
     if not forks_found:
@@ -226,7 +228,8 @@ def _resolve_session(id_or_path: str) -> str:
                 return str(session_file)
             if data.get("session_id", "").startswith(id_or_path):
                 return str(session_file)
-        except Exception:
+        except Exception as exc:
+            print(f"Warning: skipping unreadable session file {session_file.name}: {exc}", file=sys.stderr)
             continue
 
     print(f"No session found for: {id_or_path}", file=sys.stderr)

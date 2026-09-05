@@ -119,6 +119,8 @@ class MemoryAssociationGenerator:
         """
         try:
             dt = datetime.fromisoformat(iso_timestamp)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone().replace(tzinfo=None)
             now = datetime.now()
             age = now - dt
 

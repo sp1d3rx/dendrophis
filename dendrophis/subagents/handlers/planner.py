@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 
 from dendrophis.config.loader import ConfigLoader
 from dendrophis.config.schema import DendrophisConfig
@@ -80,6 +81,9 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+logger = logging.getLogger(__name__)
+
+
 class PlannerHandler:
     """Handler for planner subagent."""
 
@@ -111,7 +115,8 @@ class PlannerHandler:
             self._llm_client = LLMClient(config_loader.config.llm)
             self._owned_llm_clients.add(self._llm_client)
             return self._llm_client
-        except Exception:
+        except Exception as exc:
+            logger.debug("Could not create LLM client from default config: %s", exc)
             return None
 
     async def aclose(self) -> None:

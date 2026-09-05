@@ -15,15 +15,23 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
 
-from dendrophis.config.schema import DendrophisConfig
+from dendrophis.cli import _list_forks, _list_sessions, _resolve_session
+from dendrophis.config.schema import DendrophisConfig, LLMConfig
+from dendrophis.context import tokenizer as tokenizer_module
 from dendrophis.context.manager import ContextManager
+from dendrophis.llm.client import LLMClient
+from dendrophis.memory import project as project_module
+from dendrophis.memory.embedder import OpenAIEmbedder
 from dendrophis.memory.memory import MemoryStore
 from dendrophis.session.persister import SessionPersister
 from dendrophis.session.session import SessionStats
+from dendrophis.subagents.handlers.planner import PlannerHandler
+from dendrophis.subagents.handlers.researcher import ResearcherHandler
 
 # --- F11: SessionPersister ----------------------------------------------------
 
@@ -118,3 +126,188 @@ def test_score_failure_logs_and_still_saves(
     assert fetched.content == "remember score failure"
     messages = [record.getMessage() for record in caplog.records]
     assert any("Failed to increment score" in message for message in messages)
+
+
+# --- B: remaining silent swallowing -------------------------------------------
+#
+# Same class of bug as F11-F13: a failure path drops the exception with no
+# visibility. Each test asserts the failure is now logged AND that observable
+# behavior is unchanged (fallback still returned, file still skipped, etc.).
+
+
+def _make_sessions_dir(tmp_path: Path) -> Path:
+    sessions_dir = tmp_path / ".config" / "dendrophis" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    return sessions_dir
+
+
+def _patch_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+
+class TestCLISessionListing:
+    def test_list_sessions_warns_on_unreadable_file(self, tmp_path, capsys, monkeypatch) -> None:
+        sessions_dir = _make_sessions_dir(tmp_path)
+        (sessions_dir / "session-good1234.json").write_text(
+            '{"session_id": "good1234", "fork_name": "", "timestamp": "2026-01-01T00:00:00", '
+            '"model": "m", "messages": []}'
+        )
+        (sessions_dir / "session-bad9999.json").write_text("{ not valid json")
+        _patch_home(tmp_path, monkeypatch)
+
+        _list_sessions()
+
+        out = capsys.readouterr()
+        assert "good1234" in out.out  # valid session still listed
+        assert "session-bad9999.json" in out.err  # corrupt file named in a warning
+
+    def test_list_forks_warns_on_unreadable_file(self, tmp_path, capsys, monkeypatch) -> None:
+        sessions_dir = _make_sessions_dir(tmp_path)
+        (sessions_dir / "session-good1234.json").write_text(
+            '{"session_id": "good1234", "fork_name": "myfork", "timestamp": "2026-01-01T00:00:00", '
+            '"model": "m", "messages": []}'
+        )
+        (sessions_dir / "session-bad9999.json").write_text("{ not valid json")
+        _patch_home(tmp_path, monkeypatch)
+
+        _list_forks()
+
+        out = capsys.readouterr()
+        assert "myfork" in out.out
+        assert "session-bad9999.json" in out.err
+
+    def test_resolve_session_warns_on_unreadable_file(self, tmp_path, capsys, monkeypatch) -> None:
+        sessions_dir = _make_sessions_dir(tmp_path)
+        good = sessions_dir / "session-bbb22222.json"
+        good.write_text(
+            '{"session_id": "bbb22222", "fork_name": "target-fork", "timestamp": "2026-01-01T00:00:00", '
+            '"model": "m", "messages": []}'
+        )
+        bad = sessions_dir / "session-aaa11111.json"
+        bad.write_text("{ not valid json")
+        _patch_home(tmp_path, monkeypatch)
+
+        resolved = _resolve_session("target-fork")
+
+        out = capsys.readouterr()
+        assert resolved == str(good)  # search continues past the corrupt file
+        assert "session-aaa11111.json" in out.err
+
+
+class _FailingGetClient:
+    """Stand-in httpx client whose get() always fails, forcing the fetch_models fallback."""
+
+    async def get(self, *args, **kwargs):
+        raise RuntimeError("network down")
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_fetch_models_fallback_logs(caplog: pytest.LogCaptureFixture) -> None:
+    config = LLMConfig(base_url="http://127.0.0.1:9/v1", api_key="k", model="gpt-4o")
+    client = LLMClient(config=config, http_client=_FailingGetClient())
+
+    with caplog.at_level(logging.DEBUG, logger="dendrophis.llm.client"):
+        models = await client.fetch_models()
+
+    assert models  # built-in fallback list still returned
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("fetch models" in message.lower() for message in messages)
+
+
+class _FailingEmbeddingsAPI:
+    def create(self, **kwargs):
+        raise RuntimeError("embedding api down")
+
+
+class _FailingOpenAIClient:
+    embeddings = _FailingEmbeddingsAPI()
+
+
+def test_embedder_failure_logs(caplog: pytest.LogCaptureFixture) -> None:
+    embedder = OpenAIEmbedder(client=_FailingOpenAIClient(), model="text-embedding-3-small")
+
+    with caplog.at_level(logging.DEBUG, logger="dendrophis.memory.embedder"):
+        result = embedder.embed("hello world")
+
+    assert result is None  # behavior unchanged
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("embedding" in message.lower() for message in messages)
+
+
+def test_tokenizer_tiktoken_failure_logs_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(tokenizer_module, "_enc", None)
+    monkeypatch.setattr(tokenizer_module, "_enc_failed", False, raising=False)
+    monkeypatch.setitem(sys.modules, "tiktoken", None)  # force `import tiktoken` to raise
+
+    with caplog.at_level(logging.DEBUG, logger="dendrophis.context.tokenizer"):
+        first = tokenizer_module.count_tokens("hello world foo bar")
+        second = tokenizer_module.count_tokens("hello world foo bar")
+
+    # Heuristic fallback still works for both calls
+    assert first > 0
+    assert second > 0
+    messages = [record.getMessage() for record in caplog.records]
+    tiktoken_logs = [message for message in messages if "tiktoken" in message.lower()]
+    assert len(tiktoken_logs) == 1  # logged once, not per call
+
+
+def _config_loader_boom(*args, **kwargs):
+    raise RuntimeError("no config available")
+
+
+def test_researcher_llm_fallback_logs(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import dendrophis.config.loader as loader_module
+
+    monkeypatch.setattr(loader_module.ConfigLoader, "load", classmethod(_config_loader_boom))
+    handler = ResearcherHandler()
+
+    with caplog.at_level(logging.DEBUG, logger="dendrophis.subagents.handlers.researcher"):
+        assert handler.llm is None
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("llm client" in message.lower() for message in messages)
+
+
+def test_planner_llm_fallback_logs(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import dendrophis.config.loader as loader_module
+
+    monkeypatch.setattr(loader_module.ConfigLoader, "load", classmethod(_config_loader_boom))
+    handler = PlannerHandler()
+
+    with caplog.at_level(logging.DEBUG, logger="dendrophis.subagents.handlers.planner"):
+        assert handler.llm is None
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("llm client" in message.lower() for message in messages)
+
+
+def test_load_primer_corrupt_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(project_module, "_PRIMER_DIR", tmp_path)
+    project_module._primer_path("projX").write_text("{ corrupt")
+
+    with caplog.at_level(logging.DEBUG, logger="dendrophis.memory.project"):
+        assert project_module.load_primer("projX") is None
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("projX" in message for message in messages)
+
+
+def test_list_primers_skips_corrupt_with_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(project_module, "_PRIMER_DIR", tmp_path)
+    (tmp_path / "good.primer.json").write_text('{"project_id": "good", "project_name": "Good", "updated_at": ""}')
+    (tmp_path / "bad.primer.json").write_text("{ corrupt")
+
+    with caplog.at_level(logging.DEBUG, logger="dendrophis.memory.project"):
+        results = project_module.list_primers()
+
+    assert [entry[0] for entry in results] == ["good"]  # valid primer still listed
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("bad.primer.json" in message for message in messages)

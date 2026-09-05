@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import datetime
 import json
+import logging
 import os
 import random
 from collections.abc import AsyncIterator
@@ -38,6 +39,9 @@ from dendrophis.llm.stream import parse_sse_event, parse_text_tool_calls
 # from dendrophis.utils import _sanitize_tool_id  # REMOVED - no tool ID hashing
 
 _LOG_PATH = os.environ.get("DENDROPHIS_CHAT_LOG", "")
+
+
+logger = logging.getLogger(__name__)
 
 
 def _chat_log(direction: str, data: str) -> None:
@@ -396,8 +400,8 @@ class LLMClient:
                 if response.status_code == 200:
                     models_data = response.json()
                     return [ModelInfo.from_api(model_data) for model_data in models_data.get("data", [])]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to fetch models from %s, using built-in list: %s", url, exc)
             # Return a copy so callers (e.g. session.models) can't mutate the shared constant.
             return list(WELL_KNOWN_MODELS)
         finally:

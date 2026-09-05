@@ -64,7 +64,8 @@ class DebuggerHandler:
             self._llm_client = LLMClient(config_loader.config.llm)
             self._owned_llm_clients.add(self._llm_client)
             return self._llm_client
-        except Exception:
+        except Exception as exc:
+            logger.debug("Could not create LLM client from default config: %s", exc)
             return None
 
     async def aclose(self) -> None:

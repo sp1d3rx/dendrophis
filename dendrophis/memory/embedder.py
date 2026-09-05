@@ -6,6 +6,7 @@ Supports multiple backends: spaCy (local), OpenAI (cloud), or none (ngram-only).
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -14,6 +15,8 @@ import numpy as np
 
 if TYPE_CHECKING:
     from spacy.language import Language
+
+logger = logging.getLogger(__name__)
 
 
 class BaseEmbedder(ABC):
@@ -127,7 +130,8 @@ class OpenAIEmbedder(BaseEmbedder):
             if embedding is None:
                 return None
             return np.array(embedding, dtype=np.float32)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Embedding failed (model=%s): %s", self._model, exc)
             return None
 
     def _fetch_embedding_httpx(self, text: str) -> list[float] | None:

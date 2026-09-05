@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock
@@ -535,3 +536,37 @@ class TestProjectMemorySystem:
             assert load_primer("proj_one") is None
         finally:
             project_module._PRIMER_DIR = original
+
+
+# --- A: tz-aware timestamp normalization --------------------------------------
+#
+# All persisted timestamps are naive local ISO strings, but a timestamp carrying
+# a UTC offset (e.g. written by an external tool) used to break the naive
+# arithmetic and silently degrade to the "unknown" defaults.
+
+
+def test_recency_score_accepts_tz_aware_timestamps():
+    from datetime import datetime, timedelta, timezone
+
+    from dendrophis.memory.search import MemorySearcher
+
+    aware_recent = datetime.now(UTC).isoformat()
+    assert MemorySearcher._recency_score(aware_recent) > 0.9  # was 0.5 (TypeError default)
+
+    # Naive timestamps still work, and unparseable input still gets the default.
+    naive_old = (datetime.now() - timedelta(days=60)).isoformat()
+    assert MemorySearcher._recency_score(naive_old) < 0.3
+    assert MemorySearcher._recency_score("not-a-date") == 0.5
+
+
+def test_humanize_time_accepts_tz_aware_timestamps():
+    from datetime import datetime, timedelta, timezone
+
+    from dendrophis.memory.association import MemoryAssociationGenerator
+
+    aware_now = datetime.now(UTC).isoformat()
+    assert MemoryAssociationGenerator._humanize_time(aware_now) == "earlier today"
+
+    aware_days_ago = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+    expected = (datetime.now() - timedelta(days=3)).strftime("%A")
+    assert MemoryAssociationGenerator._humanize_time(aware_days_ago) == expected

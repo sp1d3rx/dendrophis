@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 _enc = None
+_enc_failed = False
 
 # Built-in 're' is JIT-friendly on PyPy. Matches words or punctuation clusters.
 _heuristic_re = re.compile(r"\w+|[^\w\s]+")
@@ -14,14 +18,15 @@ _heuristic_re = re.compile(r"\w+|[^\w\s]+")
 
 def _get_enc():
     """Return the cached tiktoken encoding, initialising it on first call."""
-    global _enc
-    if _enc is None:
+    global _enc, _enc_failed
+    if _enc is None and not _enc_failed:
         try:
             import tiktoken
 
             _enc = tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            pass
+        except Exception as exc:
+            _enc_failed = True
+            logger.debug("tiktoken unavailable, using heuristic token estimate: %s", exc)
     return _enc
 
 

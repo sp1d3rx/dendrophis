@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from dendrophis.utils import _hash_content
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -260,7 +263,8 @@ def load_primer(project_id: str) -> ProjectPrimer | None:
     try:
         raw_data = json.loads(path.read_text())
         return ProjectPrimer.from_dict(raw_data)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to load primer from %s: %s", path, exc)
         return None
 
 
@@ -288,7 +292,8 @@ def list_primers() -> list[tuple[str, str, str]]:
                     primer_data.get("updated_at", ""),
                 )
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("Skipping unreadable primer file %s: %s", primer_file, exc)
             continue
     return results
 

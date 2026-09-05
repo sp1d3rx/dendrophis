@@ -177,6 +177,8 @@ class MemorySearcher:
 
         try:
             created = datetime.fromisoformat(created_at)
+            if created.tzinfo is not None:
+                created = created.astimezone().replace(tzinfo=None)
             age_days = (datetime.now() - created).total_seconds() / 86400
             half_life = 30.0
             return 0.5 ** (age_days / half_life)
