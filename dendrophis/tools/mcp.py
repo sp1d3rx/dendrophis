@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from collections.abc import Callable
 from typing import Any
@@ -14,6 +15,8 @@ from mcp.client.stdio import stdio_client
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.tools.base import BaseTool
 from dendrophis.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class MCPTool(BaseTool):
@@ -114,11 +117,11 @@ class MCPManager:
         self._tasks: list[asyncio.Task] = []
         self._launch_configs: dict[str, tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
 
-    def log(self, msg: str) -> None:
+    def log(self, message: str) -> None:
         if self.debug_logger:
-            self.debug_logger(f"[MCP] {msg}")
+            self.debug_logger(f"[MCP] {message}")
         else:
-            print(f"[MCP] {msg}")
+            logger.info("[MCP] %s", message)
 
     async def initialize_servers(self) -> None:
         """Start and connect to all configured MCP servers."""

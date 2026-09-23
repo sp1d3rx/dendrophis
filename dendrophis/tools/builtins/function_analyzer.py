@@ -83,21 +83,21 @@ class FunctionAnalyzerTool(BaseTool):
 
             # Return in requested format
             if output_format == "yaml":
-                y = yaml.YAML()
-                y.default_flow_style = False
+                yaml_instance = yaml.YAML()
+                yaml_instance.default_flow_style = False
                 import io
 
                 stream = io.StringIO()
-                y.dump(functions, stream)
+                yaml_instance.dump(functions, stream)
                 return stream.getvalue()
             return functions
 
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"File not found: {file_path}") from e
-        except SyntaxError as e:
-            raise SyntaxError(f"Syntax error in file {file_path}: {e!s}") from e
-        except Exception as e:
-            raise Exception(f"Error analyzing file {file_path}: {e!s}") from e
+        except FileNotFoundError as file_error:
+            raise FileNotFoundError(f"File not found: {file_path}") from file_error
+        except SyntaxError as syntax_error:
+            raise SyntaxError(f"Syntax error in file {file_path}: {syntax_error!s}") from syntax_error
+        except Exception as analysis_error:
+            raise Exception(f"Error analyzing file {file_path}: {analysis_error!s}") from analysis_error
 
 
 # Create an instance to be imported

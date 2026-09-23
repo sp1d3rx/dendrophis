@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from dendrophis.config.loader import ConfigLoader
 from dendrophis.llm.client import LLMClient
 from dendrophis.memory.memory import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 
 async def summarize_memories(config_path: str | None = None):
@@ -26,7 +29,7 @@ async def summarize_memories(config_path: str | None = None):
     all_memories = store.list_memories(limit=10000)
 
     # Filter to those without summaries
-    to_summarize = [m for m in all_memories if not m.summary]
+    to_summarize = [memory_item for memory_item in all_memories if not memory_item.summary]
 
     if not to_summarize:
         print("No memories need summarization.")
@@ -44,8 +47,8 @@ async def summarize_memories(config_path: str | None = None):
     )
     llm = LLMClient(llm_config)
 
-    for i, memory in enumerate(to_summarize, 1):
-        print(f"\n[{i}/{len(to_summarize)}] Summarizing memory {memory.id[:8]}...")
+    for index, memory in enumerate(to_summarize, 1):
+        print(f"\n[{index}/{len(to_summarize)}] Summarizing memory {memory.id[:8]}...")
 
         # Generate summary
         prompt = f"""Summarize this memory in one concise sentence:
@@ -69,8 +72,9 @@ Summary:"""
             store.update_memory(memory.id, summary=summary)
             print(f"  → {summary}")
 
-        except Exception as e:
-            print(f"  ✗ Failed: {e}")
+        except Exception as memory_error:
+            logger.error("Failed to summarize memory %s: %s", memory.id, memory_error, exc_info=True)
+            print(f"  ✗ Failed: {memory_error}")
 
     print(f"\nDone! Summarized {len(to_summarize)} memories.")
 

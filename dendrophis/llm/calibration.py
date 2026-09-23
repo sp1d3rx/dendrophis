@@ -204,13 +204,13 @@ class ModelOverrideStore:
             return self._overrides
 
         try:
-            with open(self.path) as f:
-                data = _yaml.load(f) or {}
+            with open(self.path) as file_handle:
+                data = _yaml.load(file_handle) or {}
             self._overrides = {
                 model_id: ModelCapabilities.from_dict(cap_data) for model_id, cap_data in data.get("models", {}).items()
             }
-        except Exception as e:
-            logger.warning(f"Failed to load model overrides: {e}")
+        except Exception as load_error:
+            logger.warning(f"Failed to load model overrides: {load_error}")
             self._overrides = {}
 
         self._loaded = True
@@ -226,8 +226,8 @@ class ModelOverrideStore:
             buf = StringIO()
             _yaml.dump(data, buf)
             self.path.write_text(buf.getvalue())
-        except Exception as e:
-            logger.error(f"Failed to save model overrides: {e}")
+        except Exception as save_error:
+            logger.error(f"Failed to save model overrides: {save_error}")
 
     def get(self, model_id: str) -> ModelCapabilities | None:
         """Get capabilities for a model."""
@@ -311,15 +311,15 @@ def fetch_model_metadata(base_url: str, api_key: str, model_id: str) -> dict[str
         data = response.json()
         models = data.get("data", [])
 
-        for m in models:
-            if m.get("id") == model_id:
-                return m
+        for model_info in models:
+            if model_info.get("id") == model_id:
+                return model_info
 
         logger.debug(f"Model {model_id} not found in {url}")
         return None
 
-    except Exception as e:
-        logger.debug(f"Error fetching model metadata: {e}")
+    except Exception as metadata_error:
+        logger.debug(f"Error fetching model metadata: {metadata_error}")
         return None
 
 
@@ -401,8 +401,8 @@ async def check_parameter_support(
         error_data = response.json() if response.text else {}
         error_msg = error_data.get("error", {}).get("message", response.text[:200])
         return False, error_msg
-    except Exception as e:
-        return False, str(e)
+    except Exception as test_error:
+        return False, str(test_error)
 
 
 async def calibrate_model(
@@ -575,8 +575,8 @@ async def list_available_models(
             data = response.json()
             return data.get("data", [])
         raise Exception(f"Failed to fetch models: {response.status_code} - {response.text}") from None
-    except Exception as e:
-        raise Exception(f"Error fetching models: {e}") from e
+    except Exception as fetch_error:
+        raise Exception(f"Error fetching models: {fetch_error}") from fetch_error
 
 
 # ---------------------------------------------------------------------------

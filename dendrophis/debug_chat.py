@@ -339,12 +339,13 @@ class DebugChatSession:
                     )
                 )
                 results.append(result)
-            except Exception as e:
+            except Exception as tool_error:
+                logger.error("Error executing tool %s: %s", tc.name, tool_error, exc_info=True)
                 self.bus.publish(
                     ToolResultEvent(
                         tool_call_id=tc.id,
                         name=tc.name,
-                        content=json.dumps({"error": str(e)}),
+                        content=json.dumps({"error": str(tool_error)}),
                     )
                 )
 
@@ -508,8 +509,8 @@ async def run_single_chat(
 
     # Add raw payload logging if verbose
     if verbose:
-        logger = RawPayloadLogger(session.llm_client)
-        logger.start()
+        payload_logger = RawPayloadLogger(session.llm_client)
+        payload_logger.start()
 
     try:
         result = await session.run_turn(message, tools=tools)
@@ -570,8 +571,9 @@ async def main():
         print(f"  Base URL: {config.llm.base_url}", file=sys.stderr)
         print(f"  Max tokens: {config.llm.max_tokens}", file=sys.stderr)
         print(f"  Temperature: {config.llm.temperature}", file=sys.stderr)
-    except Exception as e:
-        print(f"  ERROR loading config: {e}", file=sys.stderr)
+    except Exception as config_error:
+        logger.error("ERROR loading config: %s", config_error, exc_info=True)
+        print(f"  ERROR loading config: {config_error}", file=sys.stderr)
         # Use defaults
         from dendrophis.config.schema import DendrophisConfig, LLMConfig
 
@@ -601,8 +603,8 @@ async def main():
         session.add_system_message(config.system_prompt)
 
     # Start raw payload logging
-    logger = RawPayloadLogger(session.llm_client)
-    logger.start()
+    payload_logger = RawPayloadLogger(session.llm_client)
+    payload_logger.start()
 
     # Interactive loop
     print("\n[READY FOR INPUT]", file=sys.stderr)
@@ -680,11 +682,9 @@ async def main():
                 if prompt_tokens > 0:
                     print(f"  Usage: prompt={prompt_tokens}, cached={cached_tokens}", file=sys.stderr)
                 print("-" * 40, file=sys.stderr)
-            except Exception as e:
-                print(f"\nERROR: {e}", file=sys.stderr)
-                import traceback
-
-                traceback.print_exc()
+            except Exception as turn_error:
+                logger.error("Turn execution error: %s", turn_error, exc_info=True)
+                print(f"\nERROR: {turn_error}", file=sys.stderr)
 
             print("\nEnter your message:", file=sys.stderr)
 

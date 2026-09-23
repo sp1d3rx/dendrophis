@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from rich.table import Table
@@ -13,6 +14,8 @@ from textual.widgets.option_list import Option
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
+
+logger = logging.getLogger(__name__)
 
 
 class ModelSwitcherScreen(ModalScreen[tuple[str, bool]]):
@@ -114,11 +117,12 @@ class ModelSwitcherScreen(ModalScreen[tuple[str, bool]]):
 
         try:
             await self._session.fetch_models()
-            self._all_models = [m for m in self._session.models if m.is_text_generation]
+            self._all_models = [model_info for model_info in self._session.models if model_info.is_text_generation]
             status.update(f"Loaded {len(self._all_models)} text models.")
             self._update_list(self.query_one("#model-search", Input).value)
-        except Exception as e:
-            status.update(f"Error loading models: {e}")
+        except Exception as model_fetch_error:
+            logger.error("Error loading models: %s", model_fetch_error, exc_info=True)
+            status.update(f"Error loading models: {model_fetch_error}")
         finally:
             self._is_loading = False
 

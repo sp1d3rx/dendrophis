@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import re
 import threading
 import time
@@ -41,6 +42,8 @@ from dendrophis.session.tools import SessionToolExecutor, is_tool_error, tool_ca
 from dendrophis.skills.manager import SkillManager
 from dendrophis.tools.registry import ToolRegistry
 
+logger = logging.getLogger(__name__)
+
 # Constants for streaming
 TPS_SAMPLE_INTERVAL = 8
 
@@ -53,9 +56,7 @@ def _file_log(message: str, log_path: Path) -> None:
         with open(log_path, "a") as log_file:
             log_file.write(f"[{timestamp}] {message}\n")
     except Exception as exception:
-        import sys
-
-        print(f"Failed to write debug log: {exception}", file=sys.stderr)
+        logger.warning("Failed to write debug log: %s", exception)
 
 
 def _tool_log(message: str, session_id: str = "global") -> None:
@@ -70,9 +71,7 @@ def _tool_log(message: str, session_id: str = "global") -> None:
         with open(log_path, "a") as log_file:
             log_file.write(f"[{timestamp}] {message}\n")
     except Exception as exception:
-        import sys
-
-        print(f"Failed to write tool log: {exception}", file=sys.stderr)
+        logger.warning("Failed to write tool log: %s", exception)
 
 
 @dataclass

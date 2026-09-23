@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -266,11 +269,12 @@ def _cmd_calibrate(model_id: str, config_path: str | None = None, force: bool = 
             config = capabilities.get_recommended_config()
             if config:
                 print("\nRecommended overrides:")
-                for k, v in config.items():
-                    if not k.startswith("_"):
-                        print(f"  {k}: {v}")
-        except Exception as e:
-            print(f"Error: {e}", file=sys.stderr)
+                for key, value in config.items():
+                    if not key.startswith("_"):
+                        print(f"  {key}: {value}")
+        except Exception as error:
+            logger.error("Error calibrating model: %s", error, exc_info=True)
+            print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
 
     asyncio.run(run())
@@ -297,8 +301,9 @@ def _cmd_list_models(config_path: str | None = None) -> None:
         try:
             models = await list_available_models()
             print(format_model_list(models, store))
-        except Exception as e:
-            print(f"Error: {e}", file=sys.stderr)
+        except Exception as error:
+            logger.error("Error listing models: %s", error, exc_info=True)
+            print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
 
     asyncio.run(run())
@@ -392,6 +397,7 @@ def main() -> None:
     try:
         loader = ConfigLoader.load(config_path=args.config)
     except FileNotFoundError as config_error:
+        logger.error("Error loading config: %s", config_error, exc_info=True)
         print(f"Error: {config_error}", file=sys.stderr)
         sys.exit(1)
     if args.model:

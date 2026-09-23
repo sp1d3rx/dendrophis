@@ -1055,9 +1055,9 @@ class SettingsScreen(Screen):
                     raise ValueError("Root element must be a dictionary")
                 self._last_valid_yaml = editor.text
                 self.query_one("#error-label", Label).update("")
-            except Exception as e:
+            except Exception as yaml_syntax_error:
                 # Invalid YAML, block switch
-                self.query_one("#error-label", Label).update(f"[red]YAML Syntax Error: {e}[/red]")
+                self.query_one("#error-label", Label).update(f"[red]YAML Syntax Error: {yaml_syntax_error}[/red]")
                 self.query_one(TabbedContent).active = "tab-yaml"
                 return
 

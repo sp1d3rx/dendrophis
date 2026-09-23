@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from dendrophis.tools.base import BaseTool
     from dendrophis.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,7 +54,7 @@ class ToolExecutor:
                 if target_path.exists() and target_path.suffix != ".bak":
                     shutil.copy2(target_path, target_path.with_suffix(target_path.suffix + ".bak"))
         except Exception as backup_error:
-            print(f"[WARNING] Failed to create backup: {backup_error}", file=sys.stderr)
+            logger.warning("Failed to create backup: %s", backup_error)
         # ---------------------------------
 
         tool = self._registry.get(tool_call.name)

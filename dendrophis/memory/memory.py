@@ -287,9 +287,9 @@ class MemoryStore:
                 updated_at=now,
                 score=1.0,  # Initial score after increment
             )
-        except Exception as e:
+        except Exception as save_error:
             # EAFP: Provide meaningful error message for any unexpected failures
-            raise RuntimeError(f"Failed to save memory: {e!s}") from e
+            raise RuntimeError(f"Failed to save memory: {save_error!s}") from save_error
 
     def get_memory(self, memory_id: str) -> MemoryEntry | None:
         """Retrieve a memory by ID."""
@@ -317,9 +317,9 @@ class MemoryStore:
                     raise RuntimeError(
                         f"Failed to convert database row to memory entry: {conversion_error!s}"
                     ) from conversion_error
-        except Exception as e:
+        except Exception as retrieval_error:
             # EAFP: Provide meaningful error message for any unexpected failures
-            raise RuntimeError(f"Failed to retrieve memory: {e!s}") from e
+            raise RuntimeError(f"Failed to retrieve memory: {retrieval_error!s}") from retrieval_error
 
     def update_memory(self, memory_id: str, **fields: Any) -> MemoryEntry | None:
         """Update fields of an existing memory. Returns the updated entry or None."""

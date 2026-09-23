@@ -48,8 +48,8 @@ class GetFunctionTool(BaseTool):
         # Parse AST to find function
         try:
             tree = ast.parse(content, filename=file_path)
-        except SyntaxError as e:
-            raise SyntaxError(f"Syntax error in {file_path}: {e}") from e
+        except SyntaxError as syntax_error:
+            raise SyntaxError(f"Syntax error in {file_path}: {syntax_error}") from syntax_error
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
@@ -128,8 +128,8 @@ class ReplaceFunctionTool(BaseTool):
         # Parse AST to find function
         try:
             tree = ast.parse(content, filename=file_path)
-        except SyntaxError as e:
-            raise SyntaxError(f"Syntax error in {file_path}: {e}") from e
+        except SyntaxError as syntax_error:
+            raise SyntaxError(f"Syntax error in {file_path}: {syntax_error}") from syntax_error
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:

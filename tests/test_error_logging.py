@@ -311,3 +311,91 @@ def test_list_primers_skips_corrupt_with_log(
     assert [entry[0] for entry in results] == ["good"]  # valid primer still listed
     messages = [record.getMessage() for record in caplog.records]
     assert any("bad.primer.json" in message for message in messages)
+
+
+def test_file_log_exception_uses_logging(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dendrophis.session import chat as chat_module
+
+    unwritable_path = tmp_path / "read_only" / "test.log"
+
+    def raising_mkdir(*args, **kwargs):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", raising_mkdir)
+
+    with caplog.at_level(logging.WARNING, logger="dendrophis.session.chat"):
+        chat_module._file_log("test message", unwritable_path)
+
+    captured_output = capsys.readouterr()
+    assert captured_output.err == ""
+    assert captured_output.out == ""
+    assert any("Failed to write debug log" in record.getMessage() for record in caplog.records)
+
+
+def test_tool_log_exception_uses_logging(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dendrophis.session import chat as chat_module
+
+    monkeypatch.setenv("DENDROPHIS_TOOL_LOG", "1")
+
+    def raising_open(*args, **kwargs):
+        raise OSError("Disk failure")
+
+    monkeypatch.setattr("builtins.open", raising_open)
+
+    with caplog.at_level(logging.WARNING, logger="dendrophis.session.chat"):
+        chat_module._tool_log("test message", session_id="test_session")
+
+    captured_output = capsys.readouterr()
+    assert captured_output.err == ""
+    assert captured_output.out == ""
+    assert any("Failed to write tool log" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_tool_executor_backup_failure_uses_logging(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+
+    from dendrophis.llm.client import ToolCall
+    from dendrophis.tools.executor import ToolExecutor
+    from dendrophis.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    executor = ToolExecutor(registry)
+
+    target_file = tmp_path / "test_edit.txt"
+    target_file.write_text("initial content", encoding="utf-8")
+
+    def raising_copy(*args, **kwargs):
+        raise OSError("Cannot backup")
+
+    monkeypatch.setattr(shutil, "copy2", raising_copy)
+
+    tool_call = ToolCall(
+        index=0,
+        id="call_test_123",
+        name="edit_file",
+        arguments=f'{{"file_path": "{target_file}"}}',
+    )
+
+    with caplog.at_level(logging.WARNING, logger="dendrophis.tools.executor"):
+        await executor.execute(tool_call)
+
+    captured_output = capsys.readouterr()
+    assert captured_output.err == ""
+    assert captured_output.out == ""
+    assert any("Failed to create backup" in record.getMessage() for record in caplog.records)

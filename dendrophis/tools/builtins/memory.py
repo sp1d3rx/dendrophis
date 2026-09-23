@@ -68,8 +68,8 @@ class SaveMemoryTool(BaseTool):
                 embedding=embedding,
             )
             return {"success": True, "memory_id": entry.id, "content": content[:100] + "..."}
-        except Exception as e:
-            return {"error": f"Failed to save memory: {e}"}
+        except Exception as memory_error:
+            return {"error": f"Failed to save memory: {memory_error}"}
 
 
 class SearchMemoryTool(BaseTool):
@@ -213,8 +213,8 @@ class DeleteMemoryTool(BaseTool):
             if success:
                 return {"success": True, "memory_id": memory_id, "message": "Memory deleted successfully."}
             return {"success": False, "memory_id": memory_id, "message": "Memory not found."}
-        except Exception as e:
-            return {"error": f"Failed to delete memory: {e}"}
+        except Exception as memory_error:
+            return {"error": f"Failed to delete memory: {memory_error}"}
 
 
 class RecallMemoryTool(BaseTool):
@@ -261,5 +261,5 @@ class RecallMemoryTool(BaseTool):
                 "source": entry.source,
                 "created_at": entry.created_at,
             }
-        except Exception as e:
-            return {"error": f"Failed to display memory: {e}"}
+        except Exception as memory_error:
+            return {"error": f"Failed to display memory: {memory_error}"}
