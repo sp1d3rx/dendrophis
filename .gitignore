@@ -3,6 +3,10 @@ dendrophis.yaml
 openrouter.yaml
 omlx.yaml
 venice.yaml
+*.local.yaml
+*.local.yml
+*secrets*.yaml
+*secrets*.yml
 
 
 # logs

@@ -20,9 +20,24 @@ logger = logging.getLogger(__name__)
 _SHUTDOWN_TIMEOUT_S = 5.0
 
 
-def create_app(bridge: EventBridge) -> FastAPI:
+def _is_allowed_origin(origin: str | None, allowed_origins: set[str] | None = None) -> bool:
+    """Validate WebSocket origin to prevent Cross-Site WebSocket Hijacking (CSWSH)."""
+    if origin is None:
+        # Non-browser clients (tests, CLI tools) typically omit the Origin header
+        return True
+    if allowed_origins and origin in allowed_origins:
+        return True
+    from urllib.parse import urlparse
+
+    parsed_origin = urlparse(origin)
+    # Allow connections originated from localhost or loopback interfaces
+    return parsed_origin.hostname in ("localhost", "127.0.0.1", "::1")
+
+
+def create_app(bridge: EventBridge, allowed_origins: list[str] | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(title="Dendrophis Web Observability Interface")
+    allowed_origins_set = set(allowed_origins) if allowed_origins else None
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
@@ -35,6 +50,12 @@ def create_app(bridge: EventBridge) -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
+        origin = websocket.headers.get("origin")
+        if not _is_allowed_origin(origin, allowed_origins_set):
+            logger.warning("Rejected WebSocket connection with forbidden origin: %s", origin)
+            await websocket.close(code=1008, reason="Forbidden origin")
+            return
+
         await websocket.accept()
         # Register client and get initial event state history
         initial_history = bridge.register_client(websocket)
@@ -63,11 +84,18 @@ def create_app(bridge: EventBridge) -> FastAPI:
 class WebObservabilityServer:
     """Manages the server process lifecycle."""
 
-    def __init__(self, bridge: EventBridge, host: str = "127.0.0.1", port: int = 9320) -> None:
+    def __init__(
+        self,
+        bridge: EventBridge,
+        host: str = "127.0.0.1",
+        port: int = 9320,
+        allowed_origins: list[str] | None = None,
+    ) -> None:
         self.bridge = bridge
         self.host = host
         self.port = port
-        self.app = create_app(bridge)
+        self.allowed_origins = allowed_origins
+        self.app = create_app(bridge, allowed_origins=allowed_origins)
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
 

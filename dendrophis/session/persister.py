@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dendrophis.llm.models import supports_prompt_cache_key_by_id
+from dendrophis.utils import ensure_secure_dir, ensure_secure_file
 
 if TYPE_CHECKING:
     from dendrophis.config.schema import DendrophisConfig
@@ -89,7 +90,7 @@ class SessionPersister:
 
         # Create sessions directory if it doesn't exist
         sessions_dir = self.DEFAULT_SESSIONS_DIR
-        sessions_dir.mkdir(parents=True, exist_ok=True)
+        ensure_secure_dir(sessions_dir)
 
         if session_file:
             filepath = session_file
@@ -125,6 +126,7 @@ class SessionPersister:
             data = json.dumps(session_data, ensure_ascii=False).encode()
             with lzma.open(filepath, "wb", preset=0) as file_handle:
                 file_handle.write(data)
+            ensure_secure_file(filepath)
             return filepath
         except Exception as save_error:
             # A failed save means the session did not persist — record why instead

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import os
 import re
+from pathlib import Path
 
 
 def sanitize_tool_name(name: str | None) -> str:
@@ -31,6 +34,19 @@ def sanitize_tool_name(name: str | None) -> str:
 def hash_content(content: str) -> str:
     """Compute SHA256 hash of content."""
     return hashlib.sha256(content.encode()).hexdigest()
+
+
+def ensure_secure_dir(directory_path: Path) -> None:
+    """Create directory if not present and restrict permissions to owner only (0700)."""
+    directory_path.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(directory_path, 0o700)
+
+
+def ensure_secure_file(file_path: Path) -> None:
+    """Restrict file permissions to owner read/write only (0600)."""
+    with contextlib.suppress(OSError):
+        os.chmod(file_path, 0o600)
 
 
 # Backwards compatibility aliases (private names for internal use)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -96,3 +97,47 @@ def test_fastapi_app_creation() -> None:
     app = create_app(bridge)
     assert app is not None
     assert app.title == "Dendrophis Web Observability Interface"
+
+
+def test_is_allowed_origin() -> None:
+    """Test origin validation for CSWSH protection."""
+    from dendrophis.web.server import _is_allowed_origin
+
+    # Allowed: loopback origins
+    assert _is_allowed_origin(None) is True
+    assert _is_allowed_origin("http://localhost:9320") is True
+    assert _is_allowed_origin("http://127.0.0.1:9320") is True
+    assert _is_allowed_origin("http://[::1]:9320") is True
+
+    # Forbidden: foreign origins
+    assert _is_allowed_origin("https://evil.example.com") is False
+    assert _is_allowed_origin("http://attacker.local") is False
+
+    # Allowed: explicit allowlist
+    assert (
+        _is_allowed_origin(
+            "https://trusted.internal",
+            allowed_origins={"https://trusted.internal"},
+        )
+        is True
+    )
+
+
+def test_ensure_secure_dir_and_file(tmp_path: Path) -> None:
+    """Test directory (0700) and file (0600) permission hardening."""
+    import stat
+
+    from dendrophis.utils import ensure_secure_dir, ensure_secure_file
+
+    secure_directory = tmp_path / "nested_directory"
+    ensure_secure_dir(secure_directory)
+    assert secure_directory.is_dir()
+    directory_mode = stat.S_IMODE(secure_directory.stat().st_mode)
+    assert directory_mode == 0o700
+
+    secure_file = secure_directory / "sensitive.txt"
+    secure_file.write_text("classified")
+    ensure_secure_file(secure_file)
+    assert secure_file.is_file()
+    file_mode = stat.S_IMODE(secure_file.stat().st_mode)
+    assert file_mode == 0o600

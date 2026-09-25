@@ -347,13 +347,16 @@ def _setup_exception_log() -> None:
     import logging
     from pathlib import Path
 
+    from dendrophis.utils import ensure_secure_dir, ensure_secure_file
+
     log_path = Path.home() / ".config" / "dendrophis" / "exceptions.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_secure_dir(log_path.parent)
     handler = logging.FileHandler(log_path)
     handler.setLevel(logging.WARNING)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s\n%(message)s\n"))
     logging.root.addHandler(handler)
     logging.root.setLevel(logging.WARNING)
+    ensure_secure_file(log_path)
 
 
 def main() -> None:

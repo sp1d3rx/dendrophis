@@ -10,6 +10,7 @@ from ruamel.yaml import YAML
 
 from dendrophis.config.defaults import DEFAULT_CONFIG_YAML
 from dendrophis.config.schema import DendrophisConfig
+from dendrophis.utils import ensure_secure_dir, ensure_secure_file
 
 _yaml = YAML()
 _yaml.preserve_quotes = True
@@ -81,8 +82,9 @@ class ConfigLoader:
                 explicit_config_name = config_path or os.environ.get("DENDROPHIS_CONFIG")
                 raise FileNotFoundError(f"Config file not found: {explicit_config_name}")
             resolved_path = Path.home() / ".config" / "dendrophis" / "config.yaml"
-            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_secure_dir(resolved_path.parent)
             resolved_path.write_text(DEFAULT_CONFIG_YAML)
+            ensure_secure_file(resolved_path)
 
         raw = _yaml.load(resolved_path.read_text()) or {}
         raw = _apply_env_overrides(raw)
@@ -102,6 +104,7 @@ class ConfigLoader:
         buf = __import__("io").StringIO()
         _yaml.dump(self._raw, buf)
         self._path.write_text(buf.getvalue())
+        ensure_secure_file(self._path)
 
     def reload(self) -> None:
         """Re-read config file from disk and re-validate."""

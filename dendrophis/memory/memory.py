@@ -17,6 +17,7 @@ import numpy as np
 
 from dendrophis.memory.embedder import BaseEmbedder, NullEmbedder
 from dendrophis.memory.models import MemoryEntry, MemoryStats
+from dendrophis.utils import ensure_secure_dir, ensure_secure_file
 
 if TYPE_CHECKING:
     from spacy.language import Language
@@ -48,7 +49,7 @@ class MemoryStore:
         nlp: Language | None = None,
     ) -> None:
         self._db_path = Path(db_path).expanduser()
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_secure_dir(self._db_path.parent)
 
         # Backward compatibility: if nlp is provided but no embedder, wrap it
         if embedder is None and nlp is not None:
@@ -62,6 +63,7 @@ class MemoryStore:
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         self._init_db()
+        ensure_secure_file(self._db_path)
 
     @property
     def embedder(self) -> BaseEmbedder:
