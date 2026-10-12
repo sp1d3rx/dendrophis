@@ -196,6 +196,18 @@ class ReasoningDeltaEvent(StreamEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCallStreamingEvent(StreamEvent):
+    """Signals that a tool call is being built in the stream.
+
+    Fired as soon as a tool call begins streaming (opening tag detected),
+    before its arguments finish accumulating. Lets the UI surface a
+    "tool in progress" state during the (potentially long) generation window,
+    rather than only once execution starts. Distinct from ToolCallStartEvent,
+    which fires with the resolved name/index once the call is complete.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCallStartEvent(StreamEvent):
     """Signals the beginning of a new tool call in the stream."""
 

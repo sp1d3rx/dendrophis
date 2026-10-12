@@ -356,17 +356,14 @@ class MainScreenCommands:
         self._show_help()
 
     def _compact_context(self) -> None:
-        """Manually trigger context compaction to reduce token usage."""
-        chat = self.query_one(ChatView)
+        """Manually trigger context compaction to reduce token usage.
 
+        User feedback is rendered by the CompactionStarted/Completed/Failed
+        event handlers in MainScreenEventHandler, so this only kicks off the
+        compaction worker.
+        """
         before_token_count = self._session.context.token_count
-        before_token_percentage = self._session.context.token_pct * 100
         before_message_count = len(self._session.context.messages)
-
-        chat.add_system_message(
-            f"[dim]Compacting context... ({before_token_count:,} tokens, {before_token_percentage:.1f}%,"
-            f" {before_message_count} messages)[/dim]"
-        )
         self._debug_widget.write(
             f"[NOTIFY] Starting context compaction ({before_token_count:,} tokens, {before_message_count} messages)"
         )
@@ -374,49 +371,11 @@ class MainScreenCommands:
         async def do_compact() -> None:
             try:
                 compaction_result = await self._session.compact()
-
-                if not compaction_result.get("compacted"):
-                    chat.add_system_message(
-                        f"[dim]Compaction skipped: {compaction_result.get('reason', 'No messages to compact')}[/dim]"
-                    )
-                    return
-
-                after_token_count = self._session.context.token_count
-                after_token_percentage = self._session.context.token_pct * 100
-                after_message_count = len(self._session.context.messages)
-                saved_tokens = before_token_count - after_token_count
-                compacted_count = compaction_result.get("messages_compacted", 0)
-                kept_count = compaction_result.get("kept_recent", 0)
-                summary_text = compaction_result.get("summary", "")
-
-                output_lines = [
-                    "[bold]Context Compacted[/bold]",
-                    "",
-                    f"[dim]Messages:[/dim] {before_message_count} → {after_message_count}"
-                    f" ([green]-{compacted_count}[/] compacted, {kept_count} kept)",
-                    f"[dim]Tokens:[/dim]   {before_token_count:,} → {after_token_count:,}"
-                    f" ([green]-{saved_tokens:,}[/], {after_token_percentage:.1f}%)",
-                ]
-
-                if summary_text:
-                    output_lines.append("")
-                    output_lines.append("[dim]Summary:[/dim]")
-                    preview_text = summary_text[:300] + "..." if len(summary_text) > 300 else summary_text
-                    output_lines.append(f"[italic]{preview_text}[/italic]")
-
-                chat.add_system_message("\n".join(output_lines))
                 self._debug_widget.write(
-                    f"[NOTIFY] Compacted {compacted_count} messages, saved {saved_tokens:,} tokens"
-                )
-
-                self._event_bus.publish(
-                    ContextUpdatedEvent(
-                        token_count=after_token_count,
-                        token_pct=after_token_percentage / 100,
-                    )
+                    f"[NOTIFY] Compacted {compaction_result.get('messages_compacted', 0)} messages"
+                    f" ({before_token_count:,} -> {self._session.context.token_count:,} tokens)"
                 )
             except Exception as compaction_error:
-                chat.add_system_message(f"[red]Compaction failed: {compaction_error}[/red]")
                 self._debug_widget.write(f"[NOTIFY ERROR] Context compaction failed: {compaction_error}")
 
         self.run_worker(do_compact(), exclusive=True, exit_on_error=False)

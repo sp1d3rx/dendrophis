@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
 from dendrophis.tools.names import ToolName
+
+# Matches /dev/null so it can be ignored by the /dev/* block check.
+_NULL_REDIRECT = re.compile(r"/dev/null\b")
 
 
 class BashTool(BaseTool):
@@ -66,9 +70,16 @@ class BashTool(BaseTool):
             if simulation.dangerous:
                 return {"error": f"Dangerous command blocked: {simulation.reason}"}
 
-            # Reject commands that touch /dev/*
-            if "/dev/" in command or command.startswith("/dev"):
-                return {"error": f"Access to /dev blocked in command: {command}"}
+            # Reject commands that touch /dev/* (except the harmless /dev/null sink)
+            stripped = _NULL_REDIRECT.sub("", command)
+            if "/dev/" in stripped or stripped.startswith("/dev"):
+                return {
+                    "error": (
+                        f"Access to /dev blocked in command: {command}. "
+                        "Only /dev/null is allowed; redirect stderr with `>/dev/null` "
+                        "or write to a temp file instead."
+                    )
+                }
 
             timeout_seconds = timeout / 1000
             result = await asyncio.to_thread(

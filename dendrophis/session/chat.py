@@ -454,19 +454,6 @@ class ChatOrchestrator:
                 except Exception as association_error:
                     self._log(f"Memory association failed: {association_error}")
 
-            try:
-                if self.context.needs_compaction():
-                    await self.compact()
-                    self._emit(
-                        ContextUpdatedEvent(
-                            token_count=self.context.token_count,
-                            token_pct=self.context.token_pct,
-                            turn_count=self.context.get_turn_count(),
-                        )
-                    )
-            except Exception as compaction_error:
-                self._emit(ErrorEvent(message=f"Context compaction failed: {compaction_error!s}"))
-
             stats_task = None
             try:
                 stats_task = asyncio.create_task(self._emit_stats_periodically())
@@ -530,10 +517,31 @@ class ChatOrchestrator:
         )
         max_consecutive_failures = self.config.tools.max_calls
         consecutive_failures = 0
+        auto_compaction_failures = 0
         continuation_nudges = 0
         max_continuation_nudges = 2
         nudge_pending = False
         while not self.cancel_flag.is_set():
+            # Auto-compaction: re-check at the top of every iteration, after the
+            # previous round of tool results was appended. The turn-level check
+            # alone misses long agentic turns where context grows past the
+            # threshold mid-loop. A breaker stops retrying within the same turn
+            # if compaction keeps failing (e.g. summary LLM error).
+            if self.context.needs_compaction() and auto_compaction_failures < 3:
+                try:
+                    await self.compact()
+                    auto_compaction_failures = 0
+                    self._emit(
+                        ContextUpdatedEvent(
+                            token_count=self.context.token_count,
+                            token_pct=self.context.token_pct,
+                            turn_count=self.context.get_turn_count(),
+                        )
+                    )
+                except Exception as compaction_error:
+                    auto_compaction_failures += 1
+                    self._emit(ErrorEvent(message=f"Context compaction failed: {compaction_error!s}"))
+
             self._log(f"_run_completion_loop consecutive_failures={consecutive_failures}")
             last_message = self.context.get_messages_for_api()[-1]["content"]
             self._emit(MessageSentEvent(message_text=last_message))

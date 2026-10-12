@@ -11,6 +11,7 @@ from dendrophis.events import (
     StreamingStartedEvent,
     TextDeltaEvent,
     ToolCallStartEvent,
+    ToolCallStreamingEvent,
     ToolExecutionFinishedEvent,
     ToolExecutionStartedEvent,
     WaitingForInputEvent,
@@ -51,6 +52,13 @@ class StatusPanel(TextPanel):
         self._message_sent = True
         self._waiting_input = False
         self._tool_calling = False
+        self.update_value()
+
+    @listen
+    def _on_tool_call_streaming(self, event: ToolCallStreamingEvent) -> None:
+        # A tool call is being built in the stream — light up as soon as it
+        # starts, not only once execution begins.
+        self._tool_calling = True
         self.update_value()
 
     @listen

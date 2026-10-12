@@ -19,6 +19,7 @@ from dendrophis.events import (
     ToolCallDeltaEvent,
     ToolCallDoneEvent,
     ToolCallStartEvent,
+    ToolCallStreamingEvent,
     UsageEvent,
 )
 
@@ -299,6 +300,7 @@ def _parse_responses_api_chunk(
             callId = outputItem.get("call_id") or outputItem.get("id", f"call_{outputIndex}")
             toolName = outputItem.get("name", "")
             updatedCalls[outputIndex] = ToolCall(index=outputIndex, id=callId, name=toolName, arguments="")
+            events.append(ToolCallStreamingEvent())
             events.append(ToolCallStartEvent(index=outputIndex, id=callId, name=toolName))
     elif eventType == "response.function_call_arguments.delta":
         outputIndex = chunk.get("output_index", 0)
@@ -383,47 +385,85 @@ def _extract_usage(chunk: dict[str, Any]) -> list[StreamEvent]:
     return []
 
 
+THINK_START_TAGS = (
+    "<think>",
+    "<thought>",
+    "<|channel>thought\n",
+    "<|channel>thought",
+    "<reflection>",
+    "<reasoning>",
+)
+
+THOUGHT_CLOSE_TAGS = (
+    "</think>",
+    "</thought>",
+    "<channel|>",
+    "</reflection>",
+    "</reasoning>",
+)
+
+TOOL_START_TAGS = (
+    "<tool_call>",
+    "<tool_call|>",
+    "<|tool_call>",
+    "<|tool_call_start|>",
+    "[TOOL_CALLS]",
+)
+
+TOOL_CLOSE_TAGS = (
+    "</tool_call>",
+    "</tool_call|>",
+    "<tool_call|>",
+    "<|tool_call_end|>",
+    "[/TOOL_CALLS]",
+)
+
+
 def _scan_text_mode(
     remainingContent: str,
     parsingState: dict[str, Any],
     events: list[StreamEvent],
 ) -> str:
     """Scan text mode for tag starts. Returns unconsumed content."""
-    thinkStart = remainingContent.find("<think>")
-    toolStart = remainingContent.find("<tool_call>")
-    toolStartPipe = remainingContent.find("<tool_call|>")
+    modeIndices: list[tuple[int, str, int]] = []
+    for thinkTag in THINK_START_TAGS:
+        thinkIndex = remainingContent.find(thinkTag)
+        if thinkIndex != -1:
+            modeIndices.append((thinkIndex, "thinking", len(thinkTag)))
+
+    for toolTag in TOOL_START_TAGS:
+        toolIndex = remainingContent.find(toolTag)
+        if toolIndex != -1:
+            modeIndices.append((toolIndex, "tool_calling", len(toolTag)))
 
     # Check for partial tags at the very end of the string
     potentialTagIndex = remainingContent.rfind("<")
-    if potentialTagIndex != -1:
-        foundTagIndex = max(thinkStart, toolStart, toolStartPipe)
-        if potentialTagIndex > foundTagIndex:
-            fragment = remainingContent[potentialTagIndex:]
-            if (
-                "<think>".startswith(fragment)
-                or "<tool_call>".startswith(fragment)
-                or "<tool_call|>".startswith(fragment)
-            ):
-                if potentialTagIndex > 0:
-                    events.append(TextDeltaEvent(delta=remainingContent[:potentialTagIndex]))
+    potentialBracketIndex = remainingContent.rfind("[")
+    candidateIndex = max(potentialTagIndex, potentialBracketIndex)
+    if candidateIndex != -1:
+        foundTagIndex = min(modeIndices, key=lambda modePair: modePair[0])[0] if modeIndices else -1
+        if foundTagIndex == -1 or candidateIndex > foundTagIndex:
+            fragment = remainingContent[candidateIndex:]
+            allStartTags = THINK_START_TAGS + TOOL_START_TAGS
+            if any(startTag.startswith(fragment) for startTag in allStartTags):
+                if candidateIndex > 0:
+                    events.append(TextDeltaEvent(delta=remainingContent[:candidateIndex]))
                 parsingState["pending"] = fragment
                 return ""
-
-    modeIndices = []
-    if thinkStart != -1:
-        modeIndices.append((thinkStart, "thinking", 7))
-    if toolStart != -1:
-        modeIndices.append((toolStart, "tool_calling", 11))
-    if toolStartPipe != -1:
-        modeIndices.append((toolStartPipe, "tool_calling", 12))
 
     if not modeIndices:
         events.append(TextDeltaEvent(delta=remainingContent))
         return ""
 
-    firstIndex, nextMode, tagLength = min(modeIndices)
+    firstIndex, nextMode, tagLength = min(modeIndices, key=lambda modePair: modePair[0])
     if firstIndex > 0:
         events.append(TextDeltaEvent(delta=remainingContent[:firstIndex]))
+
+    if nextMode == "tool_calling":
+        # Fire as soon as the opening tag is confirmed, so UI can surface a
+        # "tool in progress" state while the (possibly long) arguments build,
+        # rather than only when the closing tag completes the call.
+        events.append(ToolCallStreamingEvent())
 
     parsingState["mode"] = nextMode
     return remainingContent[firstIndex + tagLength :]
@@ -434,49 +474,36 @@ def _scan_thinking_mode(
     parsingState: dict[str, Any],
     events: list[StreamEvent],
 ) -> str:
-    """Scan thinking mode for tag ends. Returns unconsumed content."""
-    thinkEnd = remainingContent.find("</think>")
-    nextToolStart = remainingContent.find("<tool_call>")
-    nextThinkStart = remainingContent.find("<think>")
+    """Scan thinking mode for tag ends. Returns unconsumed content.
 
-    interestingIndices = []
-    if thinkEnd != -1:
-        interestingIndices.append((thinkEnd, "end", 8))
-    if nextToolStart != -1:
-        interestingIndices.append((nextToolStart, "transition", 0))
-    if nextThinkStart != -1:
-        interestingIndices.append((nextThinkStart, "transition", 0))
+    Tool calls and special tags are disabled in thoughts. We only detect
+    the end of thoughts (e.g. </think>).
+    """
+    foundEndIndices: list[tuple[int, int]] = []
+    for closeTag in THOUGHT_CLOSE_TAGS:
+        tagIndex = remainingContent.find(closeTag)
+        if tagIndex != -1:
+            foundEndIndices.append((tagIndex, len(closeTag)))
 
-    if not interestingIndices:
-        potentialEndIndex = remainingContent.rfind("</")
-        if potentialEndIndex != -1:
-            fragment = remainingContent[potentialEndIndex:]
-            if "</think>".startswith(fragment):
-                if potentialEndIndex > 0:
-                    events.append(ReasoningDeltaEvent(delta=remainingContent[:potentialEndIndex]))
-                parsingState["pending"] = fragment
-                return ""
-
-        potentialStartIndex = remainingContent.rfind("<")
-        if potentialStartIndex != -1:
-            fragment = remainingContent[potentialStartIndex:]
-            if "<think>".startswith(fragment) or "<tool_call>".startswith(fragment):
-                if potentialStartIndex > 0:
-                    events.append(ReasoningDeltaEvent(delta=remainingContent[:potentialStartIndex]))
-                parsingState["pending"] = fragment
-                return ""
-
-        events.append(ReasoningDeltaEvent(delta=remainingContent))
-        return ""
-
-    firstIndex, typeName, tagLength = min(interestingIndices)
-    if firstIndex > 0:
-        events.append(ReasoningDeltaEvent(delta=remainingContent[:firstIndex]))
-
-    parsingState["mode"] = "text"
-    if typeName == "end":
+    if foundEndIndices:
+        firstIndex, tagLength = min(foundEndIndices, key=lambda tagPair: tagPair[0])
+        if firstIndex > 0:
+            events.append(ReasoningDeltaEvent(delta=remainingContent[:firstIndex]))
+        parsingState["mode"] = "text"
         return remainingContent[firstIndex + tagLength :]
-    return remainingContent[firstIndex:]
+
+    # Check for partial close tag at the very end of remainingContent
+    for candidateLength in range(min(len(remainingContent), 15), 0, -1):
+        candidateSuffix = remainingContent[-candidateLength:]
+        if any(closeTag.startswith(candidateSuffix) for closeTag in THOUGHT_CLOSE_TAGS):
+            prefixIndex = len(remainingContent) - candidateLength
+            if prefixIndex > 0:
+                events.append(ReasoningDeltaEvent(delta=remainingContent[:prefixIndex]))
+            parsingState["pending"] = candidateSuffix
+            return ""
+
+    events.append(ReasoningDeltaEvent(delta=remainingContent))
+    return ""
 
 
 def _scan_tool_calling_mode(
@@ -485,49 +512,36 @@ def _scan_tool_calling_mode(
     events: list[StreamEvent],
 ) -> str:
     """Scan tool_calling mode for tag ends. Returns unconsumed content."""
-    toolEnd = remainingContent.find("</tool_call>")
-    toolEndPipe = remainingContent.find("</tool_call|>")
-    nextToolStart = remainingContent.find("<tool_call>")
-    nextToolStartPipe = remainingContent.find("<tool_call|>")
-    nextThinkStart = remainingContent.find("<think>")
+    interestingIndices: list[tuple[int, str, int]] = []
+    for closeTag in TOOL_CLOSE_TAGS:
+        closeIndex = remainingContent.find(closeTag)
+        if closeIndex != -1:
+            interestingIndices.append((closeIndex, "end", len(closeTag)))
 
-    interestingIndices = []
-    if toolEnd != -1:
-        interestingIndices.append((toolEnd, "end", 12))
-    if toolEndPipe != -1:
-        interestingIndices.append((toolEndPipe, "end", 13))
-    if nextToolStart != -1:
-        interestingIndices.append((nextToolStart, "transition", 0))
-    if nextToolStartPipe != -1:
-        interestingIndices.append((nextToolStartPipe, "transition", 0))
-    if nextThinkStart != -1:
-        interestingIndices.append((nextThinkStart, "transition", 0))
+    for nextToolTag in TOOL_START_TAGS:
+        nextToolIndex = remainingContent.find(nextToolTag)
+        if nextToolIndex != -1:
+            interestingIndices.append((nextToolIndex, "transition", 0))
+
+    for nextThinkTag in THINK_START_TAGS:
+        nextThinkIndex = remainingContent.find(nextThinkTag)
+        if nextThinkIndex != -1:
+            interestingIndices.append((nextThinkIndex, "transition", 0))
 
     if not interestingIndices:
-        potentialEndIndex = remainingContent.rfind("</")
-        if potentialEndIndex != -1:
-            fragment = remainingContent[potentialEndIndex:]
-            if "</tool_call>".startswith(fragment) or "</tool_call|>".startswith(fragment):
-                parsingState["buffer"] += remainingContent[:potentialEndIndex]
-                parsingState["pending"] = fragment
-                return ""
-
-        potentialStartIndex = remainingContent.rfind("<")
-        if potentialStartIndex != -1:
-            fragment = remainingContent[potentialStartIndex:]
-            if (
-                "<tool_call>".startswith(fragment)
-                or "<tool_call|>".startswith(fragment)
-                or "<think>".startswith(fragment)
-            ):
-                parsingState["buffer"] += remainingContent[:potentialStartIndex]
-                parsingState["pending"] = fragment
+        allPotentialTags = TOOL_CLOSE_TAGS + TOOL_START_TAGS + THINK_START_TAGS
+        for candidateLength in range(min(len(remainingContent), 20), 0, -1):
+            candidateSuffix = remainingContent[-candidateLength:]
+            if any(targetTag.startswith(candidateSuffix) for targetTag in allPotentialTags):
+                prefixIndex = len(remainingContent) - candidateLength
+                parsingState["buffer"] += remainingContent[:prefixIndex]
+                parsingState["pending"] = candidateSuffix
                 return ""
 
         parsingState["buffer"] += remainingContent
         return ""
 
-    firstIndex, typeName, tagLength = min(interestingIndices)
+    firstIndex, typeName, tagLength = min(interestingIndices, key=lambda itemPair: itemPair[0])
     callPayload = parsingState["buffer"] + remainingContent[:firstIndex]
     events.extend(_emit_tool_call_events(callPayload))
     parsingState["buffer"] = ""
@@ -621,6 +635,7 @@ def parse_sse_event(
                 # If toolCallId is None, generate a valid sanitized ID for this index
                 finalToolCallId = toolCallId if toolCallId else f"call_{toolCallIndex}"  # No hashing
                 updatedCalls[toolCallIndex] = ToolCall(index=toolCallIndex, id=finalToolCallId, name=toolName or "")
+                events.append(ToolCallStreamingEvent())
                 events.append(ToolCallStartEvent(index=toolCallIndex, id=finalToolCallId, name=toolName or ""))
             # If we already have this index, use the existing ID
             updatedCalls[toolCallIndex].arguments += argumentsDelta
@@ -660,10 +675,19 @@ def parse_text_tool_calls(rawText: str) -> list[ToolCall]:
     MLC returns finish_reason='tool_calls' but populates the text stream rather
     than the structured delta.tool_calls field.
     """
+    # Strip thoughts so tool calls mentioned inside thoughts are never executed
+    cleanedText = re.sub(r"<think>.*?(?:</think>|$)", "", rawText, flags=re.DOTALL)
+    cleanedText = re.sub(r"<thought>.*?(?:</thought>|$)", "", cleanedText, flags=re.DOTALL)
+    cleanedText = re.sub(r"<\|channel>thought\n.*?(?:<channel\|>|$)", "", cleanedText, flags=re.DOTALL)
+
     results: list[ToolCall] = []
 
     if not results:
-        for regexMatch in re.finditer(r"<tool_call\|?>(.*?)(?:</tool_call\|?>|$)", rawText, re.DOTALL):
+        for regexMatch in re.finditer(
+            r"(?:<\|?tool_call\|?>|<\|tool_call_start\|>)(.*?)(?:<\|?/?tool_call\|?>|<\|tool_call_end\|>|$)",
+            cleanedText,
+            re.DOTALL,
+        ):
             matchedContent = regexMatch.group(1).strip()
             rawToolCallId = f"call_{uuid.uuid4().hex[:8]}"
 
@@ -702,7 +726,7 @@ def parse_text_tool_calls(rawText: str) -> list[ToolCall]:
                 pass
 
     if not results:
-        for regexMatch in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", rawText, re.DOTALL):
+        for regexMatch in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", cleanedText, re.DOTALL):
             try:
                 decodedPayload = json.loads(regexMatch.group(1).strip())
                 toolName = decodedPayload.get("name")
