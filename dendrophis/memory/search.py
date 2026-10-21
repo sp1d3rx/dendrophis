@@ -31,6 +31,7 @@ class MemorySearcher:
         tag: str | None = None,
         source: str | None = None,
         min_score: float = 0.0,
+        project_ids: list[str] | None = None,
     ) -> list[MemorySearchResult]:
         """Search memories for a query.
 
@@ -40,6 +41,9 @@ class MemorySearcher:
         3. Tag filtering applied first to narrow the candidate set
         4. Final score = weighted blend of vector + ngram + recency + usage score
 
+        ``project_id`` filters for one exact project; ``project_ids`` filters
+        for a set of scopes (e.g. current project + global tier).
+
         Returns top-k results sorted by relevance.
         """
         # Step 1: Get candidate memories (filtered by tag/project/source)
@@ -48,6 +52,7 @@ class MemorySearcher:
             source=source,
             tag=tag,
             limit=500,  # generous candidate set
+            project_ids=project_ids,
         )
 
         if not candidates:
@@ -99,9 +104,15 @@ class MemorySearcher:
         tag: str,
         limit: int = 10,
         project_id: str | None = None,
+        project_ids: list[str] | None = None,
     ) -> list[MemorySearchResult]:
         """Get memories for a tag, sorted by recency and usage score."""
-        candidates = self._store.list_memories(project_id=project_id, tag=tag, limit=200)
+        candidates = self._store.list_memories(
+            project_id=project_id,
+            tag=tag,
+            limit=200,
+            project_ids=project_ids,
+        )
         if not candidates:
             return []
 

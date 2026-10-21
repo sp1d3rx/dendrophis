@@ -53,8 +53,14 @@ class MemoryAssociationGenerator:
 
     def _generate_association(self, trigger: str) -> MemoryAssociationEvent | None:
         """Find a memory and frame it with narrative voice."""
+        from dendrophis.memory.scope import default_scope
+
+        # Scope to the current project + global tier so other projects'
+        # memories don't leak into this session's associations.
+        scope = default_scope()
+
         # Try to find something relevant first
-        results = self._searcher.search(trigger, limit=3, min_score=0.3)
+        results = self._searcher.search(trigger, limit=3, min_score=0.3, project_ids=scope)
 
         if results and results[0].score > 0.6:
             # Strong match - confident but not certain
@@ -87,8 +93,10 @@ class MemoryAssociationGenerator:
 
     def _random_association(self, trigger: str) -> MemoryAssociationEvent | None:
         """Pick a random memory when nothing seems relevant."""
-        # Get recent memories, pick one randomly
-        memories = self._store.list_memories(limit=20)
+        from dendrophis.memory.scope import default_scope
+
+        # Get recent memories (scoped to current project + global tier), pick one randomly
+        memories = self._store.list_memories(limit=20, project_ids=default_scope())
         if not memories:
             return None
 

@@ -18,9 +18,11 @@ from dendrophis.memory.embedder import (
 )
 from dendrophis.memory.memory import MemoryStore
 from dendrophis.memory.models import MemoryEntry, MemorySearchResult, MemoryStats
+from dendrophis.memory.scope import GLOBAL_PROJECT_ID, current_project_id, default_scope, scope_for_project
 from dendrophis.memory.search import MemorySearcher
 
 __all__ = [
+    "GLOBAL_PROJECT_ID",
     "BaseEmbedder",
     "MemoryEntry",
     "MemorySearchResult",
@@ -31,4 +33,7 @@ __all__ = [
     "OpenAIEmbedder",
     "SpacyEmbedder",
     "create_embedder",
+    "current_project_id",
+    "default_scope",
+    "scope_for_project",
 ]

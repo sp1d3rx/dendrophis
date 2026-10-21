@@ -30,7 +30,9 @@ class SaveMemoryTool(BaseTool):
         return (
             "Save a piece of information to long-term memory. "
             "The memory will be searchable later. "
-            "Use this to remember important context, preferences, or facts."
+            "Use this to remember important context, preferences, or facts. "
+            "Memories are scoped to the current project by default so they do not "
+            "leak into other projects."
         )
 
     @property
@@ -49,7 +51,11 @@ class SaveMemoryTool(BaseTool):
                 },
                 "project_id": {
                     "type": "string",
-                    "description": "Optional project ID to associate this memory with.",
+                    "description": (
+                        "Optional scope for this memory. Defaults to the current project "
+                        "(auto-detected from the working directory). Pass 'global' for "
+                        "cross-project memories such as user preferences that apply everywhere."
+                    ),
                 },
             },
             "required": ["content"],
@@ -57,6 +63,11 @@ class SaveMemoryTool(BaseTool):
 
     async def execute(self, content: str, tags: list[str] | None = None, project_id: str = "") -> dict[str, Any]:
         try:
+            from dendrophis.memory.scope import current_project_id
+
+            # Auto-scope to the current project unless the caller chose a scope explicitly.
+            effective_project = project_id if project_id else current_project_id()
+
             # Compute embedding for the content
             embedding = self._store.compute_embedding(content)
 
@@ -64,10 +75,15 @@ class SaveMemoryTool(BaseTool):
                 content=content,
                 tags=tags or [],
                 source="auto",
-                project_id=project_id,
+                project_id=effective_project,
                 embedding=embedding,
             )
-            return {"success": True, "memory_id": entry.id, "content": content[:100] + "..."}
+            return {
+                "success": True,
+                "memory_id": entry.id,
+                "project_id": effective_project,
+                "content": content[:100] + "...",
+            }
         except Exception as memory_error:
             return {"error": f"Failed to save memory: {memory_error}"}
 
@@ -86,7 +102,8 @@ class SearchMemoryTool(BaseTool):
     def description(self) -> str:
         return (
             "Search your saved memories for relevant information. "
-            "Use this to recall previously remembered context, preferences, or facts."
+            "Use this to recall previously remembered context, preferences, or facts. "
+            "By default searches the current project plus global (cross-project) memories."
         )
 
     @property
@@ -104,7 +121,11 @@ class SearchMemoryTool(BaseTool):
                 },
                 "project_id": {
                     "type": "string",
-                    "description": "Optional project ID to filter memories by.",
+                    "description": (
+                        "Optional project scope to search. Defaults to the current project "
+                        "plus global memories. Pass a specific project ID to search only "
+                        "that project, or 'global' for cross-project memories only."
+                    ),
                 },
                 "limit": {
                     "type": "integer",
@@ -123,7 +144,12 @@ class SearchMemoryTool(BaseTool):
         limit: int = 5,
     ) -> dict[str, Any]:
         try:
+            from dendrophis.memory.scope import default_scope, scope_for_project
             from dendrophis.memory.search import MemorySearcher
+
+            # Default visibility: current project + global tier. An explicit
+            # project_id narrows to that exact scope.
+            scope = scope_for_project(project_id) if project_id else default_scope()
 
             searcher = MemorySearcher(self._store)
             if not query:
@@ -131,7 +157,7 @@ class SearchMemoryTool(BaseTool):
                     results = searcher.search_by_tag(
                         tag=tag,
                         limit=limit,
-                        project_id=project_id,
+                        project_ids=scope,
                     )
                 elif project_id:
                     results = searcher.search_by_project(
@@ -141,20 +167,21 @@ class SearchMemoryTool(BaseTool):
                 else:
                     from dendrophis.memory.models import MemorySearchResult
 
-                    candidates = self._store.list_memories(limit=limit)
+                    candidates = self._store.list_memories(limit=limit, project_ids=scope)
                     results = [MemorySearchResult(memory=entry, score=1.0, method="list") for entry in candidates]
             else:
                 results = searcher.search(
                     query=query,
                     limit=limit,
                     tag=tag,
-                    project_id=project_id,
+                    project_ids=scope,
                 )
             return {
                 "success": True,
                 "results": [
                     {
                         "memory_id": result.memory.id,
+                        "project_id": result.memory.project_id,
                         "summary": (
                             result.memory.summary
                             or (

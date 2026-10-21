@@ -398,12 +398,25 @@ class MemoryStore:
         tag: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        project_ids: list[str] | None = None,
     ) -> list[MemoryEntry]:
-        """List memories with optional filters."""
+        """List memories with optional filters.
+
+        ``project_id`` filters for an exact project. ``project_ids`` filters
+        for a set of projects (e.g. the current project plus the global
+        tier); an empty list matches nothing.
+        """
         conditions: list[str] = []
         params: list[Any] = []
 
-        if project_id:
+        if project_ids is not None:
+            if project_ids:
+                placeholders = ",".join("?" * len(project_ids))
+                conditions.append(f"project_id IN ({placeholders})")
+                params.extend(project_ids)
+            else:
+                conditions.append("1=0")
+        elif project_id:
             conditions.append("project_id = ?")
             params.append(project_id)
         if source:
