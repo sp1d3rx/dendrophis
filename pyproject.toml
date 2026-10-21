@@ -36,7 +36,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "respx",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
 ]
 
 [project.scripts]
