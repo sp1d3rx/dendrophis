@@ -15,9 +15,15 @@ from dendrophis.llm.stream import (
     _extract_delta_reasoning,
     _extract_delta_text,
     _extract_tool_call_chunk,
-    _parse_function_xml,
     parse_sse_event,
+    # parse_text_tool_calls is re-exported from tag_parser; importing it here
+    # (rather than from tag_parser) pins that re-export for client.py.
     parse_text_tool_calls,
+)
+from dendrophis.llm.tag_parser import (
+    _decode_tool_call_payload,
+    _parse_function_xml,
+    _tool_arguments_from_payload,
 )
 
 
@@ -300,3 +306,238 @@ async def test_status_panel_tool_light_on_streaming_event() -> None:
     status_panel._on_tool_execution_finished(ToolExecutionFinishedEvent(tool_name="test_tool", success=True))
     assert not status_panel._tool_calling
     assert "○[/] Tool" in status_panel.render_value()
+
+
+# --- Fenced JSON fallback (parse_text_tool_calls) ---
+
+
+def test_parse_text_tool_calls_fenced_json_nested_braces() -> None:
+    """Fenced JSON with nested argument objects parses fully."""
+    payload = {
+        "name": "invoke_subagent",
+        "arguments": {"agent": "researcher", "context": {"files": ["a.py"], "depth": "quick"}},
+    }
+    text = f"Sure:\n```json\n{json.dumps(payload)}\n```\nDone."
+    results = parse_text_tool_calls(text)
+    assert len(results) == 1
+    assert results[0].name == "invoke_subagent"
+    assert json.loads(results[0].arguments) == payload["arguments"]
+
+
+def test_parse_text_tool_calls_fenced_json_braces_in_content() -> None:
+    """Braces and code fences inside a string value must not truncate the JSON."""
+    payload = {
+        "name": "write",
+        "arguments": {
+            "file_path": "a.md",
+            "content": "snippet } ```python\ncode\n``` end",
+        },
+    }
+    results = parse_text_tool_calls(f"```json\n{json.dumps(payload)}\n```")
+    assert len(results) == 1
+    assert results[0].name == "write"
+    assert json.loads(results[0].arguments) == payload["arguments"]
+
+
+def test_parse_text_tool_calls_fenced_json_missing_closing_fence() -> None:
+    """A missing closing fence is tolerated."""
+    payload = {"name": "read", "arguments": {"file_path": "a"}}
+    results = parse_text_tool_calls(f"```json\n{json.dumps(payload)}")
+    assert len(results) == 1
+    assert results[0].name == "read"
+
+
+def test_parse_text_tool_calls_fenced_json_multiple_blocks() -> None:
+    """Multiple fenced blocks each parse exactly once (no duplicates)."""
+    p1 = {"name": "read", "arguments": {"file_path": "a"}}
+    p2 = {"name": "read", "arguments": {"file_path": "b"}}
+    text = f"```json\n{json.dumps(p1)}\n```\nand then\n```json\n{json.dumps(p2)}\n```"
+    results = parse_text_tool_calls(text)
+    assert len(results) == 2
+    assert [json.loads(r.arguments) for r in results] == [p1["arguments"], p2["arguments"]]
+
+
+def test_parse_text_tool_calls_fenced_json_non_tool_ignored() -> None:
+    """Fenced JSON that is not a tool call is ignored."""
+    assert parse_text_tool_calls('```json\n{"foo": "bar"}\n```') == []
+
+
+def test_parse_text_tool_calls_no_fence_ignored() -> None:
+    """JSON in plain prose (no fence) is not treated as a tool call."""
+    assert parse_text_tool_calls('plain text with {"name": "x", "arguments": {}} inside') == []
+
+
+# --- Thinking-strip behavior (parse_text_tool_calls) ---
+
+
+def test_parse_text_tool_calls_strips_thinking_block() -> None:
+    """A closed thinking block is stripped; the tool call after it parses."""
+    tc_xml = "<function=read><parameter=file_path>a</parameter></function>"
+    text = (
+        "<"
+        + "think"
+        + ">"
+        + "I will read a file"
+        + "</"
+        + "think"
+        + ">"
+        + "<"
+        + "tool_call"
+        + ">"
+        + tc_xml
+        + "</"
+        + "tool_call"
+        + ">"
+    )
+    results = parse_text_tool_calls(text)
+    assert len(results) == 1
+    assert results[0].name == "read"
+
+
+def test_parse_text_tool_calls_unclosed_thinking_swallows_rest() -> None:
+    """An unclosed thinking opener swallows the rest; nothing is executed."""
+    tc_xml = "<function=read><parameter=file_path>a</parameter></function>"
+    text = "<" + "think" + ">" + "\nI should call " + "<" + "tool_call" + ">" + tc_xml
+    assert parse_text_tool_calls(text) == []
+
+
+def test_parse_text_tool_calls_strips_thought_tags() -> None:
+    """The <thought> variant is stripped."""
+    tc_xml = "<function=read><parameter=file_path>a</parameter></function>"
+    text = "<thought>reasoning</thought>" + "<" + "tool_call" + ">" + tc_xml + "</" + "tool_call" + ">"
+    results = parse_text_tool_calls(text)
+    assert len(results) == 1
+    assert results[0].name == "read"
+
+
+def test_parse_text_tool_calls_strips_channel_thought() -> None:
+    """The <|channel>thought variant is stripped."""
+    tc_xml = "<function=read><parameter=file_path>a</parameter></function>"
+    text = "<|channel>thought\nlet me think\n<channel|>" + "<" + "tool_call" + ">" + tc_xml + "</" + "tool_call" + ">"
+    results = parse_text_tool_calls(text)
+    assert len(results) == 1
+    assert results[0].name == "read"
+
+
+# --- Dedup helpers (shared by streaming and batch decode paths) ---
+
+
+def test_tool_arguments_from_payload_explicit_arguments() -> None:
+    """An explicit "arguments" key is serialized verbatim."""
+    assert _tool_arguments_from_payload({"name": "x", "arguments": {"a": 1}}) == '{"a": 1}'
+
+
+def test_tool_arguments_from_payload_fallback_to_other_keys() -> None:
+    """Without an "arguments" key, every other top-level key becomes an argument."""
+    assert _tool_arguments_from_payload({"name": "x", "a": 1, "b": "c"}) == '{"a": 1, "b": "c"}'
+
+
+def test_tool_arguments_from_payload_non_dict_arguments() -> None:
+    """Non-dict arguments are stringified, never JSON-dumped."""
+    assert _tool_arguments_from_payload({"name": "x", "arguments": "raw"}) == "raw"
+    assert _tool_arguments_from_payload({"name": "x", "arguments": [1, 2]}) == "[1, 2]"
+
+
+def test_decode_tool_call_payload_xml() -> None:
+    """The XML function format decodes to (name, json-serialized args)."""
+    decoded = _decode_tool_call_payload("<function=bash><parameter=command>ls</parameter></function>")
+    assert decoded == ("bash", '{"command": "ls"}')
+
+
+def test_decode_tool_call_payload_json_with_arguments() -> None:
+    decoded = _decode_tool_call_payload('{"name": "bash", "arguments": {"command": "ls"}}')
+    assert decoded == ("bash", '{"command": "ls"}')
+
+
+def test_decode_tool_call_payload_json_without_arguments_key() -> None:
+    """A JSON object with no "arguments" key falls back to the other keys."""
+    decoded = _decode_tool_call_payload('{"name": "bash", "command": "ls"}')
+    assert decoded == ("bash", '{"command": "ls"}')
+
+
+def test_decode_tool_call_payload_json_nameless_returns_none_name() -> None:
+    """A JSON object without a "name" key yields a None name (caller decides)."""
+    decoded = _decode_tool_call_payload('{"arguments": {"a": 1}}')
+    assert decoded is not None
+    assert decoded[0] is None
+
+
+def test_decode_tool_call_payload_invalid_json_is_none() -> None:
+    assert _decode_tool_call_payload("not a tool call at all") is None
+
+
+def test_decode_tool_call_payload_json_list_is_none() -> None:
+    """A JSON array is not a tool-call object — returns None (no crash)."""
+    assert _decode_tool_call_payload("[1, 2, 3]") is None
+
+
+def test_decode_tool_call_payload_json_scalar_is_none() -> None:
+    """A JSON scalar is not a tool-call object — returns None (no crash)."""
+    assert _decode_tool_call_payload('"just a string"') is None
+    assert _decode_tool_call_payload("42") is None
+
+
+def test_streaming_and_batch_decode_agree() -> None:
+    """Both decode paths must agree on a well-formed payload (dedup invariant)."""
+    payload = '{"name": "read_file", "arguments": {"file_path": "a.txt"}}'
+    assert _decode_tool_call_payload(payload) == ("read_file", '{"file_path": "a.txt"}')
+    batch = parse_text_tool_calls("<tool_call>" + payload + "</tool_call>")
+    assert len(batch) == 1
+    assert batch[0].name == "read_file"
+    assert json.loads(batch[0].arguments) == {"file_path": "a.txt"}
+
+
+def test_streaming_nameless_payload_defaults_to_unknown() -> None:
+    """Streaming path: a nameless JSON payload surfaces as an "unknown" tool."""
+    from dendrophis.llm.tag_parser import _emit_tool_call_events
+
+    events = _emit_tool_call_events('{"arguments": {"a": 1}}')
+    starts = [event for event in events if isinstance(event, ToolCallStartEvent)]
+    assert len(starts) == 1
+    assert starts[0].name == "unknown"
+
+
+def test_batch_nameless_payload_is_skipped() -> None:
+    """Batch path: a nameless JSON payload is skipped (no tool to dispatch to)."""
+    assert parse_text_tool_calls("<tool_call>" + '{"arguments": {"a": 1}}' + "</tool_call>") == []
+
+
+# --- Dual start/close boundary tag (<tool_call>) ---
+
+
+def test_dual_boundary_tag_opens_and_closes_streaming() -> None:
+    """A model that uses the same token as both open and close delimiter.
+
+    ``<tool_call|>`` is in both TOOL_START_TAGS and TOOL_CLOSE_TAGS. The first
+    occurrence opens the call (text -> tool_calling); the next one, found while
+    a call is open, resolves as a *close* because close tags are matched first.
+    """
+    first_event = ServerSentEvent(
+        event="message",
+        data=json.dumps(
+            {"choices": [{"delta": {"content": '<tool_call|>{"name": "bash", "arguments": {"command": "ls"}}'}}]}
+        ),
+        id="1",
+    )
+    second_event = ServerSentEvent(
+        event="message",
+        data=json.dumps({"choices": [{"delta": {"content": "<tool_call|>"}}]}),
+        id="2",
+    )
+
+    in_progress: dict = {}
+    state = None
+
+    events_1, in_progress, state = parse_sse_event(first_event, in_progress, state)
+    # Opening tag detected -> streaming signal fires; args still buffering.
+    assert [type(event) for event in events_1] == [ToolCallStreamingEvent]
+
+    events_2, in_progress, state = parse_sse_event(second_event, in_progress, state)
+    starts = [event for event in events_2 if isinstance(event, ToolCallStartEvent)]
+    dones = [event for event in events_2 if isinstance(event, ToolCallDoneEvent)]
+    assert len(starts) == 1
+    assert starts[0].name == "bash"
+    assert len(dones) == 1
+    assert json.loads(dones[0].tool_call.arguments) == {"command": "ls"}
+    # Back in text mode after the closing boundary tag.
+    assert state["mode"] == "text"

@@ -41,6 +41,7 @@ from dendrophis.memory.association import MemoryAssociationGenerator
 from dendrophis.session.tools import SessionToolExecutor, is_tool_error, tool_call_to_payload
 from dendrophis.skills.manager import SkillManager
 from dendrophis.tools.registry import ToolRegistry
+from dendrophis.utils import _tool_log
 
 logger = logging.getLogger(__name__)
 
@@ -57,21 +58,6 @@ def _file_log(message: str, log_path: Path) -> None:
             log_file.write(f"[{timestamp}] {message}\n")
     except Exception as exception:
         logger.warning("Failed to write debug log: %s", exception)
-
-
-def _tool_log(message: str, session_id: str = "global") -> None:
-    """Write a message to the tool execution log file."""
-    import os
-
-    if os.environ.get("DENDROPHIS_TOOL_LOG") != "1":
-        return
-    log_path = Path(f"tool_log_{session_id}.txt")
-    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    try:
-        with open(log_path, "a") as log_file:
-            log_file.write(f"[{timestamp}] {message}\n")
-    except Exception as exception:
-        logger.warning("Failed to write tool log: %s", exception)
 
 
 @dataclass
@@ -208,6 +194,7 @@ class SessionStats:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.cached_tokens = 0
+        self.visual_tokens_saved = 0
         self.total_cost_usd = 0.0
         self.tokens_per_sec = 0.0
         self.time_to_first_token = 0.0
@@ -219,6 +206,65 @@ class SessionStats:
         self._total_segment_duration = 0.0
         self._total_streaming_tokens = 0
         self._segment_completion_tokens = 0
+
+
+# --- Stall-recovery intent detection (see ChatOrchestrator._signals_unfinished_intent) ---
+# Action verbs that signal an imminent tool call.
+_INTENT_ACTION_VERBS = (
+    "read",
+    "check",
+    "run",
+    "open",
+    "look",
+    "search",
+    "execute",
+    "inspect",
+    "list",
+    "find",
+    "create",
+    "write",
+    "edit",
+    "test",
+    "review",
+    "examine",
+    "fetch",
+    "load",
+    "query",
+    "scan",
+    "grep",
+    "glob",
+    "cat",
+    "show",
+    "lookup",
+    "investigate",
+    "verify",
+    "confirm",
+    "try",
+)
+# Intent intro phrases. The action verb must immediately follow one of these.
+# Only the non-redundant forms are kept: "now i'll"/"now i will" are covered by
+# "i'll"/"i will", "i'm going to"/"i am going to" by "going to", and "i'll start"
+# is dead weight ("start" is not an action verb, so it only ever matched the
+# ungrammatical "I'll start <verb>"). Longest alternatives first at shared prefixes.
+_INTENT_INTROS = (
+    r"i'?ll go ahead and",
+    r"let me",
+    r"i'?ll",
+    r"i will",
+    r"going to",
+    r"i need to",
+    r"i should",
+    r"let'?s",
+    r"let us",
+)
+# One compiled pattern instead of 812 per (intro, verb) pair: a single
+# alternation with a per-match negative lookahead. The leading \b stops "i'll"
+# from matching inside "still"/"will"/"skill". The lookahead suppresses only
+# the specific "<verb> back" match at that position, so "I'll read back the
+# file, then let me check the config" still triggers via "let me check", and
+# "I'll check back later; first I'll check the logs" triggers via the second
+# "I'll check" (a whole-pair exclusion would have suppressed both).
+_INTENT_RE = re.compile(rf"\b(?:{'|'.join(_INTENT_INTROS)})\s+(?:{'|'.join(_INTENT_ACTION_VERBS)})\b(?!\s+back\b)")
 
 
 @dataclass
@@ -283,69 +329,14 @@ class ChatOrchestrator:
         intent but produces no tool call. Requires an action verb to immediately
         follow an intent intro phrase, so normal closings like "let me know if you
         need anything else" or "I'll be here if you need me" do NOT trigger a nudge.
+        Phrasal closings ("<verb> back") are excluded per match position.
         """
         if not text:
             return False
         tail = text.strip().lower()[-200:]
         # Strip trailing punctuation so "let me read the file." still matches.
         tail = tail.rstrip(".!?;: ")
-        # Action verbs that signal an imminent tool call.
-        action_verbs = (
-            "read",
-            "check",
-            "run",
-            "open",
-            "look",
-            "search",
-            "execute",
-            "inspect",
-            "list",
-            "find",
-            "create",
-            "write",
-            "edit",
-            "test",
-            "review",
-            "examine",
-            "fetch",
-            "load",
-            "query",
-            "scan",
-            "grep",
-            "glob",
-            "cat",
-            "show",
-            "lookup",
-            "investigate",
-            "verify",
-            "confirm",
-            "try",
-        )
-        # Intent intro phrases. The action verb must immediately follow one of these.
-        intros = (
-            r"let me",
-            r"i'?ll",
-            r"i will",
-            r"i'?m going to",
-            r"i am going to",
-            r"going to",
-            r"i need to",
-            r"i should",
-            r"let'?s",
-            r"let us",
-            r"now i'?ll",
-            r"now i will",
-            r"i'?ll start",
-            r"i'?ll go ahead and",
-        )
-        for verb in action_verbs:
-            for intro in intros:
-                if re.search(rf"{intro}\s+{verb}\b", tail):
-                    # Exclude closing phrases that happen to use an action verb.
-                    if re.search(rf"{intro}\s+{verb}\s+back\b", tail):
-                        continue
-                    return True
-        return False
+        return _INTENT_RE.search(tail) is not None
 
     async def _emit_stats_periodically(self) -> None:
         """Periodically emit stats events while streaming."""
@@ -515,12 +506,19 @@ class ChatOrchestrator:
         tools_schema = (
             self.tool_registry.all_schema() if self.tool_registry and self.current_model_supports_tools() else None
         )
-        max_consecutive_failures = self.config.tools.max_calls
+        max_consecutive_failures = self.config.tools.max_consecutive_failures
         consecutive_failures = 0
         auto_compaction_failures = 0
         continuation_nudges = 0
         max_continuation_nudges = 2
         nudge_pending = False
+        user_messages = [
+            message["content"]
+            for message in self.context.get_messages_for_api()
+            if message.get("role") == "user" and message.get("content")
+        ]
+        if user_messages:
+            self._emit(MessageSentEvent(message_text=user_messages[-1]))
         while not self.cancel_flag.is_set():
             # Auto-compaction: re-check at the top of every iteration, after the
             # previous round of tool results was appended. The turn-level check
@@ -543,8 +541,6 @@ class ChatOrchestrator:
                     self._emit(ErrorEvent(message=f"Context compaction failed: {compaction_error!s}"))
 
             self._log(f"_run_completion_loop consecutive_failures={consecutive_failures}")
-            last_message = self.context.get_messages_for_api()[-1]["content"]
-            self._emit(MessageSentEvent(message_text=last_message))
             turn: TurnResult | None = None
             partial_text: str = ""
             partial_reasoning: str = ""
@@ -620,7 +616,7 @@ class ChatOrchestrator:
                         )
                     else:
                         self.stats.update(event.prompt_tokens, event.completion_tokens, 0.0, event.cached_tokens)
-                    self.stats.visual_tokens_saved += getattr(self.llm, "last_visual_tokens_saved", 0)
+                    self.stats.visual_tokens_saved += event.visual_tokens_saved
                     self._emit(event)
                     self._emit(
                         StatsUpdatedEvent(
@@ -629,6 +625,7 @@ class ChatOrchestrator:
                             total_cost_usd=self.stats.total_cost_usd,
                             tokens_per_sec=self.stats.current_tps,
                             time_to_first_token=self.stats.time_to_first_token,
+                            cached_tokens=self.stats.cached_tokens,
                         )
                     )
                 elif isinstance(event, (AuthFailedEvent, ErrorEvent)):
@@ -645,17 +642,6 @@ class ChatOrchestrator:
                 return
             self._log(f"Turn complete: finish_reason={turn.finish_reason}, tool_calls={len(turn.tool_calls)}")
             assistant_text = turn.text
-            if not assistant_text and turn.tool_calls:
-
-                def _tc_json(tool_call: Any) -> str:
-                    if tool_call.arguments and tool_call.arguments.strip():
-                        arguments_dict = json.loads(tool_call.arguments)
-                    else:
-                        arguments_dict = {}
-                    return f"<tool_call>{json.dumps({'name': tool_call.name, 'arguments': arguments_dict})}</tool_call>"
-
-                assistant_text = "".join(_tc_json(tool_call) for tool_call in turn.tool_calls)
-
             if turn.tool_calls:
                 tool_calls_payload = [tool_call_to_payload(tool_call) for tool_call in turn.tool_calls]
             else:
@@ -726,7 +712,13 @@ class ChatOrchestrator:
             results = await self.tool_executor_session.execute(turn.tool_calls)
             _tool_log("SessionToolExecutor.execute() completed", self.session_id)
             tool_calls_by_id = {tool_call.id: tool_call for tool_call in turn.tool_calls}
-            if any(is_tool_error(result.content) for result in results):
+
+            def _did_result_fail(result_item: Any) -> bool:
+                if hasattr(result_item, "success"):
+                    return not result_item.success
+                return is_tool_error(result_item.content)
+
+            if any(_did_result_fail(result) for result in results):
                 consecutive_failures += 1
                 if consecutive_failures > max_consecutive_failures:
                     self._log(f"ERROR: Exceeded max consecutive failures ({max_consecutive_failures})")
@@ -764,7 +756,7 @@ class ChatOrchestrator:
                         content=result.content,
                         description=description,
                         arguments=arguments,
-                        consecutive_failures=consecutive_failures if is_tool_error(result.content) else 0,
+                        consecutive_failures=consecutive_failures if _did_result_fail(result) else 0,
                     )
                 )
                 _tool_log("ToolResultEvent emitted", self.session_id)

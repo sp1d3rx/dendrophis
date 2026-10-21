@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+
+
+def backup_existing_file(path: Path) -> Path | None:
+    """Create a `.bak` copy of an existing file before it is modified.
+
+    Returns the backup path, or None if there was nothing to back up.
+    """
+    if not path.exists() or path.suffix == ".bak":
+        return None
+    backup_path = path.with_suffix(path.suffix + ".bak")
+    shutil.copy2(path, backup_path)
+    return backup_path
 
 
 def is_blocked_path(file_path: str) -> str | None:

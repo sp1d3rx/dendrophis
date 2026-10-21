@@ -593,30 +593,34 @@ class BashSandbox:
         return [s.strip() for s in segments if s.strip()]
 
 
+# Heredoc with a redirect on the same line, e.g. `cat << EOF > file.txt`.
+# `env` / `sh -c` prefixed forms are covered too: the heredoc signature is
+# detected anywhere in the line, so no prefix anchoring is needed.
+_HEREDOC_REDIRECT = re.compile(r"<<\s*['\"]?\w+['\"]?.*>", re.MULTILINE)
+# `echo`/`printf` with a quoted payload on one line and a redirect on a later line.
+_ECHO_LINE_REDIRECT = re.compile(r"^\s*(?:echo|printf)\s+[\'\"].*\n.*[>][>]*[^>]+\S+", re.MULTILINE)
+
+
 def is_heredoc_write_pattern(command: str) -> bool:
     """Return True if the bash command uses heredoc or redirect to write a file.
 
     Detects patterns like:
     - cat << EOF > file.txt
-    - echo "content" > file
+    - echo "content"\n> file
+
+    This is a UX guard (steer the agent to the write tool), not a security
+    boundary -- keep the heuristics conservative and pinned by tests.
     """
     if not command:
         return False
 
-    heredoc_pattern = (
-        r"^\s*(?:\/usr\/bin\/env\s+)?(?:\/bin\/)?(?:sh\s+-c\s+[\"\']?)?"
-        r"(?:cat|printf)\s+<<\s*[\'\"]?\w+[\'\"]?\s*>\s*\S+"
-    )
-    echo_redirect_pattern = r'^\s*(?:echo|printf)\s+[\'"].*\n.*[>][>]*[^>]+\S+'
-    multiline_redirect = r'<<\s*[\'"]?\w+[\'"]?.*>'
-
+    if _HEREDOC_REDIRECT.search(command):
+        return True
+    if _ECHO_LINE_REDIRECT.search(command):
+        return True
+    # Multi-line command that both mentions a writer and redirects somewhere.
     return bool(
-        re.search(heredoc_pattern, command, re.MULTILINE | re.IGNORECASE)
-        or re.search(echo_redirect_pattern, command, re.MULTILINE)
-        or re.search(multiline_redirect, command, re.MULTILINE)
-        or (
-            command.count("\n") > 1
-            and re.search(r"[>][>]*\s*\S+", command)
-            and re.search(r"(?:echo|cat|printf)", command, re.IGNORECASE)
-        )
+        command.count("\n") > 1
+        and re.search(r"[>][>]*\s*\S+", command)
+        and re.search(r"(?:echo|cat|printf)", command, re.IGNORECASE)
     )

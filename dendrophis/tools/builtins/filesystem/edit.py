@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint, try_unescape
+from dendrophis.tools.builtins.filesystem.utils import (
+    backup_existing_file,
+    is_blocked_path,
+    run_auto_lint,
+    try_unescape,
+)
 from dendrophis.tools.names import ToolName
 
 
@@ -26,7 +31,8 @@ class EditTool(BaseTool):
             "make the match 100% unique. IMPORTANT: Use ACTUAL raw characters "
             "(including literal newlines). Do NOT use escaped representations like "
             "'\\\\n' or '\\\\\\\\n' in your tool calls; the match is performed against "
-            "the raw file bytes."
+            "the raw file bytes. "
+            "A .bak backup is automatically created before modification."
         )
 
     @property
@@ -100,6 +106,7 @@ class EditTool(BaseTool):
                 1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
             )
 
+            await asyncio.to_thread(backup_existing_file, path)
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
             # Run auto-linting

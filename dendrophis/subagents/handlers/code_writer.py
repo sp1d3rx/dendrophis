@@ -12,7 +12,7 @@ from typing import Any
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.context.manager import ContextManager
 from dendrophis.llm.client import LLMClient, TurnResult
-from dendrophis.tools.executor import ToolExecutor
+from dendrophis.tools.executor import ToolExecutor, is_tool_error
 from dendrophis.tools.registry import ToolRegistry
 
 from ..messages import SubagentRequest, SubagentResponse
@@ -493,11 +493,12 @@ class CodeWriterHandler:
 
     @staticmethod
     def _is_tool_error(result: Any) -> bool:
-        """Check if a tool result indicates an error without false positives on raw text."""
+        """Check if a tool result indicates an error without false positives on raw text.
+
+        Delegates to the canonical ``is_tool_error`` predicate (tools/executor.py)
+        so subagent and session error detection cannot drift apart.
+        """
         try:
-            content = json.loads(result.content)
-            if isinstance(content, dict):
-                return "error" in content
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            pass
-        return False
+            return is_tool_error(result.content)
+        except AttributeError:
+            return False

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import traceback
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from dendrophis.events import (
@@ -22,15 +24,25 @@ from dendrophis.events import (
     StreamingFinishedEvent,
     StreamingStartedEvent,
     TextDeltaEvent,
-    ToolCallDeltaEvent,
     ToolCallStartEvent,
     ToolConfirmationRequestEvent,
-    ToolExecutionFinishedEvent,
     ToolExecutionStartedEvent,
     ToolResultEvent,
     WriteProposalEvent,
     listen,
 )
+
+# Screen classes are imported at module level (no import cycles: the screens
+# only depend on dendrophis.events / textual widgets). They are still
+# CONSTRUCTED lazily at push time via _push_screen_later so construction
+# happens in the app's UI context.
+from dendrophis.ui.screens.append_confirmation import AppendConfirmationScreen
+from dendrophis.ui.screens.edit_confirmation import EditConfirmationScreen
+from dendrophis.ui.screens.multiple_choice import MultipleChoiceScreen
+from dendrophis.ui.screens.primer_screen import PrimerScreen
+from dendrophis.ui.screens.python_exec_confirmation import PythonExecConfirmationScreen
+from dendrophis.ui.screens.tool_confirmation import ToolConfirmationScreen
+from dendrophis.ui.screens.write_confirmation import WriteConfirmationScreen
 from dendrophis.ui.widgets.chat_view import ChatView
 from dendrophis.ui.widgets.input_bar import InputBar
 from dendrophis.ui.widgets.sidebar import Sidebar
@@ -128,98 +140,53 @@ class MainScreenEventHandler:
     def _on_tool_call_start(self, event: ToolCallStartEvent) -> None:
         self.query_one(ChatView).add_tool_placeholder(event.index, event.name, tool_call_id=event.id)
 
-    @listen
-    def _on_tool_call_delta(self, event: ToolCallDeltaEvent) -> None:
-        """Handle tool call delta events (streaming)."""
-        pass
+    def _push_screen_later(self, screen_factory: Callable[[], Any]) -> None:
+        """Schedule a screen push on the UI thread.
 
-    @listen
-    def _on_tool_execution_finished(self, event: ToolExecutionFinishedEvent) -> None:
-        """Handle tool execution finished events."""
-        pass
+        ``screen_factory`` is invoked at push time (inside ``call_later``), so
+        the screen is constructed in the app's UI context rather than on
+        whatever thread published the event.
+        """
+        self.call_later(lambda: self.app.push_screen(screen_factory()))
 
     @listen
     def _on_tool_confirmation_request(self, event: ToolConfirmationRequestEvent) -> None:
         """Handle human approval request for sensitive tools."""
-
-        def show_confirmation() -> None:
-            from dendrophis.ui.screens.tool_confirmation import ToolConfirmationScreen
-
-            self.app.push_screen(
-                ToolConfirmationScreen(event.request_id, event.tool_name, event.arguments, self._event_bus)
-            )
-
-        # Schedule on the UI thread to ensure proper app context
-        self.call_later(show_confirmation)
+        self._push_screen_later(
+            lambda: ToolConfirmationScreen(event.request_id, event.tool_name, event.arguments, self._event_bus)
+        )
 
     @listen
     def _on_multiple_choice_request(self, event: MultipleChoiceRequestEvent) -> None:
         """Handle human multiple choice question request."""
-
-        def show_mcq() -> None:
-            from dendrophis.ui.screens.multiple_choice import MultipleChoiceScreen
-
-            self.app.push_screen(MultipleChoiceScreen(event.request_id, event.question, event.options, self._event_bus))
-
-        # Schedule on the UI thread to ensure proper app context
-        self.call_later(show_mcq)
+        self._push_screen_later(
+            lambda: MultipleChoiceScreen(event.request_id, event.question, event.options, self._event_bus)
+        )
 
     @listen
     def _on_edit_proposal(self, event: EditProposalEvent) -> None:
         """Handle request for file edit approval with diff."""
-
-        def show_edit_confirmation() -> None:
-            from dendrophis.ui.screens.edit_confirmation import EditConfirmationScreen
-
-            self.app.push_screen(EditConfirmationScreen(event, self._event_bus))
-
-        self.call_later(show_edit_confirmation)
+        self._push_screen_later(lambda: EditConfirmationScreen(event, self._event_bus))
 
     @listen
     def _on_write_proposal(self, event: WriteProposalEvent) -> None:
         """Handle request for new file write approval with content preview."""
-
-        def show_write_confirmation() -> None:
-            from dendrophis.ui.screens.write_confirmation import WriteConfirmationScreen
-
-            self.app.push_screen(WriteConfirmationScreen(event, self._event_bus))
-
-        self.call_later(show_write_confirmation)
+        self._push_screen_later(lambda: WriteConfirmationScreen(event, self._event_bus))
 
     @listen
     def _on_append_proposal(self, event: AppendProposalEvent) -> None:
         """Handle request for file append approval with content preview."""
-
-        def show_append_confirmation() -> None:
-            from dendrophis.ui.screens.append_confirmation import AppendConfirmationScreen
-
-            self.app.push_screen(AppendConfirmationScreen(event, self._event_bus))
-
-        self.call_later(show_append_confirmation)
+        self._push_screen_later(lambda: AppendConfirmationScreen(event, self._event_bus))
 
     @listen
     def _on_python_exec_proposal(self, event: PythonExecProposalEvent) -> None:
         """Handle request for Python code execution approval with code preview."""
-
-        def show_python_exec_confirmation() -> None:
-            from dendrophis.ui.screens.python_exec_confirmation import (
-                PythonExecConfirmationScreen,
-            )
-
-            self.app.push_screen(PythonExecConfirmationScreen(event, self._event_bus))
-
-        self.call_later(show_python_exec_confirmation)
+        self._push_screen_later(lambda: PythonExecConfirmationScreen(event, self._event_bus))
 
     @listen
     def _on_primer_screen_request(self, event: PrimerScreenRequest) -> None:
         """Handle request to open the project primer screen."""
-
-        def show_primer_screen() -> None:
-            from dendrophis.ui.screens.primer_screen import PrimerScreen
-
-            self.app.push_screen(PrimerScreen(self._session))
-
-        self.call_later(show_primer_screen)
+        self._push_screen_later(lambda: PrimerScreen(self._session))
 
     @listen
     def _on_context_updated(self, event: ContextUpdatedEvent) -> None:
@@ -228,72 +195,89 @@ class MainScreenEventHandler:
         if getattr(event, "full_chat_restored", False):
             chat = self.query_one(ChatView)
             chat.clear()
+            self._replay_context(chat)
 
-            # Track pending tool calls from assistant messages to match with results
-            pending_tool_calls: dict[str, dict[str, Any]] = {}
+    @staticmethod
+    def _message_text(message: dict[str, Any]) -> str:
+        """Extract displayable text from a message (handles list content parts)."""
+        raw_content = message.get("content", "")
+        if isinstance(raw_content, list):
+            return " ".join(part.get("text", "") for part in raw_content if isinstance(part, dict))
+        return raw_content or ""
 
-            for message in self._session.context.messages:
-                try:
-                    role = message.get("role", "unknown")
-                    raw_content = message.get("content", "")
-                    if isinstance(raw_content, list):
-                        content = " ".join(part.get("text", "") for part in raw_content if isinstance(part, dict))
-                    else:
-                        content = raw_content or ""
-                    if role == "user":
-                        chat.add_user_message(content)
-                    elif role == "assistant":
-                        chat.start_assistant_message(loading=False)
-                        reasoning = message.get("reasoning_content")
-                        if reasoning:
-                            chat.append_reasoning_delta(reasoning)
-                        if content:
-                            chat.append_text_delta(content)
-                        # Store tool calls to match with results later and display status lines
-                        tool_calls = message.get("tool_calls", [])
-                        for call_index, tool_call in enumerate(tool_calls):
-                            tool_call_id = tool_call.get("id")
-                            function_info = tool_call.get("function", {})
-                            tool_name = function_info.get("name", "unknown")
-                            tool_arguments = function_info.get("arguments", "")
-                            if tool_call_id:
-                                pending_tool_calls[tool_call_id] = tool_call
-                            chat.add_tool_status(
-                                tool_name=tool_name,
-                                description="",
-                                arguments=tool_arguments,
-                                index=call_index,
-                                tool_call_id=tool_call_id,
-                            )
-                        chat.finish_assistant_message()
-                    elif role == "tool":
-                        # Tool result message - match with pending call
-                        tool_call_identifier = message.get("tool_call_id")
-                        tool_call_name = message.get("name", "unknown")
-                        tool_call_content = message.get("content", "")
+    def _replay_context(self, chat: ChatView) -> None:
+        """Replay the persisted conversation into the chat view.
 
-                        # Get arguments from pending call if available
-                        call_arguments = ""
-                        if tool_call_identifier and tool_call_identifier in pending_tool_calls:
-                            function_dict = pending_tool_calls[tool_call_identifier].get("function", {})
-                            call_arguments = function_dict.get("arguments", "")
-                            del pending_tool_calls[tool_call_identifier]
+        Assistant tool calls are tracked by tool_call_id so tool-result
+        messages can be matched back to their arguments.
+        """
+        pending_tool_calls: dict[str, dict[str, Any]] = {}
+        for message in self._session.context.messages:
+            try:
+                role = message.get("role", "unknown")
+                content = self._message_text(message)
+                if role == "user":
+                    chat.add_user_message(content)
+                elif role == "assistant":
+                    self._replay_assistant_message(chat, message, content, pending_tool_calls)
+                elif role == "tool":
+                    self._replay_tool_message(chat, message, pending_tool_calls)
+                elif role == "system":
+                    chat.add_system_message(content)
+            except Exception as replay_error:
+                self._debug_widget.write(f"MESSAGE REPLAY ERROR: {type(replay_error).__name__}: {replay_error!s}")
+                self._debug_widget.write(f"TRACEBACK: {traceback.format_exc()}")
 
-                        chat.add_tool_result(
-                            tool_call_name,
-                            tool_call_content,
-                            description="",
-                            arguments=call_arguments,
-                            consecutive_failures=0,
-                            tool_call_id=tool_call_identifier,
-                        )
-                    elif role == "system":
-                        chat.add_system_message(content)
-                except Exception as replay_error:
-                    self._debug_widget.write(f"MESSAGE REPLAY ERROR: {type(replay_error).__name__}: {replay_error!s}")
-                    import traceback
+    def _replay_assistant_message(
+        self,
+        chat: ChatView,
+        message: dict[str, Any],
+        content: str,
+        pending_tool_calls: dict[str, dict[str, Any]],
+    ) -> None:
+        """Replay one assistant message: reasoning, text, and tool-call status lines."""
+        chat.start_assistant_message(loading=False)
+        reasoning = message.get("reasoning_content")
+        if reasoning:
+            chat.append_reasoning_delta(reasoning)
+        if content:
+            chat.append_text_delta(content)
+        # Store tool calls to match with results later and display status lines
+        for call_index, tool_call in enumerate(message.get("tool_calls", [])):
+            tool_call_id = tool_call.get("id")
+            function_info = tool_call.get("function", {})
+            if tool_call_id:
+                pending_tool_calls[tool_call_id] = tool_call
+            chat.add_tool_status(
+                tool_name=function_info.get("name", "unknown"),
+                description="",
+                arguments=function_info.get("arguments", ""),
+                index=call_index,
+                tool_call_id=tool_call_id,
+            )
+        chat.finish_assistant_message()
 
-                    self._debug_widget.write(f"TRACEBACK: {traceback.format_exc()}")
+    def _replay_tool_message(
+        self,
+        chat: ChatView,
+        message: dict[str, Any],
+        pending_tool_calls: dict[str, dict[str, Any]],
+    ) -> None:
+        """Replay one tool-result message, matched to its pending call's arguments."""
+        tool_call_identifier = message.get("tool_call_id")
+        call_arguments = ""
+        if tool_call_identifier and tool_call_identifier in pending_tool_calls:
+            function_dict = pending_tool_calls[tool_call_identifier].get("function", {})
+            call_arguments = function_dict.get("arguments", "")
+            del pending_tool_calls[tool_call_identifier]
+        chat.add_tool_result(
+            message.get("name", "unknown"),
+            message.get("content", ""),
+            description="",
+            arguments=call_arguments,
+            consecutive_failures=0,
+            tool_call_id=tool_call_identifier,
+        )
 
     @listen
     def _on_model_switched(self, event: ModelSwitchedEvent) -> None:

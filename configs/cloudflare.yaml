@@ -59,7 +59,7 @@ hooks:
 
 tools:
   extra_paths: []
-  max_calls: 3
+  max_consecutive_failures: 3
   require_confirmation:
     - bash
     - edit

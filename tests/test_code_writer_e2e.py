@@ -10,7 +10,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
-import yaml
+
+# This is a live end-to-end test and the only pyyaml consumer in the main
+# project (pyyaml is not a declared dependency here). Skip the whole module
+# cleanly at collection time if it's not installed, instead of erroring.
+yaml = pytest.importorskip("yaml")
 
 from dendrophis.config.schema import DendrophisConfig, LLMConfig
 from dendrophis.llm.client import LLMClient
@@ -19,6 +23,38 @@ from dendrophis.subagents.messages import SubagentRequest
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("code_writer_e2e")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _require_omlx_server() -> None:
+    """Skip the whole module unless a running OMLX server is reachable.
+
+    Beyond pyyaml (checked via importorskip at collection), this e2e test needs
+    a live OMLX server configured in configs/omlx.yaml. Probe it once per module
+    at test time; any HTTP response (even an error status) means the server is
+    up, while connection errors / timeouts mean skip.
+    """
+    import urllib.error
+    import urllib.request
+
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "omlx.yaml"
+    if not config_path.exists():
+        pytest.skip("configs/omlx.yaml not found; OMLX e2e test skipped")
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle)
+        base_url = str(raw["llm"]["base_url"]).rstrip("/")
+    except Exception as exc:
+        pytest.skip(f"could not read OMLX base_url from configs/omlx.yaml: {exc}")
+    try:
+        urllib.request.urlopen(base_url + "/models", timeout=2)
+        reachable = True
+    except urllib.error.HTTPError:
+        reachable = True  # the server responded (even with an error status)
+    except Exception:
+        reachable = False
+    if not reachable:
+        pytest.skip(f"OMLX server not reachable at {base_url}; e2e test skipped")
 
 
 def _load_config() -> DendrophisConfig:

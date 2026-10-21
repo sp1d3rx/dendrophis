@@ -231,7 +231,7 @@ class ContextManager:
         import os
 
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
-            from dendrophis.session.chat import _tool_log
+            from dendrophis.utils import _tool_log
 
             _tool_log("=== CONTEXT MANAGER - GET MESSAGES FOR API ===")
             _tool_log(f"Total messages in context: {len(self.messages)}")

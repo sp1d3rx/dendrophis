@@ -172,8 +172,16 @@ class ToolsConfig(ConfigModel):
     """Tool execution limits."""
 
     extra_paths: list[str] = field(default_factory=list)
-    max_calls: int = 3
+    # Failure breaker: abort the turn after this many consecutive tool errors.
+    max_consecutive_failures: int = 3
     parallel_tools: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Any:
+        # Backward compat: older configs used `max_calls` for the failure breaker.
+        if "max_consecutive_failures" not in data and "max_calls" in data:
+            data = {**data, "max_consecutive_failures": data["max_calls"]}
+        return super().from_dict(data)
 
 
 @dataclass

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint
+from dendrophis.tools.builtins.filesystem.utils import backup_existing_file, is_blocked_path, run_auto_lint
 from dendrophis.tools.names import ToolName
 
 
@@ -22,7 +22,8 @@ class WriteTool(BaseTool):
     def description(self) -> str:
         return (
             "Write content to a file, creating it if it doesn't exist, or overwriting it if it does. "
-            "Provide the FULL file content."
+            "Provide the FULL file content. "
+            "A .bak backup is automatically created before overwriting an existing file."
         )
 
     @property
@@ -58,6 +59,7 @@ class WriteTool(BaseTool):
                 return {"error": f"File path must be within working directory: {file_path}"}
 
             path.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(backup_existing_file, path)
             await asyncio.to_thread(path.write_text, content, encoding="utf-8")
 
             # Run auto-linting

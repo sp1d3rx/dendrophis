@@ -11,6 +11,12 @@ from dendrophis.tools.base import BaseTool
 class InvokeSubagentTool(BaseTool):
     """Invoke a subagent to perform a task."""
 
+    # Subagent turns run their own LLM loops; allow longer than the default.
+    SUBAGENT_TIMEOUT_SECONDS = 300.0
+
+    def execution_timeout(self, arguments: dict[str, Any]) -> float | None:
+        return self.SUBAGENT_TIMEOUT_SECONDS
+
     def _get_executor(self):
         """Get the session's subagent executor."""
         return get_session_executor()

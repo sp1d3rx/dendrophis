@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from dendrophis.config.schema import LLMConfig
+import pytest
+
+from dendrophis.config.schema import DendrophisConfig, LLMConfig
+from dendrophis.events import DoneEvent, TextDeltaEvent, TurnResult, UsageEvent
 from dendrophis.llm.calibration import ModelCapabilities
 from dendrophis.llm.client import LLMClient
 from dendrophis.llm.visual_prompt import is_vlm_model, render_text_to_1bit_data_uri
+from dendrophis.session.chat import ChatOrchestrator, SessionStats
 
 
 def test_vlm_model_detection() -> None:
@@ -224,3 +228,155 @@ def test_render_caching_and_deterministic_filenames() -> None:
 
     assert data_uri_first is not None
     assert data_uri_first == data_uri_second
+
+
+# --- Visual token savings accounting (audit item 17) ------------------------
+
+
+def test_visual_savings_dedup_across_transform_passes() -> None:
+    """The same content must not be re-counted on every tool-loop step.
+
+    The transform re-runs over the full message list on every loop iteration;
+    each unique piece of content must be counted exactly once.
+    """
+    cfg = LLMConfig(
+        model="gemma-4-26B-A4B-it-MLX-8bit",
+        visual_system_prompt=True,
+        visual_tool_results=True,
+        visual_threshold_chars=50,
+    )
+    client = LLMClient(config=cfg)
+
+    system_prompt = "S" * 1200  # ~342 estimated tokens -> 32 saved
+    tool_output = "T" * 1400  # ~400 estimated tokens -> 90 saved
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "hi"},
+        {"role": "tool", "tool_call_id": "c1", "content": tool_output},
+    ]
+
+    client._apply_visual_vlm_transformations(messages)
+    first_pass = client.last_visual_tokens_saved
+    assert first_pass > 0
+
+    # Next tool-loop step: same full message list, nothing new to count.
+    client._apply_visual_vlm_transformations(messages)
+    assert client.last_visual_tokens_saved == 0
+
+    # A new tool result contributes only its own savings.
+    messages.append({"role": "tool", "tool_call_id": "c2", "content": "N" * 1400})
+    client._apply_visual_vlm_transformations(messages)
+    second_pass = client.last_visual_tokens_saved
+    assert 0 < second_pass < first_pass
+
+
+@pytest.mark.anyio
+async def test_usage_event_carries_visual_savings() -> None:
+    """stream_chat must attach the payload-build savings to the UsageEvent it yields."""
+    cfg = LLMConfig(model="gemma-4-26B-A4B-it-MLX-8bit", visual_system_prompt=True)
+    client = LLMClient(config=cfg)
+    client._make_provider_context = lambda: object()
+    client._build_payload = lambda pc, msgs, tools, cache, tc: {"model": "m", "messages": msgs}
+    client.last_visual_tokens_saved = 77  # simulate savings counted during payload build
+
+    async def fake_stream_raw(provider_context, payload):
+        yield UsageEvent(prompt_tokens=10, completion_tokens=5)
+        yield TextDeltaEvent(delta="hi")
+        yield DoneEvent(finish_reason="stop")
+
+    client._stream_raw = fake_stream_raw
+
+    events = [event async for event in client.stream_chat([{"role": "user", "content": "hi"}])]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].visual_tokens_saved == 77
+
+
+class _Recorder:
+    """Event-bus stub that records published events in order."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    def publish(self, event) -> None:
+        self.events.append(event)
+
+
+class _FakeContext:
+    """Minimal ContextManager stand-in for the send_message path."""
+
+    def __init__(self) -> None:
+        self.messages: list[dict] = [{"role": "system", "content": "sys"}]
+        self.token_count = 10
+
+    def append_user(self, text: str) -> None:
+        self.messages.append({"role": "user", "content": text})
+
+    def append_assistant(self, content, tool_calls=None, reasoning_content=None) -> None:
+        self.messages.append({"role": "assistant", "content": content})
+
+    def get_messages_for_api(self) -> list[dict]:
+        return list(self.messages)
+
+    def get_turn_count(self) -> int:
+        return 1
+
+    def needs_compaction(self) -> bool:
+        return False
+
+    @property
+    def token_pct(self) -> float:
+        return self.token_count / 1000
+
+    def sync_token_count(self, prompt: int, completion: int) -> None:
+        self.token_count = prompt + completion
+
+
+class _UsageLLM:
+    """Yields two UsageEvents carrying visual savings, then a final stop turn.
+
+    Deliberately has NO last_visual_tokens_saved attribute: the orchestrator
+    must read the value from the event, not via getattr on the LLM client.
+    """
+
+    async def stream_chat(self, messages, tools=None, enable_cache_control=False):
+        yield UsageEvent(prompt_tokens=100, completion_tokens=10, visual_tokens_saved=30)
+        yield UsageEvent(prompt_tokens=150, completion_tokens=10, visual_tokens_saved=20)
+        yield TurnResult(text="done", reasoning="", tool_calls=[], finish_reason="stop")
+
+
+def _config() -> DendrophisConfig:
+    cfg = DendrophisConfig(llm=LLMConfig(model="test-model", base_url="http://127.0.0.1:9/v1", api_key="k"))
+    cfg.caching.enabled = False  # skip understanding / file-cache side paths
+    return cfg
+
+
+@pytest.mark.anyio
+async def test_orchestrator_accumulates_visual_savings_from_events() -> None:
+    """The orchestrator must accumulate visual savings from UsageEvent fields."""
+    recorder = _Recorder()
+    stats = SessionStats()
+    orchestrator = ChatOrchestrator(
+        context=_FakeContext(),
+        llm=_UsageLLM(),
+        stats=stats,
+        config=_config(),
+        event_bus=recorder,
+        understanding_detector=None,
+        tool_registry=None,
+        tool_executor_session=None,
+        skill_manager=None,
+        compactor=None,
+    )
+    await orchestrator.send_message("go")
+    assert stats.visual_tokens_saved == 50
+
+
+def test_session_stats_reset_clears_visual_tokens_saved() -> None:
+    """/reset must clear the visual savings counter along with the other stats."""
+    stats = SessionStats()
+    stats.visual_tokens_saved = 123
+    stats.prompt_tokens = 5
+    stats.reset()
+    assert stats.visual_tokens_saved == 0
+    assert stats.prompt_tokens == 0

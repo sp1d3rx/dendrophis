@@ -455,6 +455,7 @@ class Session:
         """Synchronously reset the session context, stats, and understanding detector."""
         import uuid
 
+        from dendrophis.events import SessionResetRequest
         from dendrophis.llm.models import supports_caching_by_id, supports_prompt_cache_key_by_id
 
         self.context.reset()
@@ -466,6 +467,8 @@ class Session:
 
         if supports_prompt_cache_key_by_id(self.config.llm.model):
             self.config.llm.prompt_cache_key = f"dendrophis-{uuid.uuid4().hex[:16]}"
+
+        self._emit(SessionResetRequest())
 
     def reload_config(self) -> None:
         """Re-read config from disk and reinitialise the LLM client."""
@@ -480,6 +483,14 @@ class Session:
         self._retired_llm_clients.append(self.llm)
         self.llm = new_llm
         self.context._config = self.config
+        if self._chat:
+            self._chat.llm = new_llm
+            self._chat.config = self.config
+        if self._event_handler:
+            self._event_handler._llm = new_llm
+        if self._subagent_bootstrapper:
+            self._subagent_bootstrapper._llm_client = new_llm
+            self._subagent_bootstrapper._config = self.config
 
         if getattr(self, "mcp_manager", None):
             sync_task = asyncio.create_task(self.mcp_manager.sync_servers())

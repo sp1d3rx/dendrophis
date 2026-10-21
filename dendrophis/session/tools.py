@@ -19,14 +19,17 @@ from dendrophis.events import (
 )
 from dendrophis.permissions import Decision, PermissionPolicy
 from dendrophis.tools.bash_sandbox import BashSandbox, is_heredoc_write_pattern
-from dendrophis.tools.executor import ToolResult
+from dendrophis.tools.executor import ToolResult, is_tool_error
 from dendrophis.tools.names import ToolName
 
 # Constants for tool execution timeouts
 CONFIRMATION_TIMEOUT = 300.0  # 5 minutes
 POLL_INTERVAL = 0.1
+# Safety-net timeout for tools that don't declare their own (see BaseTool.execution_timeout).
 TOOL_EXECUTION_TIMEOUT = 120.0  # 2 minutes
-SUBAGENT_TOOL_EXECUTION_TIMEOUT = 300.0  # 5 minutes for subagents (matches LLM client timeout)
+# Margin added on top of a tool's declared timeout so the tool's own timeout
+# (the only one that can kill a stuck subprocess) fires first.
+TOOL_TIMEOUT_MARGIN = 15.0
 
 # Alias for backwards compatibility
 FallbackToolResult = ToolResult
@@ -37,6 +40,8 @@ class ToolLike(Protocol):
 
     @property
     def self_confirming(self) -> bool: ...
+
+    def execution_timeout(self, arguments: dict[str, Any]) -> float | None: ...
 
     @property
     def silent(self) -> bool: ...
@@ -63,6 +68,9 @@ class ToolResultLike(Protocol):
     @property
     def content(self) -> str: ...
 
+    @property
+    def success(self) -> bool: ...
+
 
 class ToolExecutorLike(Protocol):
     """Protocol for tool executors expected by SessionToolExecutor."""
@@ -80,18 +88,6 @@ def tool_call_to_payload(tool_call: Any) -> dict[str, Any]:
             "arguments": tool_call.arguments or "{}",
         },
     }
-
-
-def is_tool_error(content: str) -> bool:
-    """Return True if a tool result content indicates a failure."""
-    try:
-        parsed_payload = json.loads(content)
-        if isinstance(parsed_payload, dict):
-            return "error" in parsed_payload
-    except (json.JSONDecodeError, TypeError):
-        pass
-    content_lower = content.lower()
-    return "error" in content_lower or "execution failed" in content_lower
 
 
 class SessionToolExecutor:
@@ -118,11 +114,15 @@ class SessionToolExecutor:
         self._cancel_flag = cancel_flag
         self._emit = emit
         self._debug_logger = debug_logger
-        self._confirmation_event = asyncio.Event()
+        self._confirmation_futures: dict[str, asyncio.Future] = {}
+        self._cancel_watcher_task: asyncio.Task | None = None
 
-    def notify_confirmation(self) -> None:
-        """Signal waiting coroutines that confirmation state has updated."""
-        self._confirmation_event.set()
+    def respond_to_confirmation(self, request_identifier: str, approved: bool) -> None:
+        """Record a confirmation response and wake its waiting coroutine immediately."""
+        self._confirmation_results[request_identifier] = approved
+        future = self._confirmation_futures.get(request_identifier)
+        if future is not None and not future.done():
+            future.set_result(approved)
 
     def update_tools(
         self,
@@ -137,7 +137,7 @@ class SessionToolExecutor:
         """Execute tool calls with hierarchical confirmation flow."""
         # Log tool execution start
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
-            from dendrophis.session.chat import _tool_log
+            from dendrophis.utils import _tool_log
 
             _tool_log("=== SESSION TOOL EXECUTOR ===")
             _tool_log(f"Executing {len(tool_calls)} tool calls")
@@ -187,7 +187,9 @@ class SessionToolExecutor:
             single_result = self._make_error_result(tool_call, error_message)
             results_by_index[call_index] = single_result
 
-        # Poll for confirmation responses
+        # Wait for confirmation responses (woken by respond_to_confirmation, no polling)
+        if pending_approvals:
+            self._ensure_cancel_watcher()
         for call_index, tool_call, request_identifier in pending_approvals:
             if self._cancel_flag.is_set():
                 break
@@ -197,26 +199,44 @@ class SessionToolExecutor:
             if approved is None:
                 # Timeout
                 self._pending_confirmations.pop(request_identifier, None)
-                error_message = '{"error": "Tool execution timed out waiting for approval"}'
-                single_result = self._make_error_result(tool_call, error_message)
+                # Plain message: _make_error_result performs the JSON encoding.
+                # (Passing a pre-encoded '{"error": ...}' string here used to
+                # double-encode it into {"error": "{\\"error\\": ...}"}.)
+                single_result = self._make_error_result(tool_call, "Tool execution timed out waiting for approval")
                 results_by_index[call_index] = single_result
             elif not approved:
-                error_message = '{"error": "Tool execution rejected by user"}'
-                single_result = self._make_error_result(tool_call, error_message)
+                single_result = self._make_error_result(tool_call, "Tool execution rejected by user")
                 results_by_index[call_index] = single_result
             else:
                 approved_tools.append((call_index, tool_call, False))
+
+        # No more confirmation waits this turn — stop the cancel watcher.
+        await self._stop_cancel_watcher()
 
         # Sort approved tools by original call index to preserve tool call order
         approved_tools.sort(key=lambda approved_item: approved_item[0])
 
         # Execute all approved tools
-        for call_index, tool_call, silent in approved_tools:
-            if self._cancel_flag.is_set():
-                break
+        if self._parallel_tools_enabled() and not self._batch_has_self_confirming(approved_tools):
+            # Run the batch concurrently; gather preserves input order so each result
+            # maps back to its original call index.
+            outcomes = await asyncio.gather(
+                *(self._run_approved_tool(item) for item in approved_tools),
+                return_exceptions=True,
+            )
+            for (call_index, tool_call, _silent), outcome in zip(approved_tools, outcomes, strict=True):
+                if isinstance(outcome, BaseException):
+                    single_result = self._make_error_result(tool_call, f"Tool execution crashed: {outcome}")
+                else:
+                    single_result = outcome
+                results_by_index[call_index] = single_result
+        else:
+            for call_index, tool_call, silent in approved_tools:
+                if self._cancel_flag.is_set():
+                    break
 
-            single_result = await self._execute_single_tool(tool_call, silent)
-            results_by_index[call_index] = single_result
+                single_result = await self._execute_single_tool(tool_call, silent)
+                results_by_index[call_index] = single_result
 
         return [results_by_index[call_index] for call_index in range(len(tool_calls)) if call_index in results_by_index]
 
@@ -229,28 +249,55 @@ class SessionToolExecutor:
         approved_tools: list[tuple[int, Any, bool]],
         pending_approvals: list[tuple[int, Any, str]],
     ) -> None:
-        """Apply permission policy to bash tool calls."""
+        """Apply permission policy to bash tool calls.
+
+        Only argument parsing is tolerated here. A malformed ``arguments``
+        payload is a malformed call, so it is rejected as invalid rather than
+        asked for confirmation. Likewise, if the sandbox cannot simulate the
+        command we fail closed (reject with a visible error) instead of
+        silently falling through to a confirmation prompt for a command that
+        was never safety-analyzed.
+        """
         try:
             arguments = json.loads(tool_call.arguments) if tool_call.arguments else {}
-            command = arguments.get("command", "")
-            if is_heredoc_write_pattern(command):
-                error_message = (
-                    f"Bash heredoc file writes should use the 'write' tool instead. Command: {command[:50]}..."
-                )
-                invalid_tools.append((call_index, tool_call, error_message))
-                return
-            simulation = BashSandbox().simulate(command)
-            decision, reason = policy.check_bash(simulation)
-            if decision == Decision.DENY:
-                invalid_tools.append((call_index, tool_call, f"Blocked by permission policy: {reason}"))
-                return
-            if decision == Decision.ALLOW:
-                approved_tools.append((call_index, tool_call, True))
-                return
-            # CONFIRM falls through
-        except Exception:
-            pass  # Let invalid JSON reach normal error handling
+        except Exception as parse_error:
+            invalid_tools.append((call_index, tool_call, f"Invalid arguments format: {parse_error}"))
+            return
+        if not isinstance(arguments, dict):
+            invalid_tools.append((call_index, tool_call, "Invalid arguments format: expected a JSON object"))
+            return
 
+        command = arguments.get("command", "")
+        if not isinstance(command, str):
+            invalid_tools.append((call_index, tool_call, "Invalid arguments format: 'command' must be a string"))
+            return
+
+        if is_heredoc_write_pattern(command):
+            error_message = f"Bash heredoc file writes should use the 'write' tool instead. Command: {command[:50]}..."
+            invalid_tools.append((call_index, tool_call, error_message))
+            return
+
+        try:
+            simulation = BashSandbox().simulate(command)
+        except Exception as simulation_error:
+            if self._debug_logger is not None:
+                self._debug_logger(f"Bash simulation failed for command {command!r}: {simulation_error!r}")
+            invalid_tools.append((call_index, tool_call, f"Bash simulation failed: {simulation_error}"))
+            return
+
+        if self._tool_registry is not None:
+            bash_tool = self._tool_registry.get(tool_call.name)
+            cache_simulation = getattr(bash_tool, "set_precomputed_simulation", None)
+            if callable(cache_simulation):
+                cache_simulation(command, simulation)
+        decision, reason = policy.check_bash(simulation)
+        if decision == Decision.DENY:
+            invalid_tools.append((call_index, tool_call, f"Blocked by permission policy: {reason}"))
+            return
+        if decision == Decision.ALLOW:
+            approved_tools.append((call_index, tool_call, True))
+            return
+        # CONFIRM falls through
         self._request_confirmation(call_index, tool_call, pending_approvals)
 
     def _process_regular_tool(
@@ -285,6 +332,7 @@ class SessionToolExecutor:
         """Request user confirmation for a tool call."""
         request_identifier = str(uuid.uuid4())
         self._pending_confirmations[request_identifier] = True
+        self._confirmation_futures[request_identifier] = asyncio.get_running_loop().create_future()
         self._emit(
             ToolConfirmationRequestEvent(
                 request_id=request_identifier,
@@ -295,26 +343,80 @@ class SessionToolExecutor:
         pending_approvals.append((call_index, tool_call, request_identifier))
 
     async def _wait_for_confirmation(self, request_identifier: str) -> bool | None:
-        """Wait for user confirmation response. Returns True if approved, False if rejected, None if timeout."""
-        running_loop = asyncio.get_running_loop()
-        start_timestamp = running_loop.time()
+        """Wait for a user confirmation response.
 
-        while (running_loop.time() - start_timestamp) < CONFIRMATION_TIMEOUT:
-            if request_identifier in self._confirmation_results:
-                approved_status = self._confirmation_results.pop(request_identifier)
-                self._pending_confirmations.pop(request_identifier, None)
-                return approved_status
+        Returns True if approved, False if rejected, None on timeout or cancellation.
+        Woken immediately by respond_to_confirmation (or the cancel watcher) — no polling.
+        """
+        future = self._confirmation_futures.get(request_identifier)
+        if future is None:
+            # Response already recorded before we started waiting.
+            return self._confirmation_results.pop(request_identifier, None)
+        try:
+            result = await asyncio.wait_for(future, timeout=CONFIRMATION_TIMEOUT)
+        except TimeoutError:
+            result = None
+        finally:
+            self._confirmation_futures.pop(request_identifier, None)
+            self._pending_confirmations.pop(request_identifier, None)
+        if result is None:
+            reason = "cancelled" if self._cancel_flag.is_set() else "timeout"
+            self._emit(ToolConfirmationCancelledEvent(request_id=request_identifier, reason=reason))
+        return result
 
-            if self._cancel_flag.is_set():
-                self._emit(ToolConfirmationCancelledEvent(request_id=request_identifier, reason="cancelled"))
-                return None
+    def _ensure_cancel_watcher(self) -> None:
+        """Start the single task that resolves pending confirmations when streaming is cancelled."""
+        if self._cancel_watcher_task is None or self._cancel_watcher_task.done():
+            self._cancel_watcher_task = asyncio.create_task(self._watch_cancel_flag())
 
-            self._confirmation_event.clear()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._confirmation_event.wait(), timeout=POLL_INTERVAL)
+    async def _stop_cancel_watcher(self) -> None:
+        """Stop the cancel watcher if it is still running (turn ended without cancel)."""
+        watcher = self._cancel_watcher_task
+        self._cancel_watcher_task = None
+        if watcher is not None and not watcher.done():
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
 
-        self._emit(ToolConfirmationCancelledEvent(request_id=request_identifier, reason="timeout"))
-        return None
+    async def _watch_cancel_flag(self) -> None:
+        """Mirror the threading cancel flag into pending confirmation futures.
+
+        ``_cancel_flag`` is a ``threading.Event`` set from the UI/cancel thread,
+        which has no native asyncio awaitable. Instead of blocking a thread-pool
+        worker on ``event.wait()`` per confirmation, this single shared task
+        polls the flag on the event loop every ``POLL_INTERVAL`` (100 ms —
+        imperceptible for a cancel) and, once set, resolves every pending
+        confirmation future with ``None`` so the waiting coroutines treat it as
+        a cancellation.
+        """
+        while not self._cancel_flag.is_set():
+            await asyncio.sleep(POLL_INTERVAL)
+        for future in list(self._confirmation_futures.values()):
+            if not future.done():
+                future.set_result(None)
+
+    def _parallel_tools_enabled(self) -> bool:
+        """Return the configured parallel-execution switch (default: enabled)."""
+        tools_config = getattr(self._config, "tools", None)
+        return bool(getattr(tools_config, "parallel_tools", True))
+
+    def _batch_has_self_confirming(self, approved_tools: list[tuple[int, Any, bool]]) -> bool:
+        """True if the batch contains a tool that manages its own interactive confirmation.
+
+        Interactive confirmations must not overlap, so such batches run sequentially.
+        """
+        if not self._tool_registry:
+            return False
+        for _call_index, tool_call, _silent in approved_tools:
+            tool_instance = self._tool_registry.get(tool_call.name)
+            if tool_instance is not None and getattr(tool_instance, "self_confirming", False):
+                return True
+        return False
+
+    async def _run_approved_tool(self, item: tuple[int, Any, bool]) -> Any:
+        """Execute one approved tool call (concurrent batch path)."""
+        _call_index, tool_call, silent = item
+        return await self._execute_single_tool(tool_call, silent)
 
     def _validate_tool_arguments(self, tool_call: Any) -> str | None:
         """Validate that all required parameters are present in tool call arguments.
@@ -357,6 +459,21 @@ class SessionToolExecutor:
             success=False,
         )
 
+    def _resolve_base_timeout(self, tool_call: Any) -> float:
+        """Resolve the tool's declared per-call timeout, falling back to the executor default."""
+        tool_instance = self._tool_registry.get(tool_call.name) if self._tool_registry else None
+        if tool_instance is not None:
+            timeout_fn = getattr(tool_instance, "execution_timeout", None)
+            if timeout_fn is not None:
+                try:
+                    call_arguments = json.loads(tool_call.arguments) if tool_call.arguments else {}
+                except Exception:
+                    call_arguments = {}
+                declared = timeout_fn(call_arguments)
+                if declared is not None:
+                    return declared
+        return TOOL_EXECUTION_TIMEOUT
+
     async def _execute_single_tool(self, tool_call: Any, silent: bool) -> Any:
         """Execute a single approved tool call."""
         # Emit tool execution started
@@ -379,41 +496,30 @@ class SessionToolExecutor:
         # For self-confirming tools, communicate whether to skip interactive UI
         if self._tool_registry:
             tool_instance = self._tool_registry.get(tool_call.name)
-            if tool_instance is not None and tool_instance.self_confirming:
+            if tool_instance is not None and getattr(tool_instance, "self_confirming", False):
                 tool_instance.silent = silent
 
         # Execute the tool
         start_time = asyncio.get_running_loop().time()
         error_details: str | None = None
+        # The tool's declared timeout fires first (it can kill the subprocess);
+        # the executor limit is a safety net for tools without one.
+        base_timeout = self._resolve_base_timeout(tool_call)
+        timeout_limit = base_timeout + TOOL_TIMEOUT_MARGIN
         try:
             if self._tool_executor is None:
                 raise ValueError("No tool executor provided")
-            timeout_limit = (
-                SUBAGENT_TOOL_EXECUTION_TIMEOUT
-                if tool_call.name in (ToolName.INVOKE_SUBAGENT.value, "invoke_subagent")
-                else TOOL_EXECUTION_TIMEOUT
-            )
             single_result = await asyncio.wait_for(
                 self._tool_executor.execute(tool_call),
                 timeout=timeout_limit,
             )
         except TimeoutError:
-            timeout_seconds_integer = int(timeout_limit)
+            timeout_seconds_integer = int(base_timeout)
             error_details = f"Tool execution timed out after {timeout_seconds_integer} seconds"
-            single_result = ToolResult(
-                tool_call_id=tool_call.id,
-                name=tool_call.name,
-                content=json.dumps({"error": f"Tool execution timed out after {timeout_seconds_integer} seconds"}),
-                success=False,
-            )
+            single_result = self._make_error_result(tool_call, error_details)
         except Exception as execution_error:
             error_details = str(execution_error)
-            single_result = ToolResult(
-                tool_call_id=tool_call.id,
-                name=tool_call.name,
-                content=json.dumps({"error": f"Execution failed: {execution_error}"}),
-                success=False,
-            )
+            single_result = self._make_error_result(tool_call, f"Execution failed: {execution_error}")
 
         duration_seconds = max(0.0, asyncio.get_running_loop().time() - start_time)
 

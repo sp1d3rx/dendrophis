@@ -587,7 +587,10 @@ class SettingsScreen(Screen):
                         with Horizontal(classes="column-layout"):
                             with Vertical():
                                 yield self._make_input("llm.base_url", "Base URL", self._cfg.llm.base_url)
-                                yield self._make_input("llm.model", "Model", self._cfg.llm.model)
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Model", classes="settings-label")
+                                    yield Input(value=self._cfg.llm.model, id="llm_model", classes="settings-input")
+                                    yield Button("Recalibrate", id="recalibrate-btn", variant="default")
                             with Vertical():
                                 yield self._make_input("llm.api_key", "API Key", self._cfg.llm.api_key, password=True)
                                 yield self._make_input(
@@ -911,7 +914,9 @@ class SettingsScreen(Screen):
                                 )
                             with Vertical():
                                 yield self._make_input(
-                                    "tools.max_calls", "Max Consecutive Calls", str(self._cfg.tools.max_calls)
+                                    "tools.max_consecutive_failures",
+                                    "Max Consecutive Failures",
+                                    str(self._cfg.tools.max_consecutive_failures),
                                 )
                                 yield self._make_switch(
                                     "tools.parallel_tools", "Allow Parallel Execution", self._cfg.tools.parallel_tools
@@ -1072,6 +1077,27 @@ class SettingsScreen(Screen):
             editor = self.query_one("#config-editor", TextArea)
             editor.text = self._last_valid_yaml
             self.query_one("#error-label", Label).update("[green]Reverted to last valid YAML.[/green]")
+        elif event.button.id == "recalibrate-btn":
+            model_id = self._get_val("llm_model").strip()
+            if not model_id:
+                self.query_one("#error-label", Label).update("[red]Please specify a model name to calibrate.[/red]")
+                return
+            base_url = self._get_val("llm_base_url").strip() or self._cfg.llm.base_url
+            api_key = self._get_val("llm_api_key").strip() or self._cfg.llm.api_key
+            self.query_one("#error-label", Label).update(f"[cyan]Calibrating {model_id} in background...[/cyan]")
+
+            async def _run_calibration():
+                from dendrophis.llm.calibration import calibrate_model
+
+                try:
+                    await calibrate_model(model_id=model_id, base_url=base_url, api_key=api_key, force=True)
+                    self.notify(f"Successfully calibrated {model_id}!", severity="success")
+                    self.query_one("#error-label", Label).update(f"[green]Successfully calibrated {model_id}![/green]")
+                except Exception as exc:
+                    self.notify(f"Calibration failed: {exc}", severity="error")
+                    self.query_one("#error-label", Label).update(f"[red]Calibration failed: {exc}[/red]")
+
+            self.run_worker(_run_calibration())
 
     def _get_val(self, id_str: str, default: str = "") -> str:
         try:
@@ -1232,7 +1258,9 @@ class SettingsScreen(Screen):
             paths_val = self._get_val("tools_extra_paths").strip()
             paths_list = [item.strip() for item in paths_val.split(",") if item.strip()]
             set_nested(raw, ["tools", "extra_paths"], paths_list)
-            set_nested(raw, ["tools", "max_calls"], int(self._get_val("tools_max_calls", "3")))
+            set_nested(
+                raw, ["tools", "max_consecutive_failures"], int(self._get_val("tools_max_consecutive_failures", "3"))
+            )
             set_nested(raw, ["tools", "parallel_tools"], self._get_bool("tools_parallel_tools"))
 
             set_nested(raw, ["system_prompt"], self.query_one("#system_prompt", TextArea).text)

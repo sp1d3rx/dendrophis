@@ -88,7 +88,7 @@ hooks:
 
 tools:
   extra_paths: []
-  max_calls: 3
+  max_consecutive_failures: 3
   parallel_tools: false
 
 caching:

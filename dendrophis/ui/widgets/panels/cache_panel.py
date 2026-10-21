@@ -68,7 +68,7 @@ class CachePanel(TextPanel):
 
     def render_value(self) -> str:
         """Return the cache display string."""
-        if not self._caching_enabled:
+        if not self._caching_enabled and self._cached_tokens == 0:
             return "[dim]N/A[/dim]"
 
         if self._cached_tokens > 0:

@@ -97,7 +97,7 @@ hooks:
 
 tools:
   extra_paths: []
-  max_calls: 3
+  max_consecutive_failures: 3
 
 permissions:
   # Tools that require user confirmation before running (empty = none)

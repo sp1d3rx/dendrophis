@@ -362,40 +362,36 @@ def test_tool_log_exception_uses_logging(
 
 
 @pytest.mark.anyio
-async def test_tool_executor_backup_failure_uses_logging(
-    tmp_path: Path,
+async def test_write_tool_backup_failure_aborts_write(
     capsys: pytest.CaptureFixture[str],
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A write is aborted (file untouched) when the .bak backup cannot be created."""
     import shutil
+    import uuid
 
-    from dendrophis.llm.client import ToolCall
-    from dendrophis.tools.executor import ToolExecutor
-    from dendrophis.tools.registry import ToolRegistry
+    from dendrophis.tools.builtins.filesystem.write import WriteTool
 
-    registry = ToolRegistry()
-    executor = ToolExecutor(registry)
+    work_dir = Path.cwd() / f"tmp_test_backup_{uuid.uuid4().hex}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_file = work_dir / "test_edit.txt"
+        target_file.write_text("initial content", encoding="utf-8")
 
-    target_file = tmp_path / "test_edit.txt"
-    target_file.write_text("initial content", encoding="utf-8")
+        def raising_copy(*args, **kwargs):
+            raise OSError("Cannot backup")
 
-    def raising_copy(*args, **kwargs):
-        raise OSError("Cannot backup")
+        monkeypatch.setattr(shutil, "copy2", raising_copy)
 
-    monkeypatch.setattr(shutil, "copy2", raising_copy)
+        result = await WriteTool().execute(
+            file_path=str(target_file.relative_to(Path.cwd())),
+            content="new content",
+        )
 
-    tool_call = ToolCall(
-        index=0,
-        id="call_test_123",
-        name="edit_file",
-        arguments=f'{{"file_path": "{target_file}"}}',
-    )
-
-    with caplog.at_level(logging.WARNING, logger="dendrophis.tools.executor"):
-        await executor.execute(tool_call)
-
-    captured_output = capsys.readouterr()
-    assert captured_output.err == ""
-    assert captured_output.out == ""
-    assert any("Failed to create backup" in record.getMessage() for record in caplog.records)
+        captured_output = capsys.readouterr()
+        assert captured_output.err == ""
+        assert "error" in result
+        # The file must not be modified when the backup cannot be created
+        assert target_file.read_text(encoding="utf-8") == "initial content"
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)

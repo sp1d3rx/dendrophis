@@ -37,6 +37,14 @@ class BaseTool(ABC):
         """True if this tool handles its own human confirmation internally."""
         return False
 
+    def execution_timeout(self, arguments: dict[str, Any]) -> float | None:
+        """Per-call execution timeout in seconds, or None for the executor default.
+
+        The tool's own timeout is the only one that can actually kill a stuck
+        subprocess, so the executor adds a margin on top of this value.
+        """
+        return None
+
     @property
     def permission_controlled(self) -> bool:
         """False for internal tools that should not appear in permission settings."""

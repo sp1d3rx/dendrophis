@@ -91,7 +91,11 @@ class SessionEventHandler:
     @listen
     def _on_confirmation_response(self, event: ToolConfirmationResponseEvent) -> None:
         """Handle human approval response."""
-        self._confirmation_results[event.request_id] = event.approved
+        executor = getattr(self._session, "_tool_executor_session", None)
+        if executor is not None and hasattr(executor, "respond_to_confirmation"):
+            executor.respond_to_confirmation(event.request_id, event.approved)
+        else:
+            self._confirmation_results[event.request_id] = event.approved
 
     @listen
     def _on_model_switch_request(self, event: ModelSwitchRequest) -> None:

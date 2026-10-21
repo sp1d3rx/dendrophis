@@ -252,6 +252,9 @@ class UsageEvent(StreamEvent):
     total_tokens: int = 0
     cached_tokens: int = 0
     is_estimated: bool = False
+    # Tokens saved by converting content to 1-bit images for VLMs. Set by the
+    # client at payload-build time (unique content only); 0 for non-VLM models.
+    visual_tokens_saved: int = 0
 
     def __post_init__(self) -> None:
         if self.total_tokens == 0:

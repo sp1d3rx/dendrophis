@@ -17,6 +17,15 @@ _NULL_REDIRECT = re.compile(r"/dev/null\b")
 class BashTool(BaseTool):
     """Execute a bash command."""
 
+    def __init__(self) -> None:
+        self._precomputed_simulations: dict[str, Any] = {}
+
+    def set_precomputed_simulation(self, command: str, simulation: Any) -> None:
+        """Store a precomputed BashSandbox simulation from the permission layer."""
+        if len(self._precomputed_simulations) >= 64:
+            self._precomputed_simulations.clear()
+        self._precomputed_simulations[command] = simulation
+
     @property
     def name(self) -> str:
         return ToolName.BASH
@@ -56,6 +65,9 @@ class BashTool(BaseTool):
             "required": ["command", "description"],
         }
 
+    def execution_timeout(self, arguments: dict[str, Any]) -> float | None:
+        return max(1.0, float(arguments.get("timeout", 120000)) / 1000.0)
+
     async def execute(
         self,
         command: str,
@@ -64,9 +76,11 @@ class BashTool(BaseTool):
         full_output: bool = False,
     ) -> dict[str, Any]:
         try:
-            from dendrophis.tools.bash_sandbox import BashSandbox
+            simulation = self._precomputed_simulations.pop(command, None)
+            if simulation is None:
+                from dendrophis.tools.bash_sandbox import BashSandbox
 
-            simulation = BashSandbox().simulate(command)
+                simulation = BashSandbox().simulate(command)
             if simulation.dangerous:
                 return {"error": f"Dangerous command blocked: {simulation.reason}"}
 

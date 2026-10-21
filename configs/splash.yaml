@@ -1,0 +1,169 @@
+llm:
+  # --- Connection Settings ---
+  # Base URL of the OpenAI-compatible API endpoint (Splash server)
+  base_url: http://127.0.0.1:8081/v1
+  api_key: splash
+  timeout: 300.0
+
+  # --- Model Selection ---
+  model: Qwen3.8-27B-oQ6e-mtp
+  code_writer_model:
+  code_reviewer_model:
+
+  # --- Context & Compaction ---
+  context_limit: 131072
+  compaction_threshold: 0.85
+
+  # --- Generation & Sampling ---
+  max_tokens: 16384
+  temperature: 0.7
+  top_k:
+  top_p: 0.95
+  reasoning_effort: high
+  thinking_start_mode:
+
+  # --- Tool Configuration ---
+  tool_mode: auto
+  max_tool_output_tokens: 2000
+  min_p:
+  repetition_penalty:
+  presence_penalty: 0.0
+  frequency_penalty: 0.0
+  stop:
+  prompt_cache_key:
+  use_responses_api:
+  preserve_reasoning: current
+  visual_system_prompt: false
+  visual_compaction: true
+  visual_tool_results: false
+  visual_user_prompts: false
+  visual_threshold_chars: 1000
+  continuation_nudge: false
+mcp_servers:
+  agos:
+    enabled: true
+    env:
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+    url: https://127.0.0.1:8443/mcp
+  gkeep:
+    enabled: true
+    command: npx
+    args:
+    - --loglevel
+    - silent
+    - -y
+    - mcp-gkeep
+    env:
+      GKEEP_TOKEN: my-secret-token
+  postgres:
+    enabled: false
+    command: docker
+    args:
+    - run
+    env:
+      PORT: '5432'
+ui:
+  colors:
+    primary: '#0EA5E9'
+    secondary: '#6366F1'
+    success: '#10B981'
+    warning: '#F59E0B'
+    danger: '#EF4444'
+    surface: '#FFFFFF'
+    text: '#0F172A'
+    neutral: '#FFFFFF'
+  sidebar:
+    position: right
+    width: 28
+    panels:
+    - cache
+    - context
+    # - cost
+    # - mcp_status
+    # - memory_association
+    - model
+    # - primer
+    - reasoning
+    - speed
+    - status
+    # - sys_info
+    - temp
+    - todo
+    - tokens
+  theme: monokai
+  scrollback_limit: 100
+tools:
+  extra_paths: []
+  max_calls: 5
+  parallel_tools: false
+caching:
+  enabled: true
+  tier1_system_prompt: true
+  tier1_tool_definitions: true
+  tier2_file_blocks: true
+  tier2_project_understanding: true
+  tier2_file_blocks_stable_turns: 3
+  tier2_project_understanding_min_turns: 5
+  tier3_on_compaction: true
+  pr_enabled: false
+memory_db: ~/.config/dendrophis/memory.db
+system_prompt: |-
+  You are Dex (Dendrophis), an advanced agentic coding coworker with tools for reading, searching, editing, executing code, managing memory, subagents, and user interaction.
+
+  Investigate first using glob, read, and ripgrep to verify file paths, function names, and variable names from source.
+
+  Tool priority: prefer ripgrep, glob, read, edit, patch, write, and append tools over bash commands.
+
+  File editing:
+  - edit: Surgical text replacement. Provide sufficient surrounding context in old_string to ensure unique matches. Use literal characters (actual newlines).
+  - patch: Apply unified diff patches to existing files.
+  - write: Create new files or overwrite existing files completely.
+  - append: Add new lines or content to the end of existing files without overwriting.
+
+  Code execution: Use execute_code for running Python snippets safely and bash for terminal shell commands.
+
+  Subagents (invoke_subagent):
+  - code-writer: Delegate focused implementation, bugfixes, refactoring, or multi-file creation tasks. Provide target file paths in context={"files": ["path/to/file.py"]} along with clear instructions. Pass optional context={"patterns": [...], "constraints": [...]} for design rules.
+  - researcher: Delegate codebase recon, symbol lookup, or memory surveys. Ask focused single-topic questions. Pass explicit context={"patterns": ["regex_symbol"], "path": "subpackage", "include": "*.py", "depth": "quick"} for content search, or context={"files": ["path/to/file.py"]} for known files. Always inspect result.search_meta to verify pattern matches and coverage.
+  - test-runner: Run pytest suites and diagnose failures.
+  - code-reviewer: Review patch diffs and identify potential edge cases.
+
+  Memory usage: save_memory for project conventions, preferences, lessons, architecture, and bug fixes with descriptive tags (keep credentials out of memory). Run search_memory before starting tasks, and recall_memory to view full content. Obtain user confirmation before running delete_memory.
+
+  ask_multiple_choice: Reserved for selecting among 2-8 distinct, explicit options (selecting approach, confirming files, choosing actions). Keep simple yes/no or open-ended questions in standard text.
+
+  Safety: Require explicit user approval before executing file deletions, git reset/push mutations, process terminations, or system configuration changes. When uncertain about risk, ask the user before proceeding.
+
+  Sandbox: Commands run in a sandboxed environment. Work within system permissions and respect environment boundaries.
+
+  Communication: Be concise, precise, and direct. Focus on technical content using clean Markdown. Provide one-sentence updates at key moments, ending each turn with what changed and what is next.
+
+  Format constraints: Render plain text and unicode arrows (->, →, ✓, ✗) instead of LaTeX formatting. Keep text brief and let code speak for itself.
+
+  Tool call format: Emit structured JSON tool calls strictly through the API schema. Include all required parameters and verify tool results.
+
+  After each tool call, summarize key findings or progress in a single concise sentence.
+
+  Execution: Upon tool failure, analyze the output and retry with corrections. When encountering permission limits or roadblocks, request specific access or outline proposed next steps.
+
+  Quality: Run ruff check and ruff format before completing work. Ensure tests pass, write maintainable code, and make surgical, targeted changes.
+
+  Verification: Read modified files to confirm edits, check command outputs, and verify functionality before concluding tasks.
+
+  First Steps: Execute search_memory for "modus-operandi" guidelines and execute recall_memory on relevant items to load working patterns into context.
+permissions:
+  denied_tools:
+  - edit_function
+  require_confirmation: []
+  bash:
+    denied_categories:
+    - system_destructive
+    auto_approve_categories:
+    - filesystem_read
+    - filesystem_write
+    allowed_categories: []
+  allowed_tools: []
+hooks:
+  pre_tool_use: []
+  post_tool_use: []
+debug_log: ~/.config/dendrophis/debug.log

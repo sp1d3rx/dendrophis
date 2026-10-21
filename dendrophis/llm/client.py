@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime
+import hashlib
 import json
 import logging
 import os
 import random
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -27,6 +28,7 @@ from dendrophis.events import (
     ToolCall,
     ToolCallDoneEvent,
     TurnResult,
+    UsageEvent,
 )
 from dendrophis.llm.models import (
     supports_caching_by_id,
@@ -326,7 +328,11 @@ class LLMClient:
 
     def __init__(self, config: LLMConfig, http_client: httpx.AsyncClient | None = None) -> None:
         self._config = config
+        # Savings counted by the most recent visual transform pass (unique
+        # content only; see _count_visual_savings). Client-internal: the value
+        # is attached to the UsageEvent in stream_chat.
         self.last_visual_tokens_saved: int = 0
+        self._visual_counted: set[str] = set()
         self._http = http_client or self._new_http_client()
         self._http_inflight: dict[int, int] = {}
         self._retired_http: list[httpx.AsyncClient] = []
@@ -629,11 +635,30 @@ class LLMClient:
         ]
         return self._coalesce_consecutive_messages(sanitized)
 
+    def _count_visual_savings(self, content: str) -> int:
+        """Estimate the tokens saved by rendering content as a 1-bit image.
+
+        Each unique piece of content is counted only once for the lifetime of
+        this client: the visual transform re-runs over the full message list on
+        every tool-loop iteration, so counting unconditionally would re-add the
+        same savings on every step of a multi-tool turn.
+        """
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if digest in self._visual_counted:
+            return 0
+        self._visual_counted.add(digest)
+        estimated_text_tokens = int(len(content) / 3.5)
+        return max(0, estimated_text_tokens - 310)
+
     def _apply_visual_vlm_transformations(
         self,
         messages_list: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Transform text system prompt, compaction, or large tool outputs to 1-bit images for VLMs."""
+        """Transform text system prompt, compaction, or large tool outputs to 1-bit images for VLMs.
+
+        ``last_visual_tokens_saved`` reports the savings newly counted in this
+        pass (unique content only, see _count_visual_savings).
+        """
         from dendrophis.llm.visual_prompt import is_vlm_model, render_text_to_1bit_data_uri
 
         self.last_visual_tokens_saved = 0
@@ -653,8 +678,7 @@ class LLMClient:
                     content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_system_prompt"
                 )
                 if data_uri:
-                    estimated_text_tokens = int(len(content_data) / 3.5)
-                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    self.last_visual_tokens_saved += self._count_visual_savings(content_data)
                     transformed_messages.append(
                         {
                             "role": "user",
@@ -683,8 +707,7 @@ class LLMClient:
                     content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_tool_result"
                 )
                 if data_uri:
-                    estimated_text_tokens = int(len(content_data) / 3.5)
-                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    self.last_visual_tokens_saved += self._count_visual_savings(content_data)
                     tool_call_id = message_item.get("tool_call_id", "")
 
                     tool_msg: dict[str, Any] = {
@@ -725,8 +748,7 @@ class LLMClient:
                     content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_compaction"
                 )
                 if data_uri:
-                    estimated_text_tokens = int(len(content_data) / 3.5)
-                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    self.last_visual_tokens_saved += self._count_visual_savings(content_data)
                     transformed_messages.append(
                         {
                             "role": role_name,
@@ -755,8 +777,7 @@ class LLMClient:
                     content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_user_prompt"
                 )
                 if data_uri:
-                    estimated_text_tokens = int(len(content_data) / 3.5)
-                    self.last_visual_tokens_saved += max(0, estimated_text_tokens - 310)
+                    self.last_visual_tokens_saved += self._count_visual_savings(content_data)
                     transformed_messages.append(
                         {
                             "role": "user",
@@ -1199,6 +1220,9 @@ class LLMClient:
                     provider_context, messages, tools, enable_cache_control, current_tool_choice
                 )
                 _chat_log("CLIENT → SERVER", json.dumps(payload, indent=2))
+                # Capture the savings counted during payload building so the
+                # UsageEvent below can carry them (no cross-module getattr).
+                visual_tokens_saved = self.last_visual_tokens_saved
             except Exception as payload_error:
                 yield ErrorEvent(message=f"Failed to build request payload: {payload_error!s}")
                 return
@@ -1217,6 +1241,8 @@ class LLMClient:
                     if isinstance(event, ErrorEvent):
                         yield event
                         return
+                    if isinstance(event, UsageEvent) and visual_tokens_saved:
+                        event = replace(event, visual_tokens_saved=visual_tokens_saved)
                     yield event
 
             except Exception as stream_error:

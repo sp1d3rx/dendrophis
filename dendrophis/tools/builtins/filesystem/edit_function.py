@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint
+from dendrophis.tools.builtins.filesystem.utils import backup_existing_file, is_blocked_path, run_auto_lint
 from dendrophis.tools.names import ToolName
 
 
@@ -138,6 +138,7 @@ class EditFunctionTool(BaseTool):
             )
 
             # Write back in thread
+            await asyncio.to_thread(backup_existing_file, path)
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
             # Run auto-linting

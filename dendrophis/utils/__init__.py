@@ -4,9 +4,27 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def tool_log(message: str, session_id: str = "global") -> None:
+    """Write a message to the tool execution log file when DENDROPHIS_TOOL_LOG=1."""
+    if os.environ.get("DENDROPHIS_TOOL_LOG") != "1":
+        return
+    log_path = Path(f"tool_log_{session_id}.txt")
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    try:
+        with open(log_path, "a") as log_file:
+            log_file.write(f"[{timestamp}] {message}\n")
+    except Exception as exception:
+        logger.warning("Failed to write tool log: %s", exception)
+        logging.getLogger("dendrophis.session.chat").warning("Failed to write tool log: %s", exception)
 
 
 def sanitize_tool_name(name: str | None) -> str:
@@ -52,3 +70,4 @@ def ensure_secure_file(file_path: Path) -> None:
 # Backwards compatibility aliases (private names for internal use)
 _sanitize_tool_name = sanitize_tool_name
 _hash_content = hash_content
+_tool_log = tool_log
