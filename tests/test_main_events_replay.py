@@ -215,5 +215,58 @@ def test_all_screen_push_handlers_use_shared_helper() -> None:
         assert "push_screen" not in source.replace("_push_screen_later", ""), f"{name} still pushes screens directly"
 
 
+def test_compaction_events_rendered_as_inline_tool_calls() -> None:
+    from dendrophis.events import (
+        CompactionCompletedEvent,
+        CompactionFailedEvent,
+        CompactionStartedEvent,
+    )
+    from dendrophis.ui.widgets.chat_view import _format_tool_args
+
+    host = make_host([])
+    fake_chat = FakeChat()
+    host.query_one = lambda _widget_type: fake_chat
+
+    host._on_compaction_started(CompactionStartedEvent(original_token_count=112345, threshold=0.85))
+    assert len(fake_chat.calls) == 1
+    status_call = fake_chat.calls[0]
+    assert status_call[0] == "tool_status"
+    assert status_call[1] == "compact_context"
+    compaction_call_id = status_call[4]
+    assert compaction_call_id is not None
+    assert compaction_call_id.startswith("compact_")
+    assert "112,345 tokens" in _format_tool_args("compact_context", status_call[2])
+
+    host._on_compaction_completed(
+        CompactionCompletedEvent(
+            previous_token_count=112345,
+            new_token_count=42100,
+            tokens_reclaimed=70245,
+            summary="Compacted summary text",
+        )
+    )
+    assert len(fake_chat.calls) == 2
+    result_call = fake_chat.calls[1]
+    assert result_call[0] == "tool_result"
+    assert result_call[1] == "compact_context"
+    assert result_call[2] == "Compacted summary text"
+    assert result_call[4] == 0
+    assert result_call[5] == compaction_call_id
+    formatted_result = _format_tool_args("compact_context", result_call[3], result_call[2])
+    assert "112,345 → 42,100" in formatted_result
+    assert "-70,245 reclaimed" in formatted_result
+
+    host._on_compaction_started(CompactionStartedEvent(original_token_count=50000, threshold=0.85))
+    second_call_id = fake_chat.calls[2][4]
+    host._on_compaction_failed(CompactionFailedEvent(reason="No messages to compact"))
+    failed_call = fake_chat.calls[3]
+    assert failed_call[0] == "tool_result"
+    assert failed_call[1] == "compact_context"
+    assert failed_call[2] == "No messages to compact"
+    assert failed_call[4] == 1
+    assert failed_call[5] == second_call_id
+    assert "No messages to compact" in _format_tool_args("compact_context", failed_call[3])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -195,6 +195,22 @@ def _format_tool_args(tool_name: str, arguments: str, result_content: str = "") 
             item_text = arguments_data.get("text") or arguments_data.get("todo_id", "")
             return f" [cyan]{escape(str(action_type))}[/cyan] [dim]{escape(str(item_text))}[/dim]"
 
+        if tool_name == "compact_context":
+            previous_tokens = arguments_data.get("previous_token_count")
+            new_tokens = arguments_data.get("new_token_count")
+            reclaimed_tokens = arguments_data.get("tokens_reclaimed")
+            if previous_tokens is not None and new_tokens is not None:
+                reclaimed_suffix = (
+                    f" [green](-{int(reclaimed_tokens):,} reclaimed)[/green]" if reclaimed_tokens is not None else ""
+                )
+                return f" [cyan]{int(previous_tokens):,} → {int(new_tokens):,}[/cyan]{reclaimed_suffix}"
+            original_tokens = arguments_data.get("tokens")
+            if original_tokens is not None:
+                return f" [dim]({int(original_tokens):,} tokens)[/dim]"
+            failure_reason = arguments_data.get("reason")
+            if failure_reason:
+                return f" [dim]({escape(str(failure_reason))})[/dim]"
+
         if tool_name in (
             "read",
             "edit",
@@ -912,6 +928,9 @@ class AssistantMessage(Vertical):
     def add_tool_placeholder(self, index: int, tool_name: str, tool_call_id: str | None = None) -> None:
         """Mount a placeholder status line for a tool call that is still streaming arguments."""
         self.remove_loading()
+        if self._has_reasoning and self._active_thought_bubble and not self._active_thought_bubble._collapsed:
+            self._active_thought_bubble.collapse()
+        self._text_since_last_thought = True
         self._freeze_current_segment()
 
         status = InlineToolStatus(f"⚙ {tool_name} [dim]…[/dim]")
@@ -931,6 +950,9 @@ class AssistantMessage(Vertical):
     ) -> None:
         """Update an existing placeholder (by index or ID) or mount a new status line."""
         self.remove_loading()
+        if self._has_reasoning and self._active_thought_bubble and not self._active_thought_bubble._collapsed:
+            self._active_thought_bubble.collapse()
+        self._text_since_last_thought = True
 
         display_args = _format_tool_args(tool_name, arguments)
         label = f"⚙ {tool_name}{display_args}"

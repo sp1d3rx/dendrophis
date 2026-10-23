@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import traceback
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -297,24 +299,50 @@ class MainScreenEventHandler:
 
     @listen
     def _on_compaction_started(self, event: CompactionStartedEvent) -> None:
-        """Show a dim notice in the chat when context compaction begins."""
-        self.query_one(ChatView).add_system_message(
-            f"[dim]Compacting context... ({event.original_token_count:,} tokens)[/dim]"
+        """Render context compaction start inline as a tool call."""
+        compaction_call_id = f"compact_{uuid.uuid4().hex[:8]}"
+        self._compaction_call_id = compaction_call_id
+        self.query_one(ChatView).add_tool_status(
+            "compact_context",
+            description="",
+            arguments=json.dumps({"tokens": event.original_token_count}),
+            index=-1,
+            tool_call_id=compaction_call_id,
         )
 
     @listen
     def _on_compaction_completed(self, event: CompactionCompletedEvent) -> None:
-        """Show a dim notice in the chat when context compaction succeeds."""
-        self.query_one(ChatView).add_system_message(
-            "[bold]Context Compacted[/bold]\n"
-            f"[dim]Tokens:[/dim] {event.previous_token_count:,} \u2192 {event.new_token_count:,}"
-            f" ([green]-{event.tokens_reclaimed:,}[/] reclaimed)"
+        """Render context compaction completion inline as a tool result."""
+        compaction_call_id = getattr(self, "_compaction_call_id", None)
+        self._compaction_call_id = None
+        self.query_one(ChatView).add_tool_result(
+            "compact_context",
+            event.summary,
+            description="",
+            arguments=json.dumps(
+                {
+                    "previous_token_count": event.previous_token_count,
+                    "new_token_count": event.new_token_count,
+                    "tokens_reclaimed": event.tokens_reclaimed,
+                }
+            ),
+            consecutive_failures=0,
+            tool_call_id=compaction_call_id,
         )
 
     @listen
     def _on_compaction_failed(self, event: CompactionFailedEvent) -> None:
-        """Show a dim notice in the chat when context compaction is skipped or fails."""
-        self.query_one(ChatView).add_system_message(f"[dim]Compaction skipped: {event.reason}[/dim]")
+        """Render context compaction failure or skip inline as a tool result."""
+        compaction_call_id = getattr(self, "_compaction_call_id", None)
+        self._compaction_call_id = None
+        self.query_one(ChatView).add_tool_result(
+            "compact_context",
+            event.reason,
+            description="",
+            arguments=json.dumps({"reason": event.reason}),
+            consecutive_failures=1,
+            tool_call_id=compaction_call_id,
+        )
 
     @listen
     def _on_config_reloaded(self, event: ConfigReloadedEvent) -> None:
