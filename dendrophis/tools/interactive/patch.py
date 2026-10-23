@@ -12,8 +12,8 @@ from dendrophis.events.types import (
     EditApprovalEvent,
     EditProposalEvent,
 )
-from dendrophis.tools.builtins.filesystem.patch import PatchTool
-from dendrophis.tools.builtins.filesystem.utils import try_unescape
+from dendrophis.tools.builtins.filesystem.patch import PatchTool, extract_patch_strings
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, try_unescape
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -36,6 +36,10 @@ class InteractivePatchTool(InteractiveBaseTool):
             if self.silent:
                 return await self._base_tool.execute(file_path=file_path, edits=edits)
 
+            error_message = is_blocked_path(file_path)
+            if error_message:
+                return {"error": error_message}
+
             path = Path(file_path)
             if not (path.exists() and path.is_file()):
                 return {"error": f"Path is not a valid file: {file_path}"}
@@ -43,9 +47,24 @@ class InteractivePatchTool(InteractiveBaseTool):
             content = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
 
             new_content = content
-            for edit_index, edit in enumerate(edits):
-                search_string = edit.get("search", "")
-                replace_string = edit.get("replace", "")
+            for edit_index, edit_entry in enumerate(edits):
+                if not isinstance(edit_entry, dict):
+                    return {
+                        "error": (
+                            f"Invalid edit at edit_index {edit_index}: expected dict with 'search' and 'replace' keys"
+                        )
+                    }
+                search_string, replace_string = extract_patch_strings(edit_entry)
+                if not search_string:
+                    return {
+                        "error": f"Missing or empty 'search' string at edit_index {edit_index}",
+                        "hint": "Each item in 'edits' must be a dict with non-empty 'search' and 'replace' strings",
+                    }
+                if replace_string is None:
+                    return {
+                        "error": f"Missing 'replace' string at edit_index {edit_index}",
+                        "hint": "Each item in 'edits' must include both 'search' and 'replace' keys",
+                    }
 
                 if search_string not in new_content:
                     unescaped_search = try_unescape(search_string)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import traceback
 from typing import Any
@@ -58,8 +59,8 @@ class PythonExecTool(BaseTool):
         original_stdout = sys.stdout
         original_stderr = sys.stderr
 
-        local_variables: dict[str, Any] = {}
-        global_variables = {"__builtins__": __builtins__}
+        execution_namespace: dict[str, Any] = {"__builtins__": __builtins__}
+        initial_keys = set(execution_namespace.keys())
 
         success = False
         exception_string = ""
@@ -67,7 +68,7 @@ class PythonExecTool(BaseTool):
         try:
             sys.stdout = stdout_buffer
             sys.stderr = stderr_buffer
-            exec(code_string, global_variables, local_variables)
+            exec(code_string, execution_namespace)
             success = True
         except Exception:
             exception_string = traceback.format_exc()
@@ -76,12 +77,20 @@ class PythonExecTool(BaseTool):
             sys.stderr = original_stderr
 
         serializable_locals = {}
-        for local_key, local_value in local_variables.items():
+        for local_key, local_value in execution_namespace.items():
+            if local_key in initial_keys or local_key.startswith("__"):
+                continue
             try:
                 if isinstance(local_value, (int, float, str, bool, list, dict, type(None))):
+                    json.dumps(local_value)
                     serializable_locals[local_key] = local_value
                 else:
                     serializable_locals[local_key] = str(local_value)
+            except (TypeError, OverflowError):
+                try:
+                    serializable_locals[local_key] = str(local_value)
+                except Exception:
+                    serializable_locals[local_key] = f"<Unrepresentable value: {type(local_value).__name__}>"
             except Exception:
                 serializable_locals[local_key] = f"<Unrepresentable value: {type(local_value).__name__}>"
 

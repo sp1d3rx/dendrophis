@@ -204,7 +204,7 @@ class SearchMemoryTool(BaseTool):
 
 
 class DeleteMemoryTool(BaseTool):
-    """Delete a memory entry. Requires user confirmation."""
+    """Delete a memory entry."""
 
     def __init__(self, store: MemoryStore) -> None:
         self._store = store
@@ -215,11 +215,7 @@ class DeleteMemoryTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return (
-            "Delete a previously saved memory entry. "
-            "This action cannot be undone. "
-            "Requires user confirmation before execution."
-        )
+        return "Delete a previously saved memory entry by ID. This action cannot be undone."
 
     @property
     def parameters(self) -> dict[str, Any]:

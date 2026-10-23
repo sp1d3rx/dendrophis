@@ -99,16 +99,22 @@ class ContextManager:
             raise ValueError(f"Tool name cannot be hashed ID: {name}. This indicates a bug in tool call processing.")
 
         # Skip duplicate read results (same tool + identical content per file path)
-        if name == "read":
+        if name in ("read", "read_file"):
             try:
                 result_data = json.loads(content)
-                if isinstance(result_data, dict) and result_data.get("type") == "file":
-                    file_path = result_data.get("path")
+                if isinstance(result_data, dict) and (result_data.get("type") == "file" or "content" in result_data):
+                    file_path = result_data.get("path") or result_data.get("file")
                     file_content = result_data.get("content", "")
-                    content_hash = hashlib.sha256(file_content.encode(errors="replace")).hexdigest()
-                    if self._read_file_hashes.get(file_path) == content_hash:
-                        return
-                    self._read_file_hashes[file_path] = content_hash
+                    if file_path and isinstance(file_content, str):
+                        content_hash = hashlib.sha256(file_content.encode(errors="replace")).hexdigest()
+                        if self._read_file_hashes.get(file_path) == content_hash:
+                            return
+                        self._read_file_hashes[file_path] = content_hash
+                    else:
+                        content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
+                        if content_hash in self._read_file_hashes:
+                            return
+                        self._read_file_hashes[content_hash] = content_hash
                 else:
                     # Fallback for non-file reads (like directory lists)
                     content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()

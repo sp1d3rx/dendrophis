@@ -193,3 +193,73 @@ async def test_patch_tool_auto_lint(local_tmp_dir) -> None:
     updated_content = sample_file_path.read_text(encoding="utf-8")
     assert "import os" in updated_content
     assert "x = 2" in updated_content
+
+
+@pytest.mark.anyio
+async def test_patch_tool_fallback_keys_and_backup(local_tmp_dir) -> None:
+    sample_file_path = local_tmp_dir / "test_fallback.txt"
+    initial_content = "alpha line\nbeta line\ngamma line\n"
+    sample_file_path.write_text(initial_content, encoding="utf-8")
+
+    patch_tool_instance = PatchTool()
+
+    edit_list = [
+        {"old_string": "alpha line", "new_string": "alpha updated"},
+        {"old": "gamma line", "new": "gamma updated"},
+    ]
+
+    relative_path = sample_file_path.relative_to(Path.cwd())
+    execution_result = await patch_tool_instance.execute(
+        file_path=str(relative_path),
+        edits=edit_list,
+    )
+
+    assert execution_result.get("success") is True
+    assert execution_result.get("applied_edits_count") == 2
+    assert sample_file_path.read_text(encoding="utf-8") == "alpha updated\nbeta line\ngamma updated\n"
+
+    backup_file_path = sample_file_path.with_suffix(".txt.bak")
+    assert backup_file_path.exists()
+    assert backup_file_path.read_text(encoding="utf-8") == initial_content
+
+
+@pytest.mark.anyio
+async def test_patch_tool_rejects_empty_search(local_tmp_dir) -> None:
+    sample_file_path = local_tmp_dir / "test_empty_search.txt"
+    sample_file_path.write_text("line one\nline two\n", encoding="utf-8")
+
+    patch_tool_instance = PatchTool()
+    relative_path = sample_file_path.relative_to(Path.cwd())
+
+    execution_result = await patch_tool_instance.execute(
+        file_path=str(relative_path),
+        edits=[{"search": "", "replace": "replacement"}],
+    )
+
+    assert "error" in execution_result
+    assert "Missing or empty 'search' string" in execution_result["error"]
+
+
+@pytest.mark.anyio
+async def test_python_exec_shared_namespace_and_bytes_serialization() -> None:
+    from dendrophis.tools.builtins.python_exec import PythonExecTool
+
+    python_exec_tool = PythonExecTool()
+    code_snippet = (
+        "import math\n"
+        "multiplier = 3\n"
+        "def compute_value(input_number):\n"
+        "    return int(math.sqrt(input_number)) * multiplier\n"
+        "computed_result = compute_value(16)\n"
+        "raw_bytes_list = [b'hello', b'world']\n"
+    )
+    execution_result = await python_exec_tool.execute(
+        code=code_snippet,
+        description="Test function closure over imports and bytes list serialization",
+    )
+
+    assert execution_result["success"] is True
+    assert execution_result["exception"] == ""
+    local_vars = execution_result["local_variables"]
+    assert local_vars["computed_result"] == 12
+    assert local_vars["raw_bytes_list"] == "[b'hello', b'world']"

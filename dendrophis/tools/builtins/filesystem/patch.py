@@ -7,8 +7,30 @@ from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
-from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, run_auto_lint, try_unescape
+from dendrophis.tools.builtins.filesystem.utils import (
+    backup_existing_file,
+    is_blocked_path,
+    run_auto_lint,
+    try_unescape,
+)
 from dendrophis.tools.names import ToolName
+
+
+def extract_patch_strings(edit_entry: dict[str, str]) -> tuple[str | None, str | None]:
+    """Extract search and replace strings from an edit dict, supporting common alias keys."""
+    search_string = edit_entry.get("search")
+    if search_string is None:
+        search_string = edit_entry.get("old_string")
+    if search_string is None:
+        search_string = edit_entry.get("old")
+
+    replace_string = edit_entry.get("replace")
+    if replace_string is None:
+        replace_string = edit_entry.get("new_string")
+    if replace_string is None:
+        replace_string = edit_entry.get("new")
+
+    return search_string, replace_string
 
 
 class PatchTool(BaseTool):
@@ -73,9 +95,24 @@ class PatchTool(BaseTool):
             new_content = content
             applied_edits = []
 
-            for edit_index, edit in enumerate(edits):
-                search_string = edit.get("search", "")
-                replace_string = edit.get("replace", "")
+            for edit_index, edit_entry in enumerate(edits):
+                if not isinstance(edit_entry, dict):
+                    return {
+                        "error": (
+                            f"Invalid edit at edit_index {edit_index}: expected dict with 'search' and 'replace' keys"
+                        )
+                    }
+                search_string, replace_string = extract_patch_strings(edit_entry)
+                if not search_string:
+                    return {
+                        "error": f"Missing or empty 'search' string at edit_index {edit_index}",
+                        "hint": "Each item in 'edits' must be a dict with non-empty 'search' and 'replace' strings",
+                    }
+                if replace_string is None:
+                    return {
+                        "error": f"Missing 'replace' string at edit_index {edit_index}",
+                        "hint": "Each item in 'edits' must include both 'search' and 'replace' keys",
+                    }
 
                 if search_string not in new_content:
                     unescaped_search = try_unescape(search_string)
@@ -105,6 +142,7 @@ class PatchTool(BaseTool):
                     }
                 )
 
+            await asyncio.to_thread(backup_existing_file, path)
             await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
             # Run auto-linting
