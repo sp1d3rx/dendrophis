@@ -107,7 +107,11 @@ class DendrophisApp(App):
             try:
                 from dendrophis.web import EventBridge, WebObservabilityServer
 
-                self._web_bridge = EventBridge(history_size=200)
+                self._web_bridge = EventBridge(
+                    history_size=200,
+                    initial_model=self._session.config.llm.model,
+                    context_limit=self._session.config.llm.context_limit,
+                )
                 self._web_bridge.attach_event_bus(self._event_bus)
                 self._web_server = WebObservabilityServer(
                     bridge=self._web_bridge, host="127.0.0.1", port=self._web_port

@@ -141,3 +141,143 @@ def test_ensure_secure_dir_and_file(tmp_path: Path) -> None:
     assert secure_file.is_file()
     file_mode = stat.S_IMODE(secure_file.stat().st_mode)
     assert file_mode == 0o600
+
+
+@pytest.mark.asyncio
+async def test_event_bridge_coalescing_subagents_stats_and_diffs() -> None:
+    """Test stream coalescing, subagent tracking, file diff extraction, and session stats."""
+    from dendrophis.events.types import (
+        CompactionCompletedEvent,
+        ContextUpdatedEvent,
+        MessageSentEvent,
+        ModelSwitchedEvent,
+        StatsUpdatedEvent,
+        SubagentProgressEvent,
+        SubagentTaskFinishedEvent,
+        SubagentTaskStartedEvent,
+        TextDeltaEvent,
+        ToolExecutionFinishedEvent,
+        ToolExecutionStartedEvent,
+        ToolResultEvent,
+    )
+
+    bus = EventBus(max_workers=2)
+    loop = asyncio.get_running_loop()
+    bus.set_event_loop(loop)
+
+    bridge = EventBridge(history_size=50, initial_model="nvidia/Qwen3.8-27B-NVFP4", context_limit=131072)
+    bridge.attach_event_bus(bus)
+
+    # 1. Multi-chunk reasoning and text deltas should coalesce under a single stream_id
+    bus.publish(ReasoningDeltaEvent(delta="First part "))
+    bus.publish(ReasoningDeltaEvent(delta="second part."))
+    bus.publish(TextDeltaEvent(delta="Hello "))
+    bus.publish(TextDeltaEvent(delta="world!"))
+    await asyncio.sleep(0.05)
+
+    thought_entries = [
+        item for item in bridge._history if item["type"] == "THOUGHT_LOG" and item["payload"].get("level") == "thought"
+    ]
+    assert len(thought_entries) == 1
+    assert thought_entries[0]["payload"]["text"] == "First part second part."
+
+    assistant_entries = [
+        item
+        for item in bridge._history
+        if item["type"] == "THOUGHT_LOG" and item["payload"].get("level") == "assistant"
+    ]
+    assert len(assistant_entries) == 1
+    assert assistant_entries[0]["payload"]["text"] == "Hello world!"
+
+    # 2. Dendrophis file tool tracking + diff extraction
+    bus.publish(ToolCallStartEvent(index=0, id="call_edit_1", name="edit"))
+    bus.publish(
+        ToolExecutionStartedEvent(
+            tool_name="edit",
+            description="Update config",
+            arguments='{"file_path": "dendrophis/cli.py"}',
+            tool_call_index=0,
+        )
+    )
+    bus.publish(
+        ToolExecutionFinishedEvent(
+            tool_name="edit",
+            success=True,
+            tool_call_id="call_edit_1",
+            duration_seconds=0.125,
+        )
+    )
+    bus.publish(
+        ToolResultEvent(
+            tool_call_id="call_edit_1",
+            name="edit",
+            content='{"success": true, "diff": "--- a/dendrophis/cli.py\\n+++ b/dendrophis/cli.py\\n+new_line"}',
+            description="Update config",
+            arguments='{"file_path": "dendrophis/cli.py"}',
+            consecutive_failures=0,
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    assert bridge._tracked_files.get("dendrophis/cli.py") == "modified"
+    assert "+new_line" in bridge._file_details["dendrophis/cli.py"]["diff"]
+    assert any(exec_item["id"] == "call_edit_1" for exec_item in bridge._tool_executions)
+
+    # 3. Real subagent lifecycle
+    bus.publish(
+        SubagentTaskStartedEvent(
+            task_id="sub_01",
+            agent_name="researcher",
+            payload={"question": "Find all event handlers"},
+        )
+    )
+    bus.publish(
+        SubagentProgressEvent(
+            task_id="sub_01",
+            agent_name="researcher",
+            log_line="Scanning dendrophis/ui/screens",
+        )
+    )
+    bus.publish(
+        SubagentTaskFinishedEvent(
+            task_id="sub_01",
+            agent_name="researcher",
+            success=True,
+            result={"matches": 12},
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    assert "agent-researcher" in bridge._subagents
+    assert bridge._subagents["agent-researcher"]["kind"] == "subagent"
+    assert bridge._subagents["agent-researcher"]["status"] == "idle"
+
+    # 4. Session stats, message sent, model switch, context & compaction
+    bus.publish(MessageSentEvent(message_text="Check observability metrics"))
+    bus.publish(ModelSwitchedEvent(model_id="qwen3-coder", context_window=65536))
+    bus.publish(
+        StatsUpdatedEvent(
+            prompt_tokens=10000,
+            completion_tokens=500,
+            total_cost_usd=0.0125,
+            tokens_per_sec=48.5,
+            time_to_first_token=0.42,
+            cached_tokens=8000,
+        )
+    )
+    bus.publish(ContextUpdatedEvent(token_count=10500, token_pct=0.16, turn_count=3))
+    bus.publish(
+        CompactionCompletedEvent(
+            previous_token_count=55000,
+            new_token_count=12000,
+            tokens_reclaimed=43000,
+            summary="Compacted history summary",
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    assert bridge._session_stats["model"] == "qwen3-coder"
+    assert bridge._session_stats["context_limit"] == 65536
+    assert bridge._session_stats["cache_hit_pct"] == 80.0
+    assert bridge._session_stats["compactions_count"] == 1
+    assert bridge._session_stats["tokens_reclaimed"] == 43000
