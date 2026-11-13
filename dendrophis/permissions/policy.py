@@ -5,7 +5,9 @@ Decision flow for bash:
   2. Category in denied set     → DENY
   3. Allowed set non-empty and category not in it → DENY
   4. All categories in auto_approve set → ALLOW (skip confirmation)
-  5. Falls through to tool-level check  → ALLOW or CONFIRM
+  5. Tool-level deny rules (denied_tools / allowed_tools) → DENY
+  6. Otherwise → CONFIRM: a category left at "require confirm" prompts
+     even when bash itself is tool-level allowed.
 
 Decision flow for other tools:
   1. Tool in denied_tools  → DENY
@@ -17,10 +19,11 @@ Decision flow for other tools:
 from __future__ import annotations
 
 import contextlib
+import json
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from dendrophis.tools.bash_sandbox import CommandCategory, SimResult
+from dendrophis.tools.bash_sandbox import BashSandbox, CommandCategory, SimResult
 
 if TYPE_CHECKING:
     from dendrophis.config.schema import DendrophisConfig
@@ -82,9 +85,38 @@ class PermissionPolicy:
         if self._bash_auto_approve and categories.issubset(self._bash_auto_approve):
             return Decision.ALLOW, ""
 
-        # Fall through to tool-level rule for bash
-        decision = self.check_tool("bash")
-        return decision, ""
+        # Tool-level rules can still deny bash outright.
+        if "bash" in self._denied_tools:
+            return Decision.DENY, "tool 'bash' is in denied_tools"
+        if self._allowed_tools and "bash" not in self._allowed_tools:
+            return Decision.DENY, "tool 'bash' is not in allowed_tools"
+
+        # Not fully auto-approved → requires confirmation. A category left at
+        # "require confirm" must prompt even if bash is tool-level allowed;
+        # attach the explanation so the prompt can show why it is asking.
+        return Decision.CONFIRM, self.explain_bash(sim)
+
+    # -- Explanations ----------------------------------------------------------
+    # The confirmation event protocol carries no reason field, so the UI
+    # re-derives a human-readable "why" from config + arguments via these.
+
+    def explain_tool(self, tool_name: str) -> str:
+        """Why a non-bash tool call is asking for confirmation."""
+        if tool_name in self._require_confirmation:
+            return f"tool '{tool_name}' is listed in require_confirmation"
+        return f"tool '{tool_name}' requires confirmation"
+
+    def explain_bash(self, sim: SimResult) -> str:
+        """Why a bash command is asking for confirmation, given its SimResult."""
+        if sim.dangerous:
+            return sim.reason or "command flagged as dangerous"
+        pending = sim.categories - self._bash_auto_approve
+        if pending:
+            names = ", ".join(sorted(c.value for c in pending))
+            auto = ", ".join(sorted(c.value for c in self._bash_auto_approve))
+            suffix = f" (auto-approved: {auto})" if auto else ""
+            return f"bash command categories not auto-approved: {names}{suffix}"
+        return self.explain_tool("bash")
 
     # -- Factory -------------------------------------------------------------
 
@@ -108,3 +140,24 @@ class PermissionPolicy:
             bash_denied=_parse_categories(bash.denied_categories),
             bash_auto_approve=_parse_categories(bash.auto_approve_categories),
         )
+
+
+def explain_confirmation(config: DendrophisConfig, tool_name: str, arguments: str) -> str:
+    """Explain why a tool call is asking for confirmation.
+
+    Re-derives the reason from config + arguments (the confirmation event
+    carries no reason field). For bash the command is re-simulated —
+    simulation is a pure function of the command string, so this matches the
+    executor's own check. Falls back to the tool-level explanation on any
+    parse/simulation problem.
+    """
+    policy = PermissionPolicy.from_config(config)
+    if tool_name == "bash":
+        try:
+            parsed = json.loads(arguments) if arguments else {}
+            command = parsed.get("command", "") if isinstance(parsed, dict) else ""
+            if isinstance(command, str) and command:
+                return policy.explain_bash(BashSandbox().simulate(command))
+        except Exception:
+            pass
+    return policy.explain_tool(tool_name)

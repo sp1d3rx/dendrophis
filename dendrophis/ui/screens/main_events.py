@@ -27,12 +27,14 @@ from dendrophis.events import (
     StreamingStartedEvent,
     TextDeltaEvent,
     ToolCallStartEvent,
+    ToolConfirmationCancelledEvent,
     ToolConfirmationRequestEvent,
     ToolExecutionStartedEvent,
     ToolResultEvent,
     WriteProposalEvent,
     listen,
 )
+from dendrophis.permissions import explain_confirmation
 
 # Screen classes are imported at module level (no import cycles: the screens
 # only depend on dendrophis.events / textual widgets). They are still
@@ -154,9 +156,25 @@ class MainScreenEventHandler:
     @listen
     def _on_tool_confirmation_request(self, event: ToolConfirmationRequestEvent) -> None:
         """Handle human approval request for sensitive tools."""
+        # Prefer the reason attached by the executor; re-derive only if an
+        # emitter left it empty.
+        reason = event.reason or explain_confirmation(self._session.config, event.tool_name, event.arguments)
         self._push_screen_later(
-            lambda: ToolConfirmationScreen(event.request_id, event.tool_name, event.arguments, self._event_bus)
+            lambda: ToolConfirmationScreen(
+                event.request_id, event.tool_name, event.arguments, self._event_bus, reason=reason
+            )
         )
+
+    @listen
+    def _on_tool_confirmation_cancelled(self, event: ToolConfirmationCancelledEvent) -> None:
+        """Dismiss the confirmation modal when its request times out or is cancelled.
+
+        Only the top screen is popped — popping a buried modal would dismiss
+        whatever screen is actually on top.
+        """
+        screen = self.app.screen
+        if isinstance(screen, ToolConfirmationScreen) and screen.request_id == event.request_id:
+            self.app.pop_screen()
 
     @listen
     def _on_multiple_choice_request(self, event: MultipleChoiceRequestEvent) -> None:

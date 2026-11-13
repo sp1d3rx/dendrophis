@@ -428,11 +428,18 @@ class FileModifiedEvent(SessionEvent):
 
 @dataclass(frozen=True, slots=True)
 class ToolConfirmationRequestEvent(ConfirmationEvent):
-    """Request human approval before executing a tool."""
+    """Request human approval before executing a tool.
+
+    ``reason`` is a human-readable explanation of why confirmation is being
+    asked for (e.g. which bash categories are not auto-approved, or which
+    require_confirmation rule matched). Emitters should always set it;
+    listeners may fall back to re-deriving it when empty.
+    """
 
     request_id: str
     tool_name: str
     arguments: str
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

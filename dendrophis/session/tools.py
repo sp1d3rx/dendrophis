@@ -298,7 +298,7 @@ class SessionToolExecutor:
             approved_tools.append((call_index, tool_call, True))
             return
         # CONFIRM falls through
-        self._request_confirmation(call_index, tool_call, pending_approvals)
+        self._request_confirmation(call_index, tool_call, pending_approvals, reason)
 
     def _process_regular_tool(
         self,
@@ -324,10 +324,14 @@ class SessionToolExecutor:
             approved_tools.append((call_index, tool_call, False))
             return
 
-        self._request_confirmation(call_index, tool_call, pending_approvals)
+        self._request_confirmation(call_index, tool_call, pending_approvals, policy.explain_tool(tool_call.name))
 
     def _request_confirmation(
-        self, call_index: int, tool_call: Any, pending_approvals: list[tuple[int, Any, str]]
+        self,
+        call_index: int,
+        tool_call: Any,
+        pending_approvals: list[tuple[int, Any, str]],
+        reason: str = "",
     ) -> None:
         """Request user confirmation for a tool call."""
         request_identifier = str(uuid.uuid4())
@@ -338,6 +342,7 @@ class SessionToolExecutor:
                 request_id=request_identifier,
                 tool_name=tool_call.name,
                 arguments=tool_call.arguments,
+                reason=reason,
             )
         )
         pending_approvals.append((call_index, tool_call, request_identifier))

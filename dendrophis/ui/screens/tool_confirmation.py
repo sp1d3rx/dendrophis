@@ -41,6 +41,10 @@ class ToolConfirmationScreen(ModalScreen[bool]):
         color: $accent;
         text-style: bold;
     }
+    #reason {
+        color: $warning;
+        text-style: italic;
+    }
     #args-container {
         background: $surface-darken-1;
         margin-bottom: 1;
@@ -68,12 +72,13 @@ class ToolConfirmationScreen(ModalScreen[bool]):
         ("escape", "dismiss_reject", "Reject"),
     ]
 
-    def __init__(self, request_id: str, tool_name: str, arguments: str, event_bus: EventBus) -> None:
+    def __init__(self, request_id: str, tool_name: str, arguments: str, event_bus: EventBus, reason: str = "") -> None:
         super().__init__()
         self.request_id = request_id
         self.tool_name = tool_name
         self.arguments = arguments
         self.event_bus = event_bus
+        self.reason = reason
 
     def compose(self) -> ComposeResult:
         MAX_DISPLAY_LEN = 2000  # Limit displayed args to prevent UI lockup
@@ -104,6 +109,8 @@ class ToolConfirmationScreen(ModalScreen[bool]):
 
         with Vertical(id="dialog"):
             yield Label("[bold]Tool Execution Approval[/bold]")
+            if self.reason:
+                yield Label(f"Why: {self.reason}", id="reason")
             yield Label("The agent wants to run:", id="tool-name")
             yield Label(f"[bold cyan]{self.tool_name}[/bold cyan]")
             with Vertical(id="args-container"):
