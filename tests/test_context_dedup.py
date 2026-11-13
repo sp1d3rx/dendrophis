@@ -1,3 +1,5 @@
+import json
+
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.context.manager import ContextManager
 
@@ -12,21 +14,44 @@ def test_context_manager_file_deduplication() -> None:
     assert len(context.messages) == 2
 
     # 2. Read second file: "file2.py" with identical content "print('hello')"
-    # Under the new logic, since it's a different file path, it should NOT be deduped
+    # Since it's a different file path, it should NOT be deduped
     result2 = '{"type": "file", "path": "file2.py", "content": "print(\'hello\')"}'
     context.append_tool_result("call2", "read", result2)
     assert len(context.messages) == 3
 
     # 3. Read first file: "file1.py" again with unchanged content
-    # This should be skipped/deduplicated (no new message added)
+    # Must append a compact stub tool message (so call3 is never orphaned) rather than repeating content
     context.append_tool_result("call3", "read", result1)
-    assert len(context.messages) == 3
+    assert len(context.messages) == 4
+    stub_message = context.messages[-1]
+    assert stub_message["role"] == "tool"
+    assert stub_message["tool_call_id"] == "call3"
+    stub_payload = json.loads(stub_message["content"])
+    assert stub_payload == {"status": "unchanged_since_last_read", "path": "file1.py"}
+    assert "print('hello')" not in stub_message["content"]
 
     # 4. Read first file: "file1.py" again with modified content
     # This should NOT be deduped since the hash has changed
     result1_modified = '{"type": "file", "path": "file1.py", "content": "print(\'hello world\')"}'
     context.append_tool_result("call4", "read", result1_modified)
-    assert len(context.messages) == 4
+    assert len(context.messages) == 5
+    assert "print('hello world')" in context.messages[-1]["content"]
+
+
+def test_context_manager_invalidates_read_hash_on_file_mutation() -> None:
+    config = DendrophisConfig()
+    context = ContextManager(config=config)
+
+    original_read = '{"type": "file", "path": "solver.py", "content": "score = 1"}'
+    context.append_tool_result("call_read_1", "read", original_read)
+
+    # Mutate solver.py via edit, then revert back to original content without intermediate read
+    context.append_tool_result("call_edit_1", "edit", '{"success": true, "file_path": "solver.py"}')
+    context.append_tool_result("call_read_2", "read", original_read)
+
+    last_message = context.messages[-1]
+    assert last_message["tool_call_id"] == "call_read_2"
+    assert "score = 1" in last_message["content"]
 
 
 def test_context_manager_capping() -> None:

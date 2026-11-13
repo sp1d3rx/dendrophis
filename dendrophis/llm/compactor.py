@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -10,64 +11,172 @@ if TYPE_CHECKING:
 
 
 SUMMARY_PROMPT = (
-    "Summarize the following conversation history for context compaction. "
-    "Preserve only what is needed to continue the work: session goals, file paths and modifications, "
-    "architectural decisions, key constraints, unresolved issues, next steps, and important code patterns.\n"
-    "Omit: verbose tool outputs, raw code dumps, exploratory dead-ends, redundant confirmations, "
-    "and any meta-commentary about how you are producing the summary.\n"
+    "Summarize the following conversation history into a compact working state for long-horizon "
+    "iterative problem solving (propose -> measure -> reflect -> revise).\n"
+    "Preserve all high-signal state needed to continue productive iteration without regression:\n"
+    "1. Objective & Constraints: task goals, acceptance/verification criteria, and active constraints.\n"
+    "2. Working State & Edits: inspected/modified file paths, architectural decisions, and key code invariants.\n"
+    "3. Verifiable Feedback & Metrics: exact test pass/fail counts, validation/benchmark scores, timings, "
+    "return codes, and error diagnostics—explicitly recording the baseline and best result achieved so far "
+    "(and which state produced it).\n"
+    "4. Attempted Hypotheses & Dead-Ends: approaches that failed, timed out, or regressed metrics, along with "
+    "the concrete reason each failed so it is not repeated.\n"
+    "5. Open Issues & Next Plan: unresolved constraints, unverified claims, and concrete next refinement steps.\n"
+    "Omit: raw unchanged file dumps, repetitive boilerplate logs, redundant confirmations, "
+    "and any meta-commentary about producing the summary.\n"
     "Do not start with phrases like 'Here is a summary', 'Let me extract', or 'The conversation involved'.\n"
-    "Do not use bullet points or numbered steps. Write plain, concise paragraphs.\n"
-    "Output only the summary text. No preamble, no apologies, no markdown formatting.\n\n"
+    "Output only the compact working-state summary. No preamble or apologies.\n\n"
     "--- CONVERSATION HISTORY ---\n{history}\n--- END HISTORY ---"
 )
 
 TAIL_TURNS = 6
+TOOL_HEAD_CHARS = 400
+TOOL_TAIL_CHARS = 800
+
+
+def _truncate_head_tail(raw_text: str, head_chars: int = TOOL_HEAD_CHARS, tail_chars: int = TOOL_TAIL_CHARS) -> str:
+    """Keep both the start and end of tool output so trailing metrics and tracebacks survive."""
+    max_chars = head_chars + tail_chars
+    if len(raw_text) <= max_chars:
+        return raw_text
+    return f"{raw_text[:head_chars]}\n... [middle truncated] ...\n{raw_text[-tail_chars:]}"
+
+
+def _format_assistant_tool_calls(tool_calls: Any) -> str:
+    """Render a compact summary of tool calls attached to an assistant message."""
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return ""
+    call_summaries: list[str] = []
+    for call_item in tool_calls:
+        if not isinstance(call_item, dict):
+            continue
+        function_info = call_item.get("function")
+        if not isinstance(function_info, dict):
+            continue
+        function_name = function_info.get("name") or "unknown"
+        raw_arguments = str(function_info.get("arguments") or "")
+        if len(raw_arguments) > 200:
+            raw_arguments = raw_arguments[:200] + "..."
+        call_summaries.append(f"{function_name}({raw_arguments})")
+    if not call_summaries:
+        return ""
+    return "Tool calls: " + "; ".join(call_summaries)
+
+
+def _format_tool_message(message_dict: dict[str, Any], raw_content: str) -> str | None:
+    """Format a tool result compactly, keeping verifiable outcomes while omitting raw file dumps."""
+    tool_name = message_dict.get("name")
+    if not isinstance(tool_name, str) or not tool_name:
+        tool_name = "tool"
+
+    stripped_content = raw_content.strip()
+    if not stripped_content:
+        return None
+
+    try:
+        parsed_payload = json.loads(stripped_content)
+    except (json.JSONDecodeError, TypeError):
+        return f"[TOOL:{tool_name}]\n{_truncate_head_tail(stripped_content)}"
+
+    if not isinstance(parsed_payload, dict):
+        return f"[TOOL:{tool_name}]\n{_truncate_head_tail(stripped_content)}"
+
+    status_value = parsed_payload.get("status")
+    if status_value in ("unchanged_since_last_read", "missing_tool_result"):
+        return None
+
+    if "error" in parsed_payload:
+        error_text = _truncate_head_tail(str(parsed_payload["error"]))
+        return f"[TOOL:{tool_name} ERROR]\n{error_text}"
+
+    if tool_name in {"read", "read_file"} and (parsed_payload.get("type") == "file" or "content" in parsed_payload):
+        read_path = parsed_payload.get("path") or parsed_payload.get("file")
+        return f"[TOOL:{tool_name}] path={read_path}" if read_path else None
+
+    if tool_name == "glob" and isinstance(parsed_payload.get("files"), list):
+        file_count = parsed_payload.get("count", len(parsed_payload["files"]))
+        return f"[TOOL:glob] count={file_count}"
+
+    if tool_name == "list_dir" and "entries" in parsed_payload:
+        dir_path = parsed_payload.get("path", "")
+        entry_count = len(parsed_payload["entries"]) if isinstance(parsed_payload["entries"], list) else 0
+        return f"[TOOL:list_dir] path={dir_path} count={entry_count}"
+
+    if "returncode" in parsed_payload or "stdout" in parsed_payload or "stderr" in parsed_payload:
+        outcome_lines: list[str] = []
+        if "returncode" in parsed_payload:
+            outcome_lines.append(f"returncode={parsed_payload['returncode']}")
+        elif "success" in parsed_payload:
+            outcome_lines.append(f"success={parsed_payload['success']}")
+        stdout_text = str(parsed_payload.get("stdout") or "").strip()
+        stderr_text = str(parsed_payload.get("stderr") or "").strip()
+        if stdout_text:
+            outcome_lines.append(f"stdout:\n{_truncate_head_tail(stdout_text)}")
+        if stderr_text:
+            outcome_lines.append(f"stderr:\n{_truncate_head_tail(stderr_text)}")
+        return f"[TOOL:{tool_name}]\n" + "\n".join(outcome_lines)
+
+    return f"[TOOL:{tool_name}]\n{_truncate_head_tail(stripped_content)}"
 
 
 def _messages_to_text(messages: list[dict[str, Any]]) -> str:
     """Serialise a list of OpenAI-format messages to a plain-text transcript.
 
-    Drops system and tool messages; the system prompt is preserved separately,
-    and tool outputs are usually too verbose and low-signal for a summary.
+    Drops system messages (preserved separately) and raw file-read bodies, while
+    retaining compact tool calls and verifiable tool outcomes (metrics, test
+    results, return codes, and errors) for iterative self-improvement.
     """
     transcript_lines: list[str] = []
-    for msg in messages:
+    for message_item in messages:
         # Edge case: Handle None or non-dict messages
-        if not isinstance(msg, dict):
+        if not isinstance(message_item, dict):
             continue
 
         # Edge case: Handle missing role field
-        role = msg.get("role", "unknown")
-        if not isinstance(role, str):
-            role = "unknown"
+        role_name = message_item.get("role", "unknown")
+        if not isinstance(role_name, str):
+            role_name = "unknown"
 
-        # Skip system/tool roles to keep the summary focused on the dialogue.
-        if role in {"system", "tool"}:
+        # Skip system role; the system prompt is preserved separately.
+        if role_name == "system":
             continue
 
         # Edge case: Handle various content formats
-        content = msg.get("content")
-        if content is None:
-            content = ""
-        elif isinstance(content, list):
+        raw_content = message_item.get("content")
+        if raw_content is None:
+            content_text = ""
+        elif isinstance(raw_content, list):
             # Handle list content with robust error handling
             content_parts = []
-            for block in content:
+            for block in raw_content:
                 if isinstance(block, dict):
-                    text = block.get("text", "")
-                    if isinstance(text, str):
-                        content_parts.append(text)
+                    block_text = block.get("text", "")
+                    if isinstance(block_text, str):
+                        content_parts.append(block_text)
                 elif isinstance(block, str):
                     content_parts.append(block)
-            content = " ".join(content_parts)
-        elif not isinstance(content, str):
-            content = str(content)
+            content_text = " ".join(content_parts)
+        elif not isinstance(raw_content, str):
+            content_text = str(raw_content)
+        else:
+            content_text = raw_content
+
+        if role_name == "tool":
+            formatted_tool = _format_tool_message(message_item, content_text)
+            if formatted_tool:
+                transcript_lines.append(formatted_tool)
+            continue
 
         # Edge case: Truncate very long content to prevent memory issues
-        if len(content) > 10000:  # 10k characters
-            content = content[:10000] + "... [truncated]"
+        if len(content_text) > 10000:  # 10k characters
+            content_text = content_text[:10000] + "... [truncated]"
 
-        transcript_lines.append(f"[{role.upper()}]\n{content}")
+        if role_name == "assistant":
+            calls_summary = _format_assistant_tool_calls(message_item.get("tool_calls"))
+            if calls_summary:
+                content_text = f"{content_text}\n{calls_summary}".strip() if content_text else calls_summary
+
+        transcript_lines.append(f"[{role_name.upper()}]\n{content_text}")
     return "\n\n".join(transcript_lines)
 
 

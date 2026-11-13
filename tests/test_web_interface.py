@@ -281,3 +281,58 @@ async def test_event_bridge_coalescing_subagents_stats_and_diffs() -> None:
     assert bridge._session_stats["cache_hit_pct"] == 80.0
     assert bridge._session_stats["compactions_count"] == 1
     assert bridge._session_stats["tokens_reclaimed"] == 43000
+
+
+@pytest.mark.asyncio
+async def test_live_websocket_and_snapshot_over_uvicorn() -> None:
+    """Verify real WebSocket (/ws) and HTTP (/api/snapshot) connections work over uvicorn."""
+    import json
+    import socket
+
+    import httpx
+    import websockets
+
+    from dendrophis.web.server import WebObservabilityServer
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as temp_socket:
+        temp_socket.bind(("127.0.0.1", 0))
+        free_port = temp_socket.getsockname()[1]
+
+    bus = EventBus(max_workers=2)
+    bus.set_event_loop(asyncio.get_running_loop())
+
+    bridge = EventBridge(history_size=20, initial_model="test-live-model", context_limit=65536)
+    bridge.attach_event_bus(bus)
+
+    server = WebObservabilityServer(bridge=bridge, host="127.0.0.1", port=free_port)
+    server.start_background()
+
+    try:
+        # Wait for uvicorn to listen
+        for _ in range(40):
+            try:
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(f"http://127.0.0.1:{free_port}/api/snapshot")
+                    if response.status_code == 200:
+                        break
+            except Exception:
+                await asyncio.sleep(0.05)
+
+        async with websockets.connect(f"ws://127.0.0.1:{free_port}/ws") as ws_client:
+            first_raw = await asyncio.wait_for(ws_client.recv(), timeout=2.0)
+            first_msg = json.loads(first_raw)
+            assert first_msg["type"] == "SUBAGENT_STATE"
+
+            # Drain remaining initial snapshot items
+            for _ in range(5):
+                await asyncio.wait_for(ws_client.recv(), timeout=2.0)
+
+            # Publish a live event on EventBus and verify it arrives over WebSocket
+            bus.publish(StreamingStartedEvent(user_message="Live test prompt"))
+            live_raw = await asyncio.wait_for(ws_client.recv(), timeout=2.0)
+            live_msg = json.loads(live_raw)
+            assert live_msg["type"] == "THOUGHT_LOG"
+            assert "Live test prompt" in live_msg["payload"]["text"]
+    finally:
+        await server.stop()
+        bus.shutdown(wait=False)

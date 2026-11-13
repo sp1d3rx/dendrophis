@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections import deque
@@ -121,6 +122,7 @@ class EventBridge:
     ) -> None:
         self.event_bus = event_bus
         self._clients: set[Any] = set()
+        self._sse_queues: set[asyncio.Queue[str]] = set()
         self._history: deque[dict[str, Any]] = deque(maxlen=history_size)
         self._loop: asyncio.AbstractEventLoop | None = None
         # Keep strong refs to in-flight send tasks so they aren't GC'd mid-send.
@@ -170,6 +172,10 @@ class EventBridge:
     def attach_event_bus(self, event_bus: EventBus) -> None:
         """Attach to an EventBus instance and register event handlers."""
         self.event_bus = event_bus
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = getattr(event_bus, "_loop", None)
 
         # Stream & turn lifecycle
         event_bus.subscribe(StreamingStartedEvent, self._handle_stream_start)
@@ -217,12 +223,9 @@ class EventBridge:
         event_bus.subscribe(TodoUpdatedEvent, self._handle_todo_updated)
         event_bus.subscribe(TodoChangedEvent, self._handle_todo_updated)
 
-    def register_client(self, websocket: Any) -> list[dict[str, Any]]:
-        """Register a connected WebSocket client and return recent event history."""
-        self._clients.add(websocket)
+    def get_snapshot(self) -> list[dict[str, Any]]:
+        """Return initial graph, file, stats, timeline, and memory states plus recent event history."""
         now_iso = datetime.now(UTC).isoformat()
-
-        # Return snapshot of initial graph & file states followed by history
         initial_states = [
             {
                 "type": "SUBAGENT_STATE",
@@ -279,9 +282,28 @@ class EventBridge:
         ]
         return initial_states + list(self._history)
 
+    def register_client(self, websocket: Any) -> list[dict[str, Any]]:
+        """Register a connected WebSocket client and return recent event history."""
+        with contextlib.suppress(RuntimeError):
+            self._loop = asyncio.get_running_loop()
+        self._clients.add(websocket)
+        return self.get_snapshot()
+
     def unregister_client(self, websocket: Any) -> None:
         """Unregister a disconnected WebSocket client."""
         self._clients.discard(websocket)
+
+    def register_sse_client(self) -> tuple[asyncio.Queue[str], list[dict[str, Any]]]:
+        """Register a Server-Sent Events client queue and return initial snapshot."""
+        with contextlib.suppress(RuntimeError):
+            self._loop = asyncio.get_running_loop()
+        sse_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
+        self._sse_queues.add(sse_queue)
+        return sse_queue, self.get_snapshot()
+
+    def unregister_sse_client(self, sse_queue: asyncio.Queue[str]) -> None:
+        """Unregister a disconnected Server-Sent Events client queue."""
+        self._sse_queues.discard(sse_queue)
 
     def broadcast(self, event_type: str, payload: dict[str, Any]) -> None:
         """Construct a standardized event package and send to all connected clients."""
@@ -308,13 +330,35 @@ class EventBridge:
         if not updated_existing:
             self._history.append(event_data)
 
-        if not self._clients:
+        if not self._clients and not self._sse_queues:
             return
 
         message = json.dumps(event_data)
+        self._dispatch_message(message)
 
-        # Iterate a copy: a failed send retires the client via its done callback,
-        # which would otherwise mutate the set mid-iteration.
+    def _dispatch_message(self, message: str) -> None:
+        """Schedule WebSocket sends and SSE queue puts on the event loop."""
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is None:
+            target_loop = self._loop or getattr(self.event_bus, "_loop", None)
+            if target_loop is not None and not target_loop.is_closed():
+                target_loop.call_soon_threadsafe(self._dispatch_on_loop, message)
+            return
+
+        self._dispatch_on_loop(message)
+
+    def _dispatch_on_loop(self, message: str) -> None:
+        """Send serialized event JSON to all active WebSocket and SSE clients on the event loop."""
+        for sse_queue in list(self._sse_queues):
+            try:
+                sse_queue.put_nowait(message)
+            except asyncio.QueueFull:
+                self._sse_queues.discard(sse_queue)
+
         for client in list(self._clients):
             try:
                 task = asyncio.create_task(self._send_with_timeout(client, message))

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from dendrophis.web.bridge import EventBridge
@@ -46,7 +48,44 @@ def create_app(bridge: EventBridge, allowed_origins: list[str] | None = None) ->
     @app.get("/")
     async def get_index() -> FileResponse:
         index_file = static_dir / "index.html"
-        return FileResponse(str(index_file))
+        return FileResponse(str(index_file), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/snapshot")
+    async def get_snapshot() -> JSONResponse:
+        return JSONResponse(bridge.get_snapshot(), headers={"Cache-Control": "no-store"})
+
+    @app.get("/events")
+    async def sse_endpoint(request: Request) -> StreamingResponse:
+        origin = request.headers.get("origin")
+        if not _is_allowed_origin(origin, allowed_origins_set):
+            return JSONResponse({"error": "Forbidden origin"}, status_code=403)
+
+        sse_queue, initial_snapshot = bridge.register_sse_client()
+
+        async def event_generator() -> AsyncIterator[str]:
+            try:
+                for snapshot_item in initial_snapshot:
+                    yield f"data: {json.dumps(snapshot_item)}\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        next_message = await asyncio.wait_for(sse_queue.get(), timeout=15.0)
+                        yield f"data: {next_message}\n\n"
+                    except TimeoutError:
+                        yield ": keepalive\n\n"
+            finally:
+                bridge.unregister_sse_client(sse_queue)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-store",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
@@ -62,8 +101,6 @@ def create_app(bridge: EventBridge, allowed_origins: list[str] | None = None) ->
         try:
             # Send initial history batch
             for item in initial_history:
-                import json
-
                 await websocket.send_text(json.dumps(item))
 
             # Keep connection open and listen for incoming messages (e.g. pings/commands)

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dendrophis — Cognitive Observability Interface</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=0.7.6">
   <!-- D3.js for visual rendering -->
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 </head>
@@ -95,29 +95,29 @@
         </div>
       </section>
 
-      <!-- Panel 2: Subagent Orchestrator & Tool Timeline -->
+      <!-- Panel 2: Execution Waterfall & Tool Breakdown -->
       <section class="panel graph-panel">
         <div class="panel-header">
           <div class="panel-title">
-            <span class="panel-icon">🕸️</span>
-            <h2>Orchestrator &amp; Execution Timeline</h2>
+            <span class="panel-icon">⏱️</span>
+            <h2>Execution Waterfall &amp; Tool Breakdown</h2>
           </div>
           <div class="panel-actions">
             <div class="tab-group" id="orchestrator-tabs">
-              <button class="tab-btn active" data-tab="graph">Topology</button>
-              <button class="tab-btn" data-tab="timeline">Timeline (<span id="timeline-count">0</span>)</button>
+              <button class="tab-btn active" data-tab="timeline">Waterfall (<span id="timeline-count">0</span>)</button>
+              <button class="tab-btn" data-tab="breakdown">Breakdown</button>
             </div>
-            <span class="node-legend"><span class="dot active"></span> Active</span>
-            <span class="node-legend"><span class="dot thinking"></span> Running</span>
-            <span class="node-legend"><span class="dot idle"></span> Idle</span>
+            <span id="active-agent-pill" class="badge">IDLE</span>
           </div>
         </div>
-        <div class="panel-body graph-body" id="orchestrator-graph-view">
-          <svg id="subagent-graph" width="100%" height="100%"></svg>
-        </div>
-        <div class="panel-body timeline-body hidden" id="orchestrator-timeline-view">
+        <div class="panel-body timeline-body" id="orchestrator-timeline-view">
           <div id="tool-timeline-list" class="timeline-list">
             <div class="empty-state">No tool or subagent executions recorded yet.</div>
+          </div>
+        </div>
+        <div class="panel-body breakdown-body hidden" id="orchestrator-breakdown-view">
+          <div id="tool-breakdown-list" class="breakdown-list">
+            <div class="empty-state">No tool metrics aggregated yet.</div>
           </div>
         </div>
       </section>
@@ -181,6 +181,6 @@
     </aside>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=0.7.6"></script>
 </body>
 </html>

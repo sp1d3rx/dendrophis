@@ -1,6 +1,7 @@
 // Dendrophis Web Observability Interface - Client Logic
 (function () {
   let socket = null;
+  let sseSource = null;
   let eventCount = 0;
   let trackedFiles = {};
   let fileDetails = {};
@@ -23,6 +24,8 @@
   const memoryCountEl = document.getElementById('memory-count-badge');
   const timelineCountEl = document.getElementById('timeline-count');
   const timelineListEl = document.getElementById('tool-timeline-list');
+  const breakdownListEl = document.getElementById('tool-breakdown-list');
+  const activeAgentPillEl = document.getElementById('active-agent-pill');
   const clearBtn = document.getElementById('clear-stream-btn');
   const pauseBtn = document.getElementById('pause-stream-btn');
   const liveBadgeEl = document.getElementById('stream-live-badge');
@@ -49,15 +52,48 @@
   const drawerBodyEl = document.getElementById('drawer-body');
   const drawerCloseBtn = document.getElementById('drawer-close-btn');
 
-  // Initialize WebSocket Connection
+  // Initialize WebSocket Connection with automatic SSE (/events) fallback
+  function connectSSEFallback() {
+    if (sseSource) {
+      sseSource.close();
+      sseSource = null;
+    }
+    updateStatus('CONNECTING', false);
+    sseSource = new EventSource('/events');
+
+    sseSource.onopen = () => {
+      updateStatus('CONNECTED', true);
+    };
+
+    sseSource.onmessage = (messageEvent) => {
+      try {
+        const parsedMessage = JSON.parse(messageEvent.data);
+        handleTelemetryEvent(parsedMessage);
+      } catch (parseError) {
+        console.error('Failed to parse SSE message:', parseError);
+      }
+    };
+
+    sseSource.onerror = () => {
+      updateStatus('DISCONNECTED', false);
+    };
+  }
+
   function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
+    let openedOnce = false;
 
     updateStatus('CONNECTING', false);
-    socket = new WebSocket(wsUrl);
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (_wsInitErr) {
+      connectSSEFallback();
+      return;
+    }
 
     socket.onopen = () => {
+      openedOnce = true;
       updateStatus('CONNECTED', true);
     };
 
@@ -71,6 +107,11 @@
     };
 
     socket.onclose = () => {
+      if (!openedOnce) {
+        // Server does not have WebSocket upgrade support or blocked; fall back to HTTP SSE
+        connectSSEFallback();
+        return;
+      }
       updateStatus('DISCONNECTED', false);
       setTimeout(connectWebSocket, 2000);
     };
@@ -333,10 +374,10 @@
     });
   }
 
-  // 2. Subagent Orchestrator Graph & Tool Execution Timeline
+  // 2. Execution Waterfall & Tool Breakdown
   const orchestratorTabs = document.getElementById('orchestrator-tabs');
-  const graphViewEl = document.getElementById('orchestrator-graph-view');
   const timelineViewEl = document.getElementById('orchestrator-timeline-view');
+  const breakdownViewEl = document.getElementById('orchestrator-breakdown-view');
 
   if (orchestratorTabs) {
     orchestratorTabs.addEventListener('click', (clickEvent) => {
@@ -345,127 +386,59 @@
       orchestratorTabs.querySelectorAll('.tab-btn').forEach((btn) => btn.classList.remove('active'));
       tabBtn.classList.add('active');
       const selectedTab = tabBtn.dataset.tab;
-      if (selectedTab === 'timeline') {
-        graphViewEl.classList.add('hidden');
-        timelineViewEl.classList.remove('hidden');
-      } else {
+      if (selectedTab === 'breakdown') {
         timelineViewEl.classList.add('hidden');
-        graphViewEl.classList.remove('hidden');
+        breakdownViewEl.classList.remove('hidden');
+      } else {
+        breakdownViewEl.classList.add('hidden');
+        timelineViewEl.classList.remove('hidden');
       }
     });
+  }
+
+  function summarizeToolTarget(execItem) {
+    if (execItem.description) {
+      return String(execItem.description);
+    }
+    if (!execItem.arguments) {
+      return '';
+    }
+    try {
+      const parsedArgs = JSON.parse(execItem.arguments);
+      if (parsedArgs && typeof parsedArgs === 'object') {
+        const primaryValue =
+          parsedArgs.file_path ||
+          parsedArgs.path ||
+          parsedArgs.command ||
+          parsedArgs.pattern ||
+          parsedArgs.query ||
+          parsedArgs.task ||
+          parsedArgs.prompt ||
+          parsedArgs.question ||
+          parsedArgs.memory_id;
+        if (primaryValue) {
+          return String(primaryValue);
+        }
+      }
+    } catch (_parseErr) {
+      // Fall through to raw string slice
+    }
+    return String(execItem.arguments).slice(0, 90);
   }
 
   function updateSubagentGraph(payload) {
+    if (!payload || !activeAgentPillEl) return;
     const agentsList = payload.agents || [];
-    const graphNodes = agentsList.map((agentItem) => ({
-      id: agentItem.id,
-      name: agentItem.name,
-      kind: agentItem.kind || (agentItem.id === 'dendrophis-core' ? 'root' : 'tool'),
-      status: agentItem.status,
-      task: agentItem.task || '',
-      calls: agentItem.calls || 0,
-    }));
-
-    const graphLinks = [];
-    agentsList.forEach((agentItem) => {
-      if (agentItem.parent) {
-        graphLinks.push({ source: agentItem.parent, target: agentItem.id });
-      }
-    });
-
-    renderD3SubagentGraph(graphNodes, graphLinks);
-  }
-
-  function renderD3SubagentGraph(graphNodes, graphLinks) {
-    const svg = d3.select('#subagent-graph');
-    if (svg.empty()) return;
-
-    const width = svg.node().clientWidth || 420;
-    const height = svg.node().clientHeight || 280;
-
-    svg.selectAll('*').remove();
-    if (graphNodes.length === 0) return;
-
-    const simulation = d3
-      .forceSimulation(graphNodes)
-      .force('link', d3.forceLink(graphLinks).id((nodeDatum) => nodeDatum.id).distance(88))
-      .force('charge', d3.forceManyBody().strength(-240))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(32));
-
-    const linkSelection = svg
-      .append('g')
-      .selectAll('line')
-      .data(graphLinks)
-      .enter()
-      .append('line')
-      .attr('stroke', 'rgba(56, 189, 248, 0.38)')
-      .attr('stroke-width', 1.8)
-      .attr('stroke-dasharray', (linkDatum) =>
-        String(linkDatum.target.id || linkDatum.target).startsWith('agent-') ? 'none' : '4,3'
-      );
-
-    const nodeSelection = svg
-      .append('g')
-      .selectAll('g')
-      .data(graphNodes)
-      .enter()
-      .append('g')
-      .style('cursor', 'pointer')
-      .on('click', (_clickEvent, nodeDatum) => {
-        openNodeInspector(nodeDatum);
-      });
-
-    nodeSelection
-      .append('circle')
-      .attr('r', (nodeDatum) => {
-        if (nodeDatum.kind === 'root') return 15;
-        if (nodeDatum.kind === 'subagent') return 12;
-        return 9;
-      })
-      .attr('fill', (nodeDatum) => {
-        if (nodeDatum.status === 'executing' || nodeDatum.status === 'thinking') return '#a855f7';
-        if (nodeDatum.status === 'error') return '#f43f5e';
-        if (nodeDatum.status === 'active') return '#22c55e';
-        return nodeDatum.kind === 'subagent' ? '#38bdf8' : '#475569';
-      })
-      .attr('stroke', '#e2e8f0')
-      .attr('stroke-width', 1.5)
-      .style('filter', 'drop-shadow(0 0 6px rgba(56, 189, 248, 0.5))');
-
-    nodeSelection
-      .append('text')
-      .text((nodeDatum) =>
-        nodeDatum.calls > 1 ? `${nodeDatum.name} (${nodeDatum.calls}×)` : nodeDatum.name
-      )
-      .attr('x', 15)
-      .attr('y', 3)
-      .attr('fill', '#e2e8f0')
-      .attr('font-size', '10px')
-      .attr('font-family', 'monospace');
-
-    nodeSelection
-      .append('text')
-      .text((nodeDatum) => (nodeDatum.task ? String(nodeDatum.task).slice(0, 32) : ''))
-      .attr('x', 15)
-      .attr('y', 14)
-      .attr('fill', '#94a3b8')
-      .attr('font-size', '8.5px')
-      .attr('font-family', 'monospace');
-
-    simulation.on('tick', () => {
-      linkSelection
-        .attr('x1', (linkDatum) => linkDatum.source.x)
-        .attr('y1', (linkDatum) => linkDatum.source.y)
-        .attr('x2', (linkDatum) => linkDatum.target.x)
-        .attr('y2', (linkDatum) => linkDatum.target.y);
-
-      nodeSelection.attr('transform', (nodeDatum) => {
-        const clampedX = Math.max(24, Math.min(width - 110, nodeDatum.x));
-        const clampedY = Math.max(24, Math.min(height - 24, nodeDatum.y));
-        return `translate(${clampedX},${clampedY})`;
-      });
-    });
+    const activeNode = agentsList.find(
+      (agentItem) => agentItem.status === 'executing' || agentItem.status === 'thinking'
+    );
+    if (activeNode) {
+      activeAgentPillEl.textContent = `${activeNode.name.toUpperCase()}: ${String(
+        activeNode.task || 'RUNNING'
+      ).slice(0, 28)}`;
+    } else {
+      activeAgentPillEl.textContent = 'IDLE';
+    }
   }
 
   function updateToolTimeline(payload) {
@@ -474,6 +447,12 @@
     if (timelineCountEl) {
       timelineCountEl.textContent = String(toolExecutions.length);
     }
+
+    renderWaterfallList();
+    renderBreakdownList();
+  }
+
+  function renderWaterfallList() {
     if (!timelineListEl) return;
 
     if (toolExecutions.length === 0) {
@@ -482,36 +461,50 @@
       return;
     }
 
+    let maxDuration = 0.25;
+    toolExecutions.forEach((execItem) => {
+      const durVal = Number(execItem.duration_seconds || 0);
+      if (durVal > maxDuration) {
+        maxDuration = durVal;
+      }
+    });
+
     timelineListEl.innerHTML = '';
     const reversedExecutions = [...toolExecutions].reverse();
     reversedExecutions.forEach((execItem) => {
+      const statusName = execItem.status || 'running';
       const rowEl = document.createElement('div');
-      rowEl.className = `timeline-item ${execItem.status || 'running'}`;
+      rowEl.className = `timeline-item ${statusName}`;
 
       const statusIcon =
-        execItem.status === 'success' ? '✓' : execItem.status === 'error' ? '✗' : '⚡';
-      const durationBadge =
-        execItem.duration_seconds !== null && execItem.duration_seconds !== undefined
-          ? `${execItem.duration_seconds}s`
-          : execItem.status === 'running'
-          ? 'running…'
-          : '';
+        statusName === 'success' ? '✓' : statusName === 'error' ? '✗' : '⚡';
+      const hasDuration =
+        execItem.duration_seconds !== null && execItem.duration_seconds !== undefined;
+      const durationValue = hasDuration ? Number(execItem.duration_seconds) : 0;
+      const durationBadge = hasDuration
+        ? durationValue < 1
+          ? `${Math.round(durationValue * 1000)}ms`
+          : `${durationValue.toFixed(2)}s`
+        : statusName === 'running'
+        ? 'running…'
+        : '';
+
+      const topRow = document.createElement('div');
+      topRow.className = 'timeline-row-top';
 
       const mainDiv = document.createElement('div');
       mainDiv.className = 'timeline-main';
 
-      const titleDiv = document.createElement('div');
-      titleDiv.className = 'timeline-title';
-      titleDiv.textContent = `${statusIcon} ${execItem.name}`;
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'timeline-title';
+      titleSpan.textContent = `${statusIcon} ${execItem.name}`;
 
-      const subDiv = document.createElement('div');
-      subDiv.className = 'timeline-sub';
-      subDiv.textContent =
-        execItem.description ||
-        (execItem.arguments ? String(execItem.arguments).slice(0, 90) : 'Click to inspect');
+      const subSpan = document.createElement('span');
+      subSpan.className = 'timeline-sub';
+      subSpan.textContent = summarizeToolTarget(execItem);
 
-      mainDiv.appendChild(titleDiv);
-      mainDiv.appendChild(subDiv);
+      mainDiv.appendChild(titleSpan);
+      mainDiv.appendChild(subSpan);
 
       const metaDiv = document.createElement('div');
       metaDiv.className = 'timeline-meta';
@@ -525,10 +518,99 @@
       durSpan.textContent = durationBadge;
       metaDiv.appendChild(durSpan);
 
-      rowEl.appendChild(mainDiv);
-      rowEl.appendChild(metaDiv);
+      topRow.appendChild(mainDiv);
+      topRow.appendChild(metaDiv);
+
+      const barTrack = document.createElement('div');
+      barTrack.className = 'waterfall-track';
+
+      const barFill = document.createElement('div');
+      const widthPct = hasDuration
+        ? Math.max(4, Math.min(100, (durationValue / maxDuration) * 100))
+        : 25;
+      barFill.className = `waterfall-fill ${statusName} ${durationValue >= 2.0 ? 'slow' : ''}`;
+      barFill.style.width = `${widthPct}%`;
+      barTrack.appendChild(barFill);
+
+      rowEl.appendChild(topRow);
+      rowEl.appendChild(barTrack);
       rowEl.addEventListener('click', () => openToolInspector(execItem));
       timelineListEl.appendChild(rowEl);
+    });
+  }
+
+  function renderBreakdownList() {
+    if (!breakdownListEl) return;
+    if (toolExecutions.length === 0) {
+      breakdownListEl.innerHTML = '<div class="empty-state">No tool metrics aggregated yet.</div>';
+      return;
+    }
+
+    const statsByName = new Map();
+    let maxCalls = 1;
+    toolExecutions.forEach((execItem) => {
+      const toolName = execItem.name || 'unknown';
+      const existing = statsByName.get(toolName) || {
+        name: toolName,
+        calls: 0,
+        errors: 0,
+        totalDuration: 0,
+        timedCalls: 0,
+      };
+      existing.calls += 1;
+      if (execItem.status === 'error') {
+        existing.errors += 1;
+      }
+      if (execItem.duration_seconds !== null && execItem.duration_seconds !== undefined) {
+        existing.totalDuration += Number(execItem.duration_seconds);
+        existing.timedCalls += 1;
+      }
+      if (existing.calls > maxCalls) {
+        maxCalls = existing.calls;
+      }
+      statsByName.set(toolName, existing);
+    });
+
+    const sortedStats = Array.from(statsByName.values()).sort(
+      (firstStat, secondStat) => secondStat.calls - firstStat.calls
+    );
+
+    breakdownListEl.innerHTML = '';
+    sortedStats.forEach((statEntry) => {
+      const cardEl = document.createElement('div');
+      cardEl.className = 'breakdown-card';
+
+      const headerEl = document.createElement('div');
+      headerEl.className = 'breakdown-header';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'breakdown-name';
+      nameSpan.textContent = statEntry.name;
+
+      const statsSpan = document.createElement('span');
+      statsSpan.className = 'breakdown-stats';
+      const avgMs =
+        statEntry.timedCalls > 0
+          ? `${Math.round((statEntry.totalDuration / statEntry.timedCalls) * 1000)}ms avg`
+          : '—';
+      const errText = statEntry.errors > 0 ? ` · ${statEntry.errors} err` : '';
+      statsSpan.textContent = `${statEntry.calls}× calls · ${statEntry.totalDuration.toFixed(
+        2
+      )}s total (${avgMs})${errText}`;
+
+      headerEl.appendChild(nameSpan);
+      headerEl.appendChild(statsSpan);
+
+      const barTrack = document.createElement('div');
+      barTrack.className = 'waterfall-track';
+      const barFill = document.createElement('div');
+      barFill.className = `waterfall-fill ${statEntry.errors > 0 ? 'error' : ''}`;
+      barFill.style.width = `${Math.max(6, (statEntry.calls / maxCalls) * 100)}%`;
+      barTrack.appendChild(barFill);
+
+      cardEl.appendChild(headerEl);
+      cardEl.appendChild(barTrack);
+      breakdownListEl.appendChild(cardEl);
     });
   }
 

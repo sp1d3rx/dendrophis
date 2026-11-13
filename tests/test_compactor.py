@@ -1,26 +1,65 @@
 """Tests for context compaction."""
 
+import json
+
 import pytest
 
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.context.manager import ContextManager
 from dendrophis.events import ReasoningDeltaEvent, TextDeltaEvent
-from dendrophis.llm.compactor import _messages_to_text, compact
+from dendrophis.llm.compactor import SUMMARY_PROMPT, _messages_to_text, compact
 
 
-@pytest.mark.parametrize("dropped_role", ["system", "tool"])
-def test_messages_to_text_excludes_roles(dropped_role: str) -> None:
+def test_messages_to_text_excludes_system_and_raw_read_bodies() -> None:
+    file_read_payload = json.dumps({"type": "file", "path": "src/model.py", "content": "RAW_FILE_BODY_SECRET"})
+    unchanged_stub_payload = json.dumps({"status": "unchanged_since_last_read", "path": "src/model.py"})
     messages = [
         {"role": "user", "content": "Hello"},
-        {"role": dropped_role, "content": "content that should be omitted"},
+        {"role": "system", "content": "system instructions that should be omitted"},
+        {"role": "tool", "name": "read", "content": file_read_payload},
+        {"role": "tool", "name": "read", "content": unchanged_stub_payload},
         {"role": "assistant", "content": "Hi there"},
         {"role": "user", "content": "Thanks"},
     ]
     text = _messages_to_text(messages)
-    assert "content that should be omitted" not in text
+    assert "system instructions that should be omitted" not in text
+    assert "RAW_FILE_BODY_SECRET" not in text
+    assert "unchanged_since_last_read" not in text
+    assert "[TOOL:read] path=src/model.py" in text
     assert "Hello" in text
     assert "Hi there" in text
     assert "Thanks" in text
+
+
+def test_messages_to_text_retains_verifiable_tool_outcomes_and_tail_metrics() -> None:
+    long_training_stdout = "epoch=1 loss=0.95\n" + ("progress_line\n" * 200) + "FINAL val_score=0.842 passed=18/18"
+    bash_payload = json.dumps({"success": True, "returncode": 0, "stdout": long_training_stdout, "stderr": ""})
+    error_payload = json.dumps({"error": "old_string not found in solver.py"})
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "bash", "arguments": '{"command": "pytest -q"}'}},
+            ],
+        },
+        {"role": "tool", "name": "bash", "tool_call_id": "call_1", "content": bash_payload},
+        {"role": "tool", "name": "edit", "tool_call_id": "call_2", "content": error_payload},
+    ]
+    text = _messages_to_text(messages)
+    assert "Tool calls: bash(" in text
+    assert "returncode=0" in text
+    assert "epoch=1 loss=0.95" in text
+    assert "FINAL val_score=0.842 passed=18/18" in text
+    assert "[TOOL:edit ERROR]" in text
+    assert "old_string not found in solver.py" in text
+
+
+def test_summary_prompt_is_arex_friendly() -> None:
+    assert "propose -> measure -> reflect -> revise" in SUMMARY_PROMPT
+    assert "Verifiable Feedback & Metrics" in SUMMARY_PROMPT
+    assert "Attempted Hypotheses & Dead-Ends" in SUMMARY_PROMPT
+    assert "best result achieved so far" in SUMMARY_PROMPT
 
 
 def test_messages_to_text_handles_malformed_messages() -> None:

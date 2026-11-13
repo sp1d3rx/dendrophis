@@ -236,3 +236,82 @@ def test_sanitize_messages_strips_older_reasoning():
     assert "reasoning_content" not in sanitized[2]
     # Second response (after the last user message) should keep its reasoning
     assert sanitized[4]["reasoning_content"] == "Thinking 2"
+
+
+def test_sanitize_messages_preserves_multiple_parallel_tool_results() -> None:
+    """Consecutive role='tool' messages must never be coalesced into a single message."""
+    from dendrophis.config.schema import LLMConfig
+
+    config = LLMConfig(base_url="http://127.0.0.1:8000/v1", api_key="local", model="Qwen3.8-27B", tool_mode="native")
+    client = LLMClient(config)
+    provider_ctx = client._make_provider_context()
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "read both files"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_alpha", "type": "function", "function": {"name": "read", "arguments": '{"path": "a.py"}'}},
+                {"id": "call_beta", "type": "function", "function": {"name": "read", "arguments": '{"path": "b.py"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_alpha", "name": "read", "content": "alpha_body"},
+        {"role": "tool", "tool_call_id": "call_beta", "name": "read", "content": "beta_body"},
+    ]
+
+    sanitized = client._sanitize_messages(
+        messages,
+        is_local=provider_ctx.is_local,
+        is_direct_anthropic=provider_ctx.is_direct_anthropic,
+        is_openrouter=provider_ctx.is_openrouter,
+        is_deepinfra=provider_ctx.is_deepinfra,
+        use_responses_api=provider_ctx.use_responses_api,
+        use_xml_tools=provider_ctx.use_xml_tools,
+    )
+
+    tool_messages = [item for item in sanitized if item.get("role") == "tool"]
+    assert len(tool_messages) == 2
+    assert [item["tool_call_id"] for item in tool_messages] == ["call_alpha", "call_beta"]
+
+
+def test_sanitize_messages_repairs_orphaned_tool_calls_and_stray_tool_messages() -> None:
+    """Unmatched assistant tool_calls get stub tool results and stray tool messages are dropped."""
+    from dendrophis.config.schema import LLMConfig
+
+    config = LLMConfig(base_url="http://127.0.0.1:8000/v1", api_key="local", model="Qwen3.8-27B", tool_mode="native")
+    client = LLMClient(config)
+    provider_ctx = client._make_provider_context()
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "tool", "tool_call_id": "stray_id", "name": "read", "content": "stray"},
+        {"role": "user", "content": "inspect"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_kept", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+                {"id": "call_orphaned", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_kept", "name": "read", "content": "kept_content"},
+        {"role": "user", "content": "continue"},
+    ]
+
+    sanitized = client._sanitize_messages(
+        messages,
+        is_local=provider_ctx.is_local,
+        is_direct_anthropic=provider_ctx.is_direct_anthropic,
+        is_openrouter=provider_ctx.is_openrouter,
+        is_deepinfra=provider_ctx.is_deepinfra,
+        use_responses_api=provider_ctx.use_responses_api,
+        use_xml_tools=provider_ctx.use_xml_tools,
+    )
+
+    roles = [item["role"] for item in sanitized]
+    assert roles == ["system", "user", "assistant", "tool", "tool", "user"]
+    assert sanitized[3]["tool_call_id"] == "call_kept"
+    assert sanitized[4]["tool_call_id"] == "call_orphaned"
+    assert "missing_tool_result" in sanitized[4]["content"]

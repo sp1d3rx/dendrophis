@@ -95,44 +95,74 @@ class ContextManager:
 
     def append_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         # REJECT hashed IDs as tool names - they should never appear
-        if len(name) == 9 and all(c in "0123456789abcdef" for c in name):
+        if len(name) == 9 and all(character in "0123456789abcdef" for character in name):
             raise ValueError(f"Tool name cannot be hashed ID: {name}. This indicates a bug in tool call processing.")
 
-        # Skip duplicate read results (same tool + identical content per file path)
+        # Invalidate cached read hash when a file-mutating tool modifies a path so
+        # reverting a file to an earlier state still returns full content on re-read.
+        if name in ("edit", "patch", "write", "write_file", "append"):
+            try:
+                mutation_data = json.loads(content)
+                if isinstance(mutation_data, dict) and "error" not in mutation_data:
+                    mutated_path = (
+                        mutation_data.get("path") or mutation_data.get("file_path") or mutation_data.get("file")
+                    )
+                    if isinstance(mutated_path, str) and mutated_path:
+                        self._read_file_hashes.pop(mutated_path, None)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Deduplicate unchanged read results by replacing the body with a compact stub
+        # rather than dropping the message, keeping assistant.tool_calls strictly paired.
         if name in ("read", "read_file"):
+            dedup_file_path: str | None = None
+            is_duplicate_read = False
             try:
                 result_data = json.loads(content)
-                if isinstance(result_data, dict) and (result_data.get("type") == "file" or "content" in result_data):
+                if isinstance(result_data, dict) and "error" in result_data:
+                    pass
+                elif isinstance(result_data, dict) and (result_data.get("type") == "file" or "content" in result_data):
                     file_path = result_data.get("path") or result_data.get("file")
                     file_content = result_data.get("content", "")
                     if file_path and isinstance(file_content, str):
+                        dedup_file_path = file_path
                         content_hash = hashlib.sha256(file_content.encode(errors="replace")).hexdigest()
                         if self._read_file_hashes.get(file_path) == content_hash:
-                            return
-                        self._read_file_hashes[file_path] = content_hash
+                            is_duplicate_read = True
+                        else:
+                            self._read_file_hashes[file_path] = content_hash
                     else:
                         content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
                         if content_hash in self._read_file_hashes:
-                            return
-                        self._read_file_hashes[content_hash] = content_hash
+                            is_duplicate_read = True
+                        else:
+                            self._read_file_hashes[content_hash] = content_hash
                 else:
                     # Fallback for non-file reads (like directory lists)
                     content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
                     if content_hash in self._read_file_hashes:
-                        return
-                    self._read_file_hashes[content_hash] = content_hash
+                        is_duplicate_read = True
+                    else:
+                        self._read_file_hashes[content_hash] = content_hash
             except (json.JSONDecodeError, TypeError):
                 content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
                 if content_hash in self._read_file_hashes:
-                    return
-                self._read_file_hashes[content_hash] = content_hash
+                    is_duplicate_read = True
+                else:
+                    self._read_file_hashes[content_hash] = content_hash
 
             # Cap dictionary size to 500 to prevent unbounded growth
             if len(self._read_file_hashes) > 500:
                 self._read_file_hashes.pop(next(iter(self._read_file_hashes)), None)
 
-        msg = make_tool_result_message(tool_call_id, name, content)
-        self.messages.append(msg)
+            if is_duplicate_read:
+                stub_payload: dict[str, Any] = {"status": "unchanged_since_last_read"}
+                if dedup_file_path:
+                    stub_payload["path"] = dedup_file_path
+                content = json.dumps(stub_payload)
+
+        tool_message = make_tool_result_message(tool_call_id, name, content)
+        self.messages.append(tool_message)
         self.token_count += count_tokens(content) + 4
 
     def append_file(self, path: str, content: str) -> None:

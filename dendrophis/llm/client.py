@@ -485,7 +485,7 @@ class LLMClient:
             elif content is not None:
                 text_content = str(content)
 
-            if coalesced_messages and coalesced_messages[-1].get("role") == role:
+            if role != "tool" and coalesced_messages and coalesced_messages[-1].get("role") == role:
                 previous_message = coalesced_messages[-1]
                 previous_content = previous_message.get("content")
 
@@ -628,12 +628,86 @@ class LLMClient:
             return self._coalesce_consecutive_messages(validated)
 
         if not strip_keys:
-            return self._coalesce_consecutive_messages(pre_sanitized)
-        sanitized = [
-            {key: value for key, value in message_dict.items() if key not in strip_keys}
-            for message_dict in pre_sanitized
-        ]
-        return self._coalesce_consecutive_messages(sanitized)
+            coalesced = self._coalesce_consecutive_messages(pre_sanitized)
+        else:
+            sanitized = [
+                {key: value for key, value in message_dict.items() if key not in strip_keys}
+                for message_dict in pre_sanitized
+            ]
+            coalesced = self._coalesce_consecutive_messages(sanitized)
+
+        if use_xml_tools:
+            return coalesced
+        return self._repair_tool_call_sequences(coalesced)
+
+    @staticmethod
+    def _repair_tool_call_sequences(messages_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Ensure every assistant tool_call has a paired tool result and drop stray tool messages."""
+        repaired_messages: list[dict[str, Any]] = []
+        message_index = 0
+        total_messages = len(messages_list)
+
+        while message_index < total_messages:
+            current_message = messages_list[message_index]
+            role_name = current_message.get("role")
+
+            if role_name == "tool":
+                # Stray tool result with no preceding assistant tool_calls — drop.
+                message_index += 1
+                continue
+
+            tool_calls = current_message.get("tool_calls")
+            if role_name == "assistant" and isinstance(tool_calls, list) and tool_calls:
+                repaired_messages.append(current_message)
+                following_end = message_index + 1
+                while following_end < total_messages and messages_list[following_end].get("role") == "tool":
+                    following_end += 1
+
+                results_by_call_id: dict[str, dict[str, Any]] = {}
+                unmatched_tool_messages: list[dict[str, Any]] = []
+                for tool_index in range(message_index + 1, following_end):
+                    tool_message = messages_list[tool_index]
+                    call_identifier = tool_message.get("tool_call_id")
+                    if (
+                        isinstance(call_identifier, str)
+                        and call_identifier
+                        and call_identifier not in results_by_call_id
+                    ):
+                        results_by_call_id[call_identifier] = tool_message
+                    else:
+                        unmatched_tool_messages.append(tool_message)
+
+                for call_entry in tool_calls:
+                    if not isinstance(call_entry, dict):
+                        continue
+                    expected_id = call_entry.get("id")
+                    function_spec = call_entry.get("function") if isinstance(call_entry.get("function"), dict) else {}
+                    function_name = function_spec.get("name") or "unknown"
+                    if isinstance(expected_id, str) and expected_id in results_by_call_id:
+                        repaired_messages.append(results_by_call_id.pop(expected_id))
+                    elif unmatched_tool_messages:
+                        adopted_message = dict(unmatched_tool_messages.pop(0))
+                        if expected_id:
+                            adopted_message["tool_call_id"] = expected_id
+                        if not adopted_message.get("name"):
+                            adopted_message["name"] = function_name
+                        repaired_messages.append(adopted_message)
+                    else:
+                        repaired_messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": expected_id or "",
+                                "name": function_name,
+                                "content": json.dumps({"status": "missing_tool_result"}),
+                            }
+                        )
+                message_index = following_end
+                continue
+
+            repaired_messages.append(current_message)
+            message_index += 1
+
+        return repaired_messages
 
     def _count_visual_savings(self, content: str) -> int:
         """Estimate the tokens saved by rendering content as a 1-bit image.

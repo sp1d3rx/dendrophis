@@ -705,7 +705,10 @@ class ChatOrchestrator:
                     self.debug_logger(f"[LLM Tool Call] {tool_call.name}(id={tool_call.id}): {tool_call.arguments}")
 
             if not self.tool_executor_session:
-                _tool_log("No tool executor available - skipping execution", self.session_id)
+                _tool_log("No tool executor available - recording fallback tool results", self.session_id)
+                for tool_call in turn.tool_calls:
+                    fallback_content = json.dumps({"error": "No tool executor available"})
+                    self.context.append_tool_result(tool_call.id, tool_call.name, fallback_content)
                 return
 
             _tool_log("Calling SessionToolExecutor.execute()", self.session_id)
@@ -713,33 +716,51 @@ class ChatOrchestrator:
             _tool_log("SessionToolExecutor.execute() completed", self.session_id)
             tool_calls_by_id = {tool_call.id: tool_call for tool_call in turn.tool_calls}
 
+            # Backfill any tool calls omitted by early cancellation so assistant.tool_calls
+            # never remain orphaned in context.
+            returned_call_ids = {result_item.tool_call_id for result_item in results}
+            if len(returned_call_ids) < len(turn.tool_calls):
+                from dendrophis.tools.executor import ToolResult
+
+                results = list(results)
+                for tool_call in turn.tool_calls:
+                    if tool_call.id not in returned_call_ids:
+                        results.append(
+                            ToolResult(
+                                tool_call_id=tool_call.id,
+                                name=tool_call.name,
+                                content=json.dumps({"error": "Tool execution cancelled"}),
+                                success=False,
+                            )
+                        )
+
             def _did_result_fail(result_item: Any) -> bool:
                 if hasattr(result_item, "success"):
                     return not result_item.success
                 return is_tool_error(result_item.content)
 
-            if any(_did_result_fail(result) for result in results):
+            exceeded_failure_limit = False
+            if any(_did_result_fail(result_item) for result_item in results):
                 consecutive_failures += 1
                 if consecutive_failures > max_consecutive_failures:
-                    self._log(f"ERROR: Exceeded max consecutive failures ({max_consecutive_failures})")
-                    self._emit(
-                        ErrorEvent(message=f"Exceeded maximum consecutive failures ({max_consecutive_failures})")
-                    )
-                    self._emit(StreamingFinishedEvent())
-                    return
+                    exceeded_failure_limit = True
             else:
                 consecutive_failures = 0
-            for result in results:
-                self._log(f"Tool result: {result.name}")
-                _tool_log(f"Tool Result: {result.name}", self.session_id)
-                content_preview = result.content[:100]
-                _tool_log(f"  Content: {content_preview}{'...' if len(result.content) > 100 else ''}", self.session_id)
+
+            for result_item in results:
+                self._log(f"Tool result: {result_item.name}")
+                _tool_log(f"Tool Result: {result_item.name}", self.session_id)
+                content_preview = result_item.content[:100]
+                _tool_log(
+                    f"  Content: {content_preview}{'...' if len(result_item.content) > 100 else ''}",
+                    self.session_id,
+                )
 
                 _tool_log("Appending tool result to context", self.session_id)
-                self.context.append_tool_result(result.tool_call_id, result.name, result.content)
+                self.context.append_tool_result(result_item.tool_call_id, result_item.name, result_item.content)
                 _tool_log("Tool result appended to context", self.session_id)
 
-                tool_call = tool_calls_by_id.get(result.tool_call_id)
+                tool_call = tool_calls_by_id.get(result_item.tool_call_id)
                 description = ""
                 arguments = ""
                 if tool_call:
@@ -751,13 +772,19 @@ class ChatOrchestrator:
                 _tool_log("Emitting ToolResultEvent", self.session_id)
                 self._emit(
                     ToolResultEvent(
-                        tool_call_id=result.tool_call_id,
-                        name=result.name,
-                        content=result.content,
+                        tool_call_id=result_item.tool_call_id,
+                        name=result_item.name,
+                        content=result_item.content,
                         description=description,
                         arguments=arguments,
-                        consecutive_failures=consecutive_failures if _did_result_fail(result) else 0,
+                        consecutive_failures=consecutive_failures if _did_result_fail(result_item) else 0,
                     )
                 )
                 _tool_log("ToolResultEvent emitted", self.session_id)
+
+            if exceeded_failure_limit:
+                self._log(f"ERROR: Exceeded max consecutive failures ({max_consecutive_failures})")
+                self._emit(ErrorEvent(message=f"Exceeded maximum consecutive failures ({max_consecutive_failures})"))
+                self._emit(StreamingFinishedEvent())
+                return
             self._log("Tool execution complete, looping back")
