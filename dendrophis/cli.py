@@ -6,6 +6,8 @@ import argparse
 import logging
 import sys
 
+from dendrophis import __version__
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.7.3",
+        version=f"%(prog)s {__version__}",
     )
     return parser
 
