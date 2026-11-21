@@ -352,6 +352,13 @@ class WaitingForInputEvent(SessionEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class SessionResetEvent(SessionEvent):
+    """Notification emitted after session context and stats have been reset."""
+
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class TodoRequestEvent(RequestEvent):
     """Request a todo action (add, toggle, remove, list)."""
 
@@ -880,6 +887,7 @@ AnyEvent = (
     TextDeltaEvent
     | ReasoningDeltaEvent
     | TurnResult
+    | ToolCallStreamingEvent
     | ToolCallStartEvent
     | ToolCallDeltaEvent
     | ToolCallDoneEvent
@@ -897,6 +905,10 @@ AnyEvent = (
     # Session events
     | MessageSentEvent
     | WaitingForInputEvent
+    | SessionResetEvent
+    | TodoRequestEvent
+    | TodoUpdatedEvent
+    | TodoChangedEvent
     | SubagentTaskStartedEvent
     | SubagentProgressEvent
     | SubagentTaskFinishedEvent
@@ -910,6 +922,8 @@ AnyEvent = (
     | EditApprovalEvent
     | WriteProposalEvent
     | WriteApprovalEvent
+    | AppendProposalEvent
+    | AppendApprovalEvent
     | PythonExecProposalEvent
     | PythonExecApprovalEvent
     # Config events

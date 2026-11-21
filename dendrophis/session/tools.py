@@ -119,10 +119,21 @@ class SessionToolExecutor:
 
     def respond_to_confirmation(self, request_identifier: str, approved: bool) -> None:
         """Record a confirmation response and wake its waiting coroutine immediately."""
-        self._confirmation_results[request_identifier] = approved
         future = self._confirmation_futures.get(request_identifier)
-        if future is not None and not future.done():
-            future.set_result(approved)
+        if future is not None:
+            self._confirmation_results.pop(request_identifier, None)
+            target_loop = future.get_loop()
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            if running_loop is target_loop:
+                if not future.done():
+                    future.set_result(approved)
+            else:
+                target_loop.call_soon_threadsafe(lambda: future.set_result(approved) if not future.done() else None)
+        else:
+            self._confirmation_results[request_identifier] = approved
 
     def update_tools(
         self,
@@ -225,6 +236,8 @@ class SessionToolExecutor:
                 return_exceptions=True,
             )
             for (call_index, tool_call, _silent), outcome in zip(approved_tools, outcomes, strict=True):
+                if isinstance(outcome, asyncio.CancelledError):
+                    raise outcome
                 if isinstance(outcome, BaseException):
                     single_result = self._make_error_result(tool_call, f"Tool execution crashed: {outcome}")
                 else:
@@ -442,6 +455,8 @@ class SessionToolExecutor:
             argument_dictionary = json.loads(tool_call.arguments) if tool_call.arguments else {}
         except Exception as argument_parse_error:
             return f"Invalid arguments format: {argument_parse_error}"
+        if not isinstance(argument_dictionary, dict):
+            return "Invalid arguments format: expected a JSON object"
 
         if hasattr(tool_instance, "parameters") and isinstance(tool_instance.parameters, dict):
             required_parameters = tool_instance.parameters.get("required", [])
@@ -472,11 +487,13 @@ class SessionToolExecutor:
             if timeout_fn is not None:
                 try:
                     call_arguments = json.loads(tool_call.arguments) if tool_call.arguments else {}
+                    if not isinstance(call_arguments, dict):
+                        call_arguments = {}
+                    declared = timeout_fn(call_arguments)
+                    if declared is not None:
+                        return float(declared)
                 except Exception:
-                    call_arguments = {}
-                declared = timeout_fn(call_arguments)
-                if declared is not None:
-                    return declared
+                    return TOOL_EXECUTION_TIMEOUT
         return TOOL_EXECUTION_TIMEOUT
 
     async def _execute_single_tool(self, tool_call: Any, silent: bool) -> Any:
@@ -485,9 +502,10 @@ class SessionToolExecutor:
         description = ""
         try:
             call_arguments = json.loads(tool_call.arguments) if tool_call.arguments else {}
-            description = call_arguments.get("description", "")
+            if isinstance(call_arguments, dict):
+                description = str(call_arguments.get("description", ""))
         except Exception:
-            pass
+            description = ""
 
         self._emit(
             ToolExecutionStartedEvent(

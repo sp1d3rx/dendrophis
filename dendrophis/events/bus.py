@@ -5,18 +5,15 @@ from __future__ import annotations
 import asyncio
 import bisect
 import contextlib
-import contextvars
 import heapq
 import inspect
 import logging
 import threading
-import time
-import uuid
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from dataclasses import dataclass
+from typing import Any, TypeVar, get_type_hints
 
 from dendrophis.events.protocol import IEventBus
 from dendrophis.events.types import AnyEvent
@@ -30,14 +27,6 @@ EventHandler = Callable[[AnyEvent], None]
 AsyncEventHandler = Callable[[AnyEvent], Coroutine[Any, Any, None]]
 
 
-@dataclass(frozen=True)
-class EventMetadata:
-    """Metadata attached to every event for tracing and debugging."""
-
-    event_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
-    timestamp: float = field(default_factory=time.monotonic)
-
-
 @dataclass(frozen=True, slots=True)
 class Subscription:
     """A token representing an active subscription that can be disposed of or used as a context manager."""
@@ -47,7 +36,6 @@ class Subscription:
     handler: EventHandler | AsyncEventHandler
     priority: int
     insertion_order: int
-    context: contextvars.Context
     is_async: bool = False
 
     def unsubscribe(self) -> None:
@@ -100,10 +88,8 @@ class SubscriptionGroup:
 
 def resolve_event_type_from_signature(handler: Callable[..., Any], parameter_index: int = 0) -> type[AnyEvent]:
     """Extract the annotated event type from a handler's signature."""
-    import typing
-
     try:
-        type_hints = typing.get_type_hints(handler)
+        type_hints = get_type_hints(handler)
     except Exception:
         type_hints = {}
 
@@ -139,8 +125,9 @@ class EventBus(IEventBus):
     """Thread-safe event bus for publishing and subscribing to events.
 
     Supports both sync and async handlers with priority ordering.
-    Sync handlers run in a thread pool; async handlers are scheduled
-    on the event loop.
+    When an asyncio event loop is attached via set_event_loop(), both sync
+    and async handlers are dispatched onto that loop in priority order;
+    when no loop is attached, sync handlers execute in a fallback thread pool.
     """
 
     __slots__ = (
@@ -148,7 +135,6 @@ class EventBus(IEventBus):
         "_insertion_counter",
         "_lock",
         "_loop",
-        "_loop_and_not_closed",
         "_shutdown",
         "_sorted_handlers_cache",
         "_subscribers",
@@ -161,15 +147,13 @@ class EventBus(IEventBus):
         self._lock = threading.RLock()
         self._thread_pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="event-bus")
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._loop_and_not_closed: bool = False  # Optimized check: loop is set and not closed
         self._shutdown = False
         self._error_count: int = 0
         self._insertion_counter: int = 0
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Set the event loop for async handler execution."""
+        """Set the event loop for handler execution."""
         self._loop = loop
-        self._loop_and_not_closed = loop is not None and not loop.is_closed()
 
     def subscribe(
         self,
@@ -178,17 +162,7 @@ class EventBus(IEventBus):
         *,
         priority: int = 0,
     ) -> Subscription:
-        """Subscribe to an event type.
-
-        Args:
-            event_type: The type of event to subscribe to.
-            handler: A callable that accepts the event as its only argument.
-            priority: Lower values fire first. Default 0.
-
-        Returns:
-            A Subscription object that can be used to unsubscribe.
-        """
-        context = contextvars.copy_context()
+        """Subscribe to an event type."""
         is_async = inspect.iscoroutinefunction(handler)
         with self._lock:
             self._insertion_counter += 1
@@ -198,7 +172,6 @@ class EventBus(IEventBus):
                 handler=handler,
                 priority=priority,
                 insertion_order=self._insertion_counter,
-                context=context,
                 is_async=is_async,
             )
             subscribers = self._subscribers[event_type]
@@ -245,17 +218,20 @@ class EventBus(IEventBus):
             self._invalidate_cache(event_type)
 
     def _invalidate_cache(self, event_type: type[AnyEvent]) -> None:
-        """Invalidate the sorted handlers cache for an event type and its subclasses."""
-        types_to_invalidate = [event_type]
-        types_to_invalidate.extend(base_type for base_type in event_type.__mro__[1:] if base_type is not object)
-        for invalidated_type in types_to_invalidate:
+        """Invalidate the sorted handlers cache for an event type and all of its cached subclasses."""
+        stale_types = [
+            cached_type
+            for cached_type in self._sorted_handlers_cache
+            if cached_type is event_type or (isinstance(cached_type, type) and issubclass(cached_type, event_type))
+        ]
+        for invalidated_type in stale_types:
             self._sorted_handlers_cache.pop(invalidated_type, None)
 
     def _sorted_handlers(self, event_type: type[AnyEvent]) -> list[Subscription]:
         """Get handlers sorted by priority (lower = first). Uses cache and heapq.merge for performance."""
-        # Check cache first
-        if event_type in self._sorted_handlers_cache:
-            return self._sorted_handlers_cache[event_type]
+        cached_subscriptions = self._sorted_handlers_cache.get(event_type)
+        if cached_subscriptions is not None:
+            return cached_subscriptions
 
         with self._lock:
             # Collect all sorted lists (each is already sorted by priority via bisect.insort)

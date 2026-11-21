@@ -13,7 +13,7 @@ _enc = None
 _enc_failed = False
 
 # Built-in 're' is JIT-friendly on PyPy. Matches words or punctuation clusters.
-_heuristic_re = re.compile(r"\w+|[^\w\s]+")
+_heuristic_pattern = re.compile(r"\w+|[^\w\s]+")
 
 
 def _get_enc():
@@ -24,52 +24,62 @@ def _get_enc():
             import tiktoken
 
             _enc = tiktoken.get_encoding("cl100k_base")
-        except Exception as exc:
+        except Exception as error:
             _enc_failed = True
-            logger.debug("tiktoken unavailable, using heuristic token estimate: %s", exc)
+            logger.debug("tiktoken unavailable, using heuristic token estimate: %s", error)
     return _enc
 
 
-def _char_estimate(text: str) -> int:
-    """Rough token estimate: 1 token ≈ 4 characters."""
-    return max(1, len(text) // 4)
-
-
 def _heuristic_estimate(text: str) -> int:
-    """Better pure-python estimate without C extensions, JIT-friendly on PyPy."""
-    # Count chunks and apply a 1.25x multiplier to approximate BPE tokens
-    matches = len(_heuristic_re.findall(text))
-    return max(1, int(matches * 1.25))
+    """Pure-python estimate without C extensions, JIT-friendly on PyPy."""
+    if not text:
+        return 0
+    match_count = len(_heuristic_pattern.findall(text))
+    return max(1, int(match_count * 1.25))
 
 
 def count_tokens(text: str) -> int:
     """Estimate token count for a string."""
-    # Bypass tiktoken entirely on PyPy to avoid C-extension overhead
+    if not text:
+        return 0
     if sys.implementation.name == "pypy":
         return _heuristic_estimate(text)
 
-    enc = _get_enc()
-    if enc is not None:
+    encoding = _get_enc()
+    if encoding is not None:
         try:
-            return len(enc.encode(text))
-        except Exception:
-            pass
+            return len(encoding.encode(text, disallowed_special=()))
+        except Exception as error:
+            logger.debug("tiktoken encode failed, falling back to heuristic: %s", error)
     return _heuristic_estimate(text)
 
 
 def count_messages_tokens(messages: list[dict[str, Any]]) -> int:
     """Estimate total tokens across a list of OpenAI-format messages."""
-    total = 0
-    for msg in messages:
-        content = msg.get("content") or ""
+    total_tokens = 0
+    for message in messages:
+        content = message.get("content") or ""
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict):
                     if block.get("type") == "image_url":
-                        total += 310
+                        total_tokens += 310
                     else:
-                        total += count_tokens(block.get("text", ""))
-        else:
-            total += count_tokens(str(content))
-        total += 4
-    return total
+                        total_tokens += count_tokens(block.get("text", ""))
+        elif content:
+            total_tokens += count_tokens(str(content))
+
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            total_tokens += count_tokens(reasoning)
+
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call_entry in tool_calls:
+                if isinstance(call_entry, dict):
+                    function_spec = call_entry.get("function")
+                    if isinstance(function_spec, dict):
+                        total_tokens += count_tokens(str(function_spec.get("name", "")))
+                        total_tokens += count_tokens(str(function_spec.get("arguments", "")))
+        total_tokens += 4
+    return total_tokens

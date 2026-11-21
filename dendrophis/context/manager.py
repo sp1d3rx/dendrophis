@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ class ContextManager:
         self._file_tracker = FileBlockTracker(_stable_threshold=config.caching.tier2_file_blocks_stable_turns)
         # Dedup: track SHA256 hashes of read contents (skip identical read results per file path)
         self._read_file_hashes: dict[str, str] = {}
+        self._raw_read_hashes: set[str] = set()
         self._init_system()
 
     def _init_system(self) -> None:
@@ -89,9 +91,20 @@ class ContextManager:
         tool_calls: list[dict[str, Any]] | None = None,
         reasoning_content: str | None = None,
     ) -> None:
-        msg = make_assistant_message(content, tool_calls, reasoning_content)
-        self.messages.append(msg)
-        self.token_count += count_tokens(content) + (count_tokens(reasoning_content) if reasoning_content else 0) + 4
+        assistant_message = make_assistant_message(content, tool_calls, reasoning_content)
+        self.messages.append(assistant_message)
+        tool_calls_tokens = 0
+        if tool_calls:
+            for call_entry in tool_calls:
+                function_spec = call_entry.get("function", {}) if isinstance(call_entry, dict) else {}
+                tool_calls_tokens += count_tokens(str(function_spec.get("name", "")))
+                tool_calls_tokens += count_tokens(str(function_spec.get("arguments", "")))
+        self.token_count += (
+            count_tokens(content)
+            + (count_tokens(reasoning_content) if reasoning_content else 0)
+            + tool_calls_tokens
+            + 4
+        )
 
     def append_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         # REJECT hashed IDs as tool names - they should never appear
@@ -100,7 +113,7 @@ class ContextManager:
 
         # Invalidate cached read hash when a file-mutating tool modifies a path so
         # reverting a file to an earlier state still returns full content on re-read.
-        if name in ("edit", "patch", "write", "write_file", "append"):
+        if name in ("edit", "patch", "write", "write_file", "append", "edit_function", "replace_function"):
             try:
                 mutation_data = json.loads(content)
                 if isinstance(mutation_data, dict) and "error" not in mutation_data:
@@ -108,9 +121,18 @@ class ContextManager:
                         mutation_data.get("path") or mutation_data.get("file_path") or mutation_data.get("file")
                     )
                     if isinstance(mutated_path, str) and mutated_path:
-                        self._read_file_hashes.pop(mutated_path, None)
+                        stale_keys = [
+                            tracked_key
+                            for tracked_key in self._read_file_hashes
+                            if tracked_key == mutated_path or tracked_key.startswith(f"{mutated_path}#")
+                        ]
+                        for stale_key in stale_keys:
+                            self._read_file_hashes.pop(stale_key, None)
             except (json.JSONDecodeError, TypeError):
                 pass
+        elif name in ("bash", "execute_code", "invoke_subagent"):
+            self._read_file_hashes.clear()
+            self._raw_read_hashes.clear()
 
         # Deduplicate unchanged read results by replacing the body with a compact stub
         # rather than dropping the message, keeping assistant.tool_calls strictly paired.
@@ -126,34 +148,39 @@ class ContextManager:
                     file_content = result_data.get("content", "")
                     if file_path and isinstance(file_content, str):
                         dedup_file_path = file_path
+                        showing_lines = result_data.get("showing_lines")
+                        total_lines = result_data.get("total_lines")
+                        is_partial_slice = bool(showing_lines and total_lines and showing_lines != f"1-{total_lines}")
+                        cache_key = f"{file_path}#{showing_lines}" if is_partial_slice else file_path
                         content_hash = hashlib.sha256(file_content.encode(errors="replace")).hexdigest()
-                        if self._read_file_hashes.get(file_path) == content_hash:
+                        if self._read_file_hashes.get(cache_key) == content_hash:
                             is_duplicate_read = True
                         else:
-                            self._read_file_hashes[file_path] = content_hash
+                            self._read_file_hashes[cache_key] = content_hash
                     else:
                         content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
-                        if content_hash in self._read_file_hashes:
+                        if content_hash in self._raw_read_hashes:
                             is_duplicate_read = True
                         else:
-                            self._read_file_hashes[content_hash] = content_hash
+                            self._raw_read_hashes.add(content_hash)
                 else:
-                    # Fallback for non-file reads (like directory lists)
                     content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
-                    if content_hash in self._read_file_hashes:
+                    if content_hash in self._raw_read_hashes:
                         is_duplicate_read = True
                     else:
-                        self._read_file_hashes[content_hash] = content_hash
+                        self._raw_read_hashes.add(content_hash)
             except (json.JSONDecodeError, TypeError):
                 content_hash = hashlib.sha256(content.encode(errors="replace")).hexdigest()
-                if content_hash in self._read_file_hashes:
+                if content_hash in self._raw_read_hashes:
                     is_duplicate_read = True
                 else:
-                    self._read_file_hashes[content_hash] = content_hash
+                    self._raw_read_hashes.add(content_hash)
 
             # Cap dictionary size to 500 to prevent unbounded growth
             if len(self._read_file_hashes) > 500:
                 self._read_file_hashes.pop(next(iter(self._read_file_hashes)), None)
+            if len(self._raw_read_hashes) > 500:
+                self._raw_read_hashes.pop()
 
             if is_duplicate_read:
                 stub_payload: dict[str, Any] = {"status": "unchanged_since_last_read"}
@@ -166,8 +193,9 @@ class ContextManager:
         self.token_count += count_tokens(content) + 4
 
     def append_file(self, path: str, content: str) -> None:
-        if len(content.encode()) > self.MAX_FILE_BYTES:
-            content = content[: self.MAX_FILE_BYTES] + "\n... [truncated]"
+        encoded_bytes = content.encode("utf-8")
+        if len(encoded_bytes) > self.MAX_FILE_BYTES:
+            content = encoded_bytes[: self.MAX_FILE_BYTES].decode("utf-8", errors="ignore") + "\n... [truncated]"
         text = _file_fence(path, content)
 
         # Track file for caching if enabled
@@ -201,12 +229,17 @@ class ContextManager:
         return self.token_pct >= self._config.llm.compaction_threshold
 
     def clear_read_hashes(self) -> None:
-        """Clear the read dedup set after compaction.
-
-        Called after context compaction so that files in compacted-away
-        messages can be re-read without being silently dropped.
-        """
+        """Clear the read dedup set and reset message-index caches after compaction or reload."""
         self._read_file_hashes.clear()
+        self._raw_read_hashes.clear()
+        self._file_tracker = FileBlockTracker(_stable_threshold=self._config.caching.tier2_file_blocks_stable_turns)
+        turn_index_map: dict[int, int] = {0: 0}
+        turn_counter = 0
+        for message_index, message in enumerate(self.messages):
+            if message.get("role") == "user":
+                turn_counter += 1
+                turn_index_map[turn_counter] = message_index
+        self._turn_to_index = turn_index_map
 
     # ── Caching (Phase 2) ──────────────────────────────────────────────────────
 
@@ -263,26 +296,23 @@ class ContextManager:
     # ── API serialization ──────────────────────────────────────────────────────
 
     def get_messages_for_api(self) -> list[dict[str, Any]]:
-        # Log context messages when debugging
-        import os
-
         if os.environ.get("DENDROPHIS_TOOL_LOG") == "1":
             from dendrophis.utils import _tool_log
 
             _tool_log("=== CONTEXT MANAGER - GET MESSAGES FOR API ===")
             _tool_log(f"Total messages in context: {len(self.messages)}")
-            for i, msg in enumerate(self.messages):
-                role = msg.get("role", "unknown")
-                content = msg.get("content", "")
-                tool_calls = msg.get("tool_calls")
-                _tool_log(f"Message {i + 1}: role={role}")
+            for message_index, message in enumerate(self.messages):
+                role = message.get("role", "unknown")
+                content = message.get("content", "")
+                tool_calls = message.get("tool_calls")
+                _tool_log(f"Message {message_index + 1}: role={role}")
                 if content:
                     _tool_log(f"  Content: {content[:50]}{'...' if len(content) > 50 else ''}")
                 if tool_calls:
                     _tool_log(f"  Tool calls: {len(tool_calls)}")
-                    for j, tc in enumerate(tool_calls):
-                        func = tc.get("function", {})
-                        _tool_log(f"    Tool {j + 1}: {func.get('name')}")
+                    for call_index, tool_call in enumerate(tool_calls):
+                        function_spec = tool_call.get("function", {})
+                        _tool_log(f"    Tool {call_index + 1}: {function_spec.get('name')}")
 
         return list(self.messages)
 
@@ -344,4 +374,5 @@ class ContextManager:
         self._turn_to_index = {0: 0}
         self._file_tracker = FileBlockTracker(_stable_threshold=self._config.caching.tier2_file_blocks_stable_turns)
         self._read_file_hashes = {}
+        self._raw_read_hashes = set()
         self._init_system()

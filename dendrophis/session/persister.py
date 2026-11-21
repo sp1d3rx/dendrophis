@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import lzma
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -31,14 +32,21 @@ def _sanitize_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
     not an assistant message with tool_calls — e.g. after compaction cut through
     a tool-call sequence, or a session was saved in a broken state.
     """
-    result: list[dict[str, Any]] = []
-    for msg in messages:
-        if msg.get("role") == "tool":
-            preceding = next((m for m in reversed(result) if m.get("role") != "tool"), None)
-            if not (preceding and preceding.get("role") == "assistant" and preceding.get("tool_calls")):
+    sanitized_messages: list[dict[str, Any]] = []
+    last_non_tool_message: dict[str, Any] | None = None
+    for message in messages:
+        role = message.get("role")
+        if role == "tool":
+            if not (
+                last_non_tool_message is not None
+                and last_non_tool_message.get("role") == "assistant"
+                and last_non_tool_message.get("tool_calls")
+            ):
                 continue
-        result.append(msg)
-    return result
+        else:
+            last_non_tool_message = message
+        sanitized_messages.append(message)
+    return sanitized_messages
 
 
 class SessionPersister:
@@ -157,40 +165,39 @@ class SessionPersister:
         try:
             if filepath.suffix == ".xz":
                 with lzma.open(filepath, "rb") as file_handle:
-                    data = json.loads(file_handle.read().decode())
+                    session_payload = json.loads(file_handle.read().decode())
             else:
                 with open(filepath, encoding="utf-8") as file_handle:
-                    data = json.load(file_handle)
+                    session_payload = json.load(file_handle)
 
-            import uuid
-
-            original_session_id = data.get("session_id", "")
+            original_session_id = session_payload.get("session_id", "")
             if as_fork:
                 session_id = uuid.uuid4().hex
                 session_file = None
                 parent_session_id = original_session_id
-                fork_name = data.get("fork_name")
+                fork_name = session_payload.get("fork_name")
             else:
                 session_id = original_session_id
                 session_file = filepath
-                parent_session_id = data.get("parent_session_id")
-                fork_name = data.get("fork_name")
+                parent_session_id = session_payload.get("parent_session_id")
+                fork_name = session_payload.get("fork_name")
 
             # Restore messages and sanitize
-            loaded_messages = data.get("messages", [])
+            loaded_messages = session_payload.get("messages", [])
             loaded_messages = _sanitize_tool_messages(loaded_messages)
             self._context.messages = loaded_messages
+            self._context.clear_read_hashes()
             self._context.recalculate_tokens()
 
             # Restore stats
-            stats_data = data.get("stats", {})
+            stats_data = session_payload.get("stats", {})
             self._stats.prompt_tokens = stats_data.get("prompt_tokens", 0)
             self._stats.completion_tokens = stats_data.get("completion_tokens", 0)
             self._stats.cached_tokens = stats_data.get("cached_tokens", 0)
             self._stats.total_cost_usd = stats_data.get("total_cost_usd", 0.0)
 
             # Optionally restore model if specified
-            saved_model = data.get("model")
+            saved_model = session_payload.get("model")
             if saved_model:
                 self._config.llm.model = saved_model
 
@@ -199,22 +206,29 @@ class SessionPersister:
                 if supports_prompt_cache_key_by_id(self._config.llm.model):
                     self._config.llm.prompt_cache_key = f"dendrophis-{session_id[:16]}"
             else:
-                saved_prompt_cache_key = data.get("prompt_cache_key")
+                saved_prompt_cache_key = session_payload.get("prompt_cache_key")
                 if saved_prompt_cache_key:
                     self._config.llm.prompt_cache_key = saved_prompt_cache_key
 
-            # Recalculate turn count from messages
-            self._context._turn_count = sum(1 for message in self._context.messages if message.get("role") == "user")
+            # Recalculate turn count and turn-to-index map from restored messages
+            turn_index_map: dict[int, int] = {0: 0}
+            turn_counter = 0
+            for message_index, message in enumerate(self._context.messages):
+                if message.get("role") == "user":
+                    turn_counter += 1
+                    turn_index_map[turn_counter] = message_index
+            self._context._turn_count = turn_counter
+            self._context._turn_to_index = turn_index_map
 
-            info = {
-                "message_count": len([msg for msg in self._context.messages if msg.get("role") != "system"]),
+            session_summary = {
+                "message_count": sum(1 for message in self._context.messages if message.get("role") != "system"),
                 "model": saved_model,
                 "fork_name": fork_name,
                 "parent_session_id": parent_session_id,
                 "is_fork": as_fork,
             }
 
-            return info, session_id, session_file
+            return session_summary, session_id, session_file
 
         except Exception as load_error:
             # A failed load corrupts nothing, but the caller only sees (None, "", None)

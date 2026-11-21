@@ -9,6 +9,7 @@ import logging
 import re
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -32,6 +33,7 @@ from dendrophis.events import (
     TextDeltaEvent,
     ToolResultEvent,
     TurnResult,
+    UnderstandingStatsUpdatedEvent,
     UsageEvent,
     WaitingForInputEvent,
 )
@@ -40,6 +42,7 @@ from dendrophis.llm.models import supports_caching_by_id, supports_tools_by_id
 from dendrophis.memory.association import MemoryAssociationGenerator
 from dendrophis.session.tools import SessionToolExecutor, is_tool_error, tool_call_to_payload
 from dendrophis.skills.manager import SkillManager
+from dendrophis.tools.executor import ToolResult
 from dendrophis.tools.registry import ToolRegistry
 from dendrophis.utils import _tool_log
 
@@ -77,7 +80,6 @@ class SessionStats:
     _segment_first_token_at: float = field(default=0.0, repr=False)
     _turn_completion: int = field(default=0, repr=False)
     _total_streaming_duration: float = field(default=0.0, repr=False)
-    _total_segment_duration: float = field(default=0.0, repr=False)
     _total_streaming_tokens: int = field(default=0, repr=False)
     _segment_completion_tokens: int = field(default=0, repr=False)
 
@@ -88,7 +90,6 @@ class SessionStats:
         self._segment_first_token_at = 0.0
         self._turn_completion = 0
         self._total_streaming_duration = 0.0
-        self._total_segment_duration = 0.0
         self._total_streaming_tokens = 0
         self._segment_completion_tokens = 0
 
@@ -106,7 +107,7 @@ class SessionStats:
         elif self._segment_first_token_at == 0.0:
             self._segment_first_token_at = now
 
-        delta_tokens = count_tokens(text_delta)
+        delta_tokens = 1 if len(text_delta) <= 6 else count_tokens(text_delta)
         self._segment_completion_tokens += delta_tokens
         previous_turn_completion = self._turn_completion
         self._turn_completion = self._total_streaming_tokens + self._segment_completion_tokens
@@ -119,6 +120,7 @@ class SessionStats:
 
     def record_segment(self, duration: float, completion_tokens: int = 0) -> None:
         """Record the duration of a completed streaming segment and reset segment timing."""
+        _ = duration
         if self._segment_first_token_at > 0.0:
             self._total_streaming_duration += time.monotonic() - self._segment_first_token_at
             self._segment_first_token_at = 0.0
@@ -130,7 +132,6 @@ class SessionStats:
 
         self._segment_completion_tokens = 0
         self._turn_completion = self._total_streaming_tokens
-        self._total_segment_duration += duration
 
     @property
     def current_tps(self) -> float:
@@ -203,7 +204,6 @@ class SessionStats:
         self._segment_first_token_at = 0.0
         self._turn_completion = 0
         self._total_streaming_duration = 0.0
-        self._total_segment_duration = 0.0
         self._total_streaming_tokens = 0
         self._segment_completion_tokens = 0
 
@@ -417,8 +417,6 @@ class ChatOrchestrator:
                         self.context.update_understanding_cache(
                             self.understanding_detector.get_understanding_checkpoint_turn()
                         )
-                    from dendrophis.events.types import UnderstandingStatsUpdatedEvent
-
                     self._emit(
                         UnderstandingStatsUpdatedEvent(
                             established=self.understanding_detector.is_established(),
@@ -433,10 +431,10 @@ class ChatOrchestrator:
             self.stats.start_turn()
             self._emit(StreamingStartedEvent(user_message=text))
 
-            # Generate memory association - "this makes me think of..."
+            # Generate memory association off the main loop so SQLite/embeddings do not stall UI
             if self.association_generator is not None:
                 try:
-                    association = self.association_generator.on_turn(text)
+                    association = await asyncio.to_thread(self.association_generator.on_turn, text)
                     if association is not None:
                         summary = association.memory_summary or ""
                         memory_id = association.memory_id[:8]
@@ -449,9 +447,6 @@ class ChatOrchestrator:
             try:
                 stats_task = asyncio.create_task(self._emit_stats_periodically())
                 await self._run_completion_loop()
-            except Exception as completion_error:
-                self._emit(ErrorEvent(message=f"Completion loop failed: {completion_error!s}"))
-                raise
             finally:
                 if stats_task:
                     try:
@@ -484,18 +479,14 @@ class ChatOrchestrator:
             except Exception as finalise_error:
                 self._emit(ErrorEvent(message=f"Failed to finalize turn: {finalise_error!s}"))
         except asyncio.CancelledError:
-            # Emit user-facing state first, then propagate: swallowing a
-            # CancelledError makes the task report success and breaks asyncio's
-            # cancel/uncancel contract (the caller can't tell a cancel from a
-            # clean return). Emits are sync, so this is safe to do before raise.
             self._emit(ErrorEvent(message="Streaming cancelled"))
+            self._emit(StreamingFinishedEvent())
             self._emit(WaitingForInputEvent())
             raise
         except Exception as exception:
-            import traceback
-
             self._log(f"Unexpected error: {exception}\n{traceback.format_exc()}")
             self._emit(ErrorEvent(message=f"Unexpected error: {exception}"))
+            self._emit(StreamingFinishedEvent())
             self._emit(WaitingForInputEvent())
         finally:
             with self.stream_lock:
@@ -629,8 +620,9 @@ class ChatOrchestrator:
                         )
                     )
                 elif isinstance(event, (AuthFailedEvent, ErrorEvent)):
+                    if nudge_pending and self.context.messages and self.context.messages[-1].get("role") == "user":
+                        self.context.messages.pop()
                     self._emit(event)
-                    self._emit(StreamingFinishedEvent())
                     return
                 else:
                     self._emit(event)
@@ -720,8 +712,6 @@ class ChatOrchestrator:
             # never remain orphaned in context.
             returned_call_ids = {result_item.tool_call_id for result_item in results}
             if len(returned_call_ids) < len(turn.tool_calls):
-                from dendrophis.tools.executor import ToolResult
-
                 results = list(results)
                 for tool_call in turn.tool_calls:
                     if tool_call.id not in returned_call_ids:
@@ -785,6 +775,5 @@ class ChatOrchestrator:
             if exceeded_failure_limit:
                 self._log(f"ERROR: Exceeded max consecutive failures ({max_consecutive_failures})")
                 self._emit(ErrorEvent(message=f"Exceeded maximum consecutive failures ({max_consecutive_failures})"))
-                self._emit(StreamingFinishedEvent())
                 return
             self._log("Tool execution complete, looping back")

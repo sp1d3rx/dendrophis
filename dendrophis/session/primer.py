@@ -75,52 +75,56 @@ class PrimerManager:
             )
 
             # Scan top-level dirs
-            for entry in sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name)):
+            for entry in sorted(root.iterdir(), key=lambda entry_path: (not entry_path.is_dir(), entry_path.name)):
                 if entry.is_dir() and not entry.name.startswith("."):
                     primer.key_directories.append(entry.name)
 
+            resolved_root = root.resolve()
+
             # Helper: resolve a path to relative-to-root, or None if outside root
-            def _resolve_path(fpath: str) -> str | None:
+            def _resolve_path(file_path_str: str) -> str | None:
                 try:
-                    p = Path(fpath)
-                    if not p.exists() or not p.is_file():
+                    candidate_path = Path(file_path_str)
+                    if not candidate_path.exists() or not candidate_path.is_file():
                         return None
-                    resolved = p.resolve()
-                    return str(resolved.relative_to(root))
+                    resolved_candidate = candidate_path.resolve()
+                    return str(resolved_candidate.relative_to(resolved_root))
                 except (ValueError, OSError):
                     return None
 
             # Path 1: [File: ...] markers in user/assistant messages (from @file autocomplete)
-            for msg in self._context.messages:
-                content = msg.get("content", "")
-                role = msg.get("role", "")
+            for message in self._context.messages:
+                content = message.get("content", "")
+                role = message.get("role", "")
 
                 if isinstance(content, str):
                     for line in content.splitlines():
                         if line.startswith("[File: ") and "]" in line:
-                            fpath = line[7 : line.index("]")]
-                            rel = _resolve_path(fpath)
-                            if rel:
+                            file_path_str = line[7 : line.index("]")]
+                            relative_path = _resolve_path(file_path_str)
+                            if relative_path:
                                 try:
-                                    text = Path(fpath).read_text(errors="replace")
-                                    primer.add_file(rel, text)
-                                except Exception:
-                                    pass
+                                    text = (resolved_root / relative_path).read_text(encoding="utf-8", errors="replace")
+                                    primer.add_file(relative_path, text)
+                                except OSError as read_error:
+                                    self._log(f"Skipping unreadable primer file {relative_path}: {read_error}")
 
                 # Path 2: Tool result messages from the `read` tool
-                if role == "tool" and msg.get("name") == "read":
+                if role == "tool" and message.get("name") == "read":
                     try:
                         result_data = json.loads(content) if isinstance(content, str) else content
                         if isinstance(result_data, dict):
-                            fpath = result_data.get("path", "")
-                            if fpath:
-                                rel = _resolve_path(fpath)
-                                if rel:
+                            file_path_str = result_data.get("path", "")
+                            if file_path_str:
+                                relative_path = _resolve_path(file_path_str)
+                                if relative_path:
                                     try:
-                                        text = Path(fpath).read_text(errors="replace")
-                                        primer.add_file(rel, text)
-                                    except Exception:
-                                        pass
+                                        text = (resolved_root / relative_path).read_text(
+                                            encoding="utf-8", errors="replace"
+                                        )
+                                        primer.add_file(relative_path, text)
+                                    except OSError as read_error:
+                                        self._log(f"Skipping unreadable primer file {relative_path}: {read_error}")
                     except (json.JSONDecodeError, TypeError):
                         pass
 
@@ -232,15 +236,17 @@ class PrimerManager:
             if primer is None:
                 return False
 
-            full_path = root / path
-            if not full_path.exists() or not full_path.is_file():
+            resolved_root = root.resolve()
+            resolved_target = (root / path).resolve()
+            if not resolved_target.is_relative_to(resolved_root) or not resolved_target.is_file():
                 return False
 
-            text = full_path.read_text(errors="replace")
-            primer.add_file(path, text)
+            relative_target = str(resolved_target.relative_to(resolved_root))
+            text = resolved_target.read_text(encoding="utf-8", errors="replace")
+            primer.add_file(relative_target, text)
             primer.mark_all_fresh()
             save_primer(primer)
-            self._log(f"Tracked file: {path}")
+            self._log(f"Tracked file: {relative_target}")
             return True
 
         except Exception as exc:

@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import logging
+import lzma
+import os
 import sys
+from pathlib import Path
+from typing import Any
 
 from dendrophis import __version__
+from dendrophis.utils import ensure_secure_dir, ensure_secure_file
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug mode and detailed tool execution logging to tool_log.txt",
+        help="Enable debug mode and detailed tool execution logging",
     )
     parser.add_argument(
         "--log",
         action="store_true",
-        help="Enable detailed tool execution logging to tool_log.txt",
+        help="Enable detailed tool execution logging",
     )
     parser.add_argument(
         "--no-parallel-tools",
@@ -106,88 +113,81 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _read_session_archive(session_file: Path) -> dict[str, Any]:
+    """Read and parse a plain or LZMA-compressed session archive."""
+    if session_file.suffix == ".xz":
+        with lzma.open(session_file, "rb") as file_handle:
+            return json.loads(file_handle.read().decode("utf-8"))
+    return json.loads(session_file.read_text(encoding="utf-8"))
+
+
+def _sorted_session_files(sessions_dir: Path) -> list[Path]:
+    """Return saved session files ordered newest-first."""
+    return sorted(
+        sessions_dir.glob("session-*.json*"),
+        key=lambda session_file: session_file.stat().st_mtime,
+        reverse=True,
+    )
+
+
 def _list_sessions() -> None:
     """List available saved sessions."""
-    from pathlib import Path
-
     sessions_dir = Path.home() / ".config" / "dendrophis" / "sessions"
     if not sessions_dir.exists():
         print("No saved sessions found.")
         return
 
-    session_files = sorted(
-        sessions_dir.glob("session-*.json*"), key=lambda session_file: session_file.stat().st_mtime, reverse=True
-    )
+    session_files = _sorted_session_files(sessions_dir)
     if not session_files:
         print("No saved sessions found.")
         return
 
     print(f"{'Session ID':12} {'Fork Name':18} {'Date':20} {'Model':32} {'Messages':>8}")
     print("-" * 95)
-    for path in session_files[:20]:  # Show last 20
-        import json
-
+    for session_file in session_files[:20]:
         try:
-            if path.suffix == ".xz":
-                import lzma
-
-                with lzma.open(path, "rb") as file_handle:
-                    data = json.loads(file_handle.read().decode())
-            else:
-                data = json.loads(path.read_text())
-            session_id = data.get("session_id", "unknown")[:8]
-            fork_name = data.get("fork_name", "")[:16]
-            timestamp = data.get("timestamp", "unknown")[:19].replace("T", " ")
-            model = data.get("model", "unknown")[:30]
-            msg_count = len([msg for msg in data.get("messages", []) if msg.get("role") != "system"])
-            print(f"{session_id:12} {fork_name:18} {timestamp:20} {model:32} {msg_count:>8}")
-        except Exception as exc:
-            print(f"Warning: skipping unreadable session file {path.name}: {exc}", file=sys.stderr)
+            archive_payload = _read_session_archive(session_file)
+            session_id = archive_payload.get("session_id", "unknown")[:8]
+            fork_name = (archive_payload.get("fork_name") or "")[:16]
+            timestamp = archive_payload.get("timestamp", "unknown")[:19].replace("T", " ")
+            model = archive_payload.get("model", "unknown")[:30]
+            message_count = sum(1 for message in archive_payload.get("messages", []) if message.get("role") != "system")
+            print(f"{session_id:12} {fork_name:18} {timestamp:20} {model:32} {message_count:>8}")
+        except Exception as read_error:
+            print(f"Warning: skipping unreadable session file {session_file.name}: {read_error}", file=sys.stderr)
             continue
 
 
 def _list_forks() -> None:
     """List available saved forks."""
-    from pathlib import Path
-
     sessions_dir = Path.home() / ".config" / "dendrophis" / "sessions"
     if not sessions_dir.exists():
         print("No saved forks found.")
         return
 
-    session_files = sorted(
-        sessions_dir.glob("session-*.json*"), key=lambda session_file: session_file.stat().st_mtime, reverse=True
-    )
+    session_files = _sorted_session_files(sessions_dir)
     if not session_files:
         print("No saved forks found.")
         return
 
-    import json
-    import lzma
-
     forks_found = False
     print(f"{'Fork Name':20} {'Session ID':12} {'Date':20} {'Model':30} {'Messages':>8}")
     print("-" * 95)
-    for path in session_files:
+    for session_file in session_files:
         try:
-            if path.suffix == ".xz":
-                with lzma.open(path, "rb") as file_handle:
-                    data = json.loads(file_handle.read().decode())
-            else:
-                data = json.loads(path.read_text())
-
-            fork_name = data.get("fork_name")
+            archive_payload = _read_session_archive(session_file)
+            fork_name = archive_payload.get("fork_name")
             if not fork_name:
                 continue
 
             forks_found = True
-            session_id = data.get("session_id", "unknown")[:8]
-            timestamp = data.get("timestamp", "unknown")[:19].replace("T", " ")
-            model = data.get("model", "unknown")[:28]
-            msg_count = len([msg for msg in data.get("messages", []) if msg.get("role") != "system"])
-            print(f"{fork_name[:20]:20} {session_id:12} {timestamp:20} {model:30} {msg_count:>8}")
-        except Exception as exc:
-            print(f"Warning: skipping unreadable session file {path.name}: {exc}", file=sys.stderr)
+            session_id = archive_payload.get("session_id", "unknown")[:8]
+            timestamp = archive_payload.get("timestamp", "unknown")[:19].replace("T", " ")
+            model = archive_payload.get("model", "unknown")[:28]
+            message_count = sum(1 for message in archive_payload.get("messages", []) if message.get("role") != "system")
+            print(f"{fork_name[:20]:20} {session_id:12} {timestamp:20} {model:30} {message_count:>8}")
+        except Exception as read_error:
+            print(f"Warning: skipping unreadable session file {session_file.name}: {read_error}", file=sys.stderr)
             continue
 
     if not forks_found:
@@ -196,8 +196,6 @@ def _list_forks() -> None:
 
 def _resolve_session(id_or_path: str) -> str:
     """Resolve a session ID, fork name, or file path to an absolute path."""
-    from pathlib import Path
-
     file_path = Path(id_or_path).expanduser()
     if file_path.exists():
         return str(file_path)
@@ -215,51 +213,29 @@ def _resolve_session(id_or_path: str) -> str:
     if matches:
         return str(matches[0])
 
-    # Search inside session files for matching fork_name or session_id prefix
-    import json
-    import lzma
-
-    for session_file in sorted(
-        sessions_dir.glob("session-*.json*"), key=lambda session_file: session_file.stat().st_mtime, reverse=True
-    ):
+    for session_file in _sorted_session_files(sessions_dir):
         try:
-            if session_file.suffix == ".xz":
-                with lzma.open(session_file, "rb") as file_handle:
-                    data = json.loads(file_handle.read().decode())
-            else:
-                data = json.loads(session_file.read_text())
-
-            if data.get("fork_name") == id_or_path:
+            archive_payload = _read_session_archive(session_file)
+            if archive_payload.get("fork_name") == id_or_path:
                 return str(session_file)
-            if data.get("session_id", "").startswith(id_or_path):
+            if archive_payload.get("session_id", "").startswith(id_or_path):
                 return str(session_file)
-        except Exception as exc:
-            print(f"Warning: skipping unreadable session file {session_file.name}: {exc}", file=sys.stderr)
+        except Exception as read_error:
+            print(f"Warning: skipping unreadable session file {session_file.name}: {read_error}", file=sys.stderr)
             continue
 
     print(f"No session found for: {id_or_path}", file=sys.stderr)
     sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# Model Calibration Functions
-# ---------------------------------------------------------------------------
-
-
 def _cmd_calibrate(model_id: str, config_path: str | None = None, force: bool = False) -> None:
     """Calibrate a model and display results."""
-    import asyncio
-    import os
-
-    # Set config path in environment BEFORE any imports
     if config_path:
         os.environ["DENDROPHIS_CONFIG"] = config_path
 
-    from dendrophis.llm.calibration import (
-        calibrate_model,
-    )
+    from dendrophis.llm.calibration import calibrate_model
 
-    async def run():
+    async def run() -> None:
         try:
             capabilities = await calibrate_model(
                 model_id=model_id,
@@ -267,11 +243,10 @@ def _cmd_calibrate(model_id: str, config_path: str | None = None, force: bool = 
             )
             print(capabilities)
 
-            # Show recommended config
-            config = capabilities.get_recommended_config()
-            if config:
+            recommended = capabilities.get_recommended_config()
+            if recommended:
                 print("\nRecommended overrides:")
-                for key, value in config.items():
+                for key, value in recommended.items():
                     if not key.startswith("_"):
                         print(f"  {key}: {value}")
         except Exception as error:
@@ -284,10 +259,6 @@ def _cmd_calibrate(model_id: str, config_path: str | None = None, force: bool = 
 
 def _cmd_list_models(config_path: str | None = None) -> None:
     """List available models from the provider."""
-    import asyncio
-    import os
-
-    # Set config path in environment BEFORE any imports
     if config_path:
         os.environ["DENDROPHIS_CONFIG"] = config_path
 
@@ -299,7 +270,7 @@ def _cmd_list_models(config_path: str | None = None) -> None:
 
     store = ModelOverrideStore()
 
-    async def run():
+    async def run() -> None:
         try:
             models = await list_available_models()
             print(format_model_list(models, store))
@@ -313,16 +284,10 @@ def _cmd_list_models(config_path: str | None = None) -> None:
 
 def _cmd_model_info(model_id: str, config_path: str | None = None) -> None:
     """Show detailed info for a calibrated model."""
-    import os
-
-    # Set config path in environment BEFORE any imports
     if config_path:
         os.environ["DENDROPHIS_CONFIG"] = config_path
 
-    from dendrophis.llm.calibration import (
-        ModelOverrideStore,
-        format_model_info,
-    )
+    from dendrophis.llm.calibration import ModelOverrideStore, format_model_info
 
     store = ModelOverrideStore()
     print(format_model_info(model_id, store))
@@ -330,27 +295,16 @@ def _cmd_model_info(model_id: str, config_path: str | None = None) -> None:
 
 def _cmd_model_config(model_id: str, config_path: str | None = None) -> None:
     """Show recommended config for a model."""
-    import os
-
-    # Set config path in environment BEFORE any imports
     if config_path:
         os.environ["DENDROPHIS_CONFIG"] = config_path
 
-    from dendrophis.llm.calibration import (
-        ModelOverrideStore,
-        format_recommended_config,
-    )
+    from dendrophis.llm.calibration import ModelOverrideStore, format_recommended_config
 
     store = ModelOverrideStore()
     print(format_recommended_config(model_id, store))
 
 
 def _setup_exception_log() -> None:
-    import logging
-    from pathlib import Path
-
-    from dendrophis.utils import ensure_secure_dir, ensure_secure_file
-
     log_path = Path.home() / ".config" / "dendrophis" / "exceptions.log"
     ensure_secure_dir(log_path.parent)
     handler = logging.FileHandler(log_path)
@@ -367,11 +321,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.config:
-        import os
-
         os.environ["DENDROPHIS_CONFIG"] = str(args.config)
 
-    # Handle calibration/list commands first (they don't need full UI)
     if args.calibrate:
         _cmd_calibrate(args.calibrate, config_path=args.config, force=args.force)
         sys.exit(0)
@@ -408,14 +359,12 @@ def main() -> None:
     if args.model:
         loader.config.llm.model = args.model
 
-    # Set up tool logging if --debug or --log flag is provided
     if args.debug or args.log:
-        import os
-
         os.environ["DENDROPHIS_TOOL_LOG"] = "1"
-        print("🔍 Tool execution logging enabled - check tool_log.txt")
+        if args.debug:
+            logging.root.setLevel(logging.DEBUG)
+        print("🔍 Tool execution logging enabled - check tool_log_<session_id>.txt")
 
-    # Set parallel tools config based on --no-parallel-tools flag
     if args.no_parallel_tools:
         loader.config.tools.parallel_tools = False
         print("🔧 Parallel tool execution disabled")

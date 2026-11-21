@@ -27,12 +27,14 @@ from dendrophis.events import (
     ContextUpdatedEvent,
     EventBus,
     ModelSwitchedEvent,
+    PrimerLoadedEvent,
+    SessionResetEvent,
     StatsUpdatedEvent,
     get_event_bus,
 )
 from dendrophis.llm.client import LLMClient, ModelInfo
 from dendrophis.llm.compactor import compact
-from dendrophis.llm.models import supports_prompt_cache_key_by_id
+from dendrophis.llm.models import supports_caching_by_id, supports_prompt_cache_key_by_id
 from dendrophis.memory.memory import MemoryStore
 from dendrophis.session.chat import ChatOrchestrator, SessionStats
 from dendrophis.session.events import SessionEventHandler
@@ -303,6 +305,8 @@ class Session:
         self.session_id = uuid.uuid4().hex
         self.parent_session_id = previous_session_id
         self._session_file = None
+        if self._chat:
+            self._chat.session_id = self.session_id
 
         if supports_prompt_cache_key_by_id(self.config.llm.model):
             self.config.llm.prompt_cache_key = f"dendrophis-{self.session_id[:16]}"
@@ -321,14 +325,16 @@ class Session:
         Returns:
             Dict with info about loaded session, or None if loading failed.
         """
-        info, session_id, session_file = self._persister.load(path, as_fork=fork)
-        if info:
+        loaded_summary, session_id, session_file = self._persister.load(path, as_fork=fork)
+        if loaded_summary:
             self.session_id = session_id
+            if self._chat:
+                self._chat.session_id = session_id
             self._session_file = session_file
-            self.fork_name = info.get("fork_name")
-            self.parent_session_id = info.get("parent_session_id")
+            self.fork_name = loaded_summary.get("fork_name")
+            self.parent_session_id = loaded_summary.get("parent_session_id")
             # Update LLM config with loaded model
-            if info.get("model"):
+            if loaded_summary.get("model"):
                 self.llm._config = self.config.llm
             # Emit events for UI to refresh
             self._emit(
@@ -349,7 +355,7 @@ class Session:
                     cached_tokens=self.stats.cached_tokens,
                 )
             )
-        return info
+        return loaded_summary
 
     # =========================================================================
     # Context Compaction (Delegated to Compactor)
@@ -425,17 +431,15 @@ class Session:
         if not self.config.caching.pr_enabled:
             return
         if self._event_bus and self._primer_manager:
-            from dendrophis.events import PrimerLoadedEvent
-
-            info = self._primer_manager.load_project_primer()
-            if info:
+            primer_summary = self._primer_manager.load_project_primer()
+            if primer_summary:
                 self._event_bus.publish(
                     PrimerLoadedEvent(
-                        project_id=info["project_id"],
-                        project_name=info["project_name"],
-                        file_count=info["file_count"],
-                        turn_count=info.get("turn_count", 0),
-                        understanding=info.get("understanding", ""),
+                        project_id=primer_summary["project_id"],
+                        project_name=primer_summary["project_name"],
+                        file_count=primer_summary["file_count"],
+                        turn_count=primer_summary.get("turn_count", 0),
+                        understanding=primer_summary.get("understanding", ""),
                     )
                 )
             else:
@@ -453,11 +457,6 @@ class Session:
     # Configuration & Cleanup
     def reset(self) -> None:
         """Synchronously reset the session context, stats, and understanding detector."""
-        import uuid
-
-        from dendrophis.events import SessionResetRequest
-        from dendrophis.llm.models import supports_caching_by_id, supports_prompt_cache_key_by_id
-
         self.context.reset()
         self.stats.reset()
         self._understanding_detector.reset()
@@ -468,7 +467,7 @@ class Session:
         if supports_prompt_cache_key_by_id(self.config.llm.model):
             self.config.llm.prompt_cache_key = f"dendrophis-{uuid.uuid4().hex[:16]}"
 
-        self._emit(SessionResetRequest())
+        self._emit(SessionResetEvent())
 
     def reload_config(self) -> None:
         """Re-read config from disk and reinitialise the LLM client."""
@@ -483,19 +482,32 @@ class Session:
         self._retired_llm_clients.append(self.llm)
         self.llm = new_llm
         self.context._config = self.config
+        self._understanding_detector.min_turns_before_established = (
+            self.config.caching.tier2_project_understanding_min_turns
+        )
         if self._chat:
             self._chat.llm = new_llm
             self._chat.config = self.config
+        if self._tool_executor_session is not None:
+            self._tool_executor_session._config = self.config
+        if self._persister is not None:
+            self._persister._config = self.config
         if self._event_handler:
             self._event_handler._llm = new_llm
         if self._subagent_bootstrapper:
-            self._subagent_bootstrapper._llm_client = new_llm
-            self._subagent_bootstrapper._config = self.config
+            self._subagent_bootstrapper.update_runtime(new_llm, self.config)
 
         if getattr(self, "mcp_manager", None):
-            sync_task = asyncio.create_task(self.mcp_manager.sync_servers())
-            self._mcp_sync_task = sync_task
-            sync_task.add_done_callback(self._on_mcp_sync_done)
+            if hasattr(self.mcp_manager, "config"):
+                self.mcp_manager.config = self.config
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            if running_loop is not None:
+                sync_task = running_loop.create_task(self.mcp_manager.sync_servers())
+                self._mcp_sync_task = sync_task
+                sync_task.add_done_callback(self._on_mcp_sync_done)
 
         self._emit(ConfigReloadedEvent())
 

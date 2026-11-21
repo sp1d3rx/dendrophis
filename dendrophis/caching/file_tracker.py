@@ -41,10 +41,17 @@ class FileBlockTracker:
         """Register a file read at current turn."""
         content_hash = _hash_content(content)
 
-        # If same file, update stability counter; else reset
         if path in self._files:
-            self._files[path].turns_stable += 1
-            self._files[path].message_index = message_index
+            existing_block = self._files[path]
+            if existing_block.content_hash == content_hash:
+                existing_block.turns_stable += 1
+                existing_block.message_index = message_index
+            else:
+                existing_block.content_hash = content_hash
+                existing_block.turn_added = turn
+                existing_block.turns_stable = 0
+                existing_block.cached = False
+                existing_block.message_index = message_index
         else:
             self._files[path] = FileBlock(
                 path=path,

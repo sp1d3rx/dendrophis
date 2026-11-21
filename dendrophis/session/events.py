@@ -192,6 +192,8 @@ class SessionEventHandler:
             self._config_loader._raw["llm"] = {}
         self._config_loader._raw["llm"][event.key] = event.value
         self._config_loader.save()
+        self._session.config = self._config_loader.config
+        self._llm._config = self._config_loader.config.llm
 
     @listen
     def _on_cancel_streaming_request(self, event: CancelStreamingRequest) -> None:

@@ -88,6 +88,16 @@ class SubagentBootstrapper:
         # Register executor globally for tools to access
         set_session_executor(self._executor)
 
+    def update_runtime(self, llm_client: LLMClient, config: DendrophisConfig) -> None:
+        """Refresh the shared LLM client and config across all registered subagent handlers."""
+        self._llm_client = llm_client
+        self._config = config
+        for handler in self._handlers:
+            if hasattr(handler, "_llm_client"):
+                handler._llm_client = llm_client
+            if hasattr(handler, "_config"):
+                handler._config = config
+
     async def aclose(self) -> None:
         """Release LLM clients owned by handlers created in initialize().
 
@@ -117,14 +127,16 @@ class SubagentBootstrapper:
             context=context or {},
         )
 
-        if result.success and result.response:
+        has_valid_response = result.response is not None and (
+            result.success or result.response.status == "needs_clarification"
+        )
+        if has_valid_response and result.response is not None:
             response = {
                 "success": True,
                 "agent": agent,
                 "status": result.response.status,
                 "result": result.response.result,
             }
-            # Pass clarification questions through if present
             if result.response.clarification:
                 response["clarification"] = result.response.clarification
             return response

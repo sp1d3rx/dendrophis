@@ -245,6 +245,33 @@ def test_class_binding():
     assert len(bus._sorted_handlers(DummyEvent)) == 0
 
 
+def test_subclass_cache_invalidated_when_base_class_subscribed() -> None:
+    """Subscribing to a base event after publishing a derived event must invalidate the derived cache."""
+    bus = EventBus()
+
+    @dataclass
+    class ParentEvent:
+        number: int
+
+    @dataclass
+    class ChildEvent(ParentEvent):
+        label: str = ""
+
+    child_values: list[int] = []
+    parent_values: list[int] = []
+
+    bus.subscribe(ChildEvent, lambda event: child_values.append(event.number))
+    assert len(bus._sorted_handlers(ChildEvent)) == 1
+
+    # Subscribe to ParentEvent AFTER ChildEvent cache was already populated
+    parent_sub = bus.subscribe(ParentEvent, lambda event: parent_values.append(event.number))
+    assert len(bus._sorted_handlers(ChildEvent)) == 2
+
+    parent_sub.unsubscribe()
+    assert len(bus._sorted_handlers(ChildEvent)) == 1
+    bus.shutdown()
+
+
 if __name__ == "__main__":
     test_basic_publish_subscribe()
     test_multiple_subscribers()
