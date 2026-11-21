@@ -25,7 +25,7 @@ class RipgrepTool(BaseTool):
         return (
             "Search file contents using ripgrep (rg). "
             "PREFERRED over 'bash' for searching code as it is faster and handles common ignore patterns. "
-            "Returns matching file paths with line numbers and context."
+            "Returns matching file paths with line numbers."
         )
 
     @property
@@ -54,19 +54,19 @@ class RipgrepTool(BaseTool):
 
     async def execute(self, pattern: str, path: str | None = None, include: str | None = None) -> dict[str, Any]:
         try:
-            search_path = Path(path) if path else Path.cwd()
-            if not search_path.exists():
-                return {"error": f"Path does not exist: {path}"}
-
             if path is not None:
                 error_message = is_blocked_path(path)
                 if error_message:
                     return {"error": error_message}
 
-            cmd = ["rg", "--json", "--line-number", "--max-count", "5", "-C", "2"]
+            search_path = Path(path) if path else Path.cwd()
+            if not search_path.exists():
+                return {"error": f"Path does not exist: {path}"}
+
+            cmd = ["rg", "--json", "--line-number", "--max-count", "5"]
             if include:
                 cmd.extend(["-g", include])
-            cmd.extend([pattern, str(search_path)])
+            cmd.extend(["-e", pattern, "--", str(search_path)])
 
             result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=30.0)
 
@@ -76,23 +76,24 @@ class RipgrepTool(BaseTool):
                     "stderr": result.stderr[:500],
                 }
 
-            matches_by_file: dict[str, list[dict]] = {}
+            current_working_directory = Path.cwd().resolve()
+            matches_by_file: dict[str, list[dict[str, Any]]] = {}
             for line in result.stdout.splitlines():
                 if not line:
                     continue
                 try:
-                    data = json.loads(line)
-                    if data.get("type") == "match":
-                        file_path = data["data"]["path"]["text"]
+                    event_payload = json.loads(line)
+                    if event_payload.get("type") == "match":
+                        match_payload = event_payload["data"]
+                        file_path = match_payload["path"]["text"]
                         try:
                             file_path_absolute = Path(file_path).resolve()
-                            current_working_directory = Path.cwd().resolve()
                             if file_path_absolute.is_relative_to(current_working_directory):
                                 file_path = str(file_path_absolute.relative_to(current_working_directory))
-                        except Exception:
+                        except OSError:
                             pass
-                        line_num = data["data"]["line_number"]
-                        lines_data = data["data"].get("lines", {})
+                        line_num = match_payload["line_number"]
+                        lines_data = match_payload.get("lines", {})
                         text = lines_data.get("text", "")
 
                         if file_path not in matches_by_file:

@@ -1,5 +1,7 @@
 """Subagent handlers — actual implementations."""
 
+from __future__ import annotations
+
 from .code_reviewer import CodeReviewerHandler
 from .code_reviewer import execute as code_reviewer_execute
 from .code_writer import CodeWriterHandler

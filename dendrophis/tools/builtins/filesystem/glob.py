@@ -3,12 +3,55 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
+import os
 from pathlib import Path
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
 from dendrophis.tools.builtins.filesystem.utils import is_blocked_path
 from dendrophis.tools.names import ToolName
+
+_EXCLUDED_DIRS = frozenset(
+    {
+        ".venv",
+        "__pycache__",
+        ".git",
+        "node_modules",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+    }
+)
+_MAX_GLOB_RESULTS = 500
+
+
+def _is_excluded_dir(dirname: str) -> bool:
+    return dirname in _EXCLUDED_DIRS or dirname.startswith(".venv") or dirname.endswith(".egg-info")
+
+
+def _matches_glob(relative_posix: str, filename: str, pattern: str) -> bool:
+    """Match a POSIX relative path against standard glob/rglob patterns."""
+    normalized = pattern.lstrip("./")
+    if not normalized:
+        return True
+    if normalized.startswith("**/"):
+        sub_pattern = normalized[3:]
+        if "/" not in sub_pattern:
+            return fnmatch.fnmatchcase(filename, sub_pattern)
+        return fnmatch.fnmatchcase(relative_posix, sub_pattern) or fnmatch.fnmatchcase(
+            relative_posix, f"*/{sub_pattern}"
+        )
+    if "**/" in normalized:
+        prefix, suffix = normalized.split("**/", 1)
+        if fnmatch.fnmatchcase(relative_posix, f"{prefix}{suffix}"):
+            return True
+        return fnmatch.fnmatchcase(relative_posix, f"{prefix}*/{suffix}")
+    if "/" not in normalized:
+        # Path.rglob("*.py") matches at any depth; preserve that behavior.
+        return fnmatch.fnmatchcase(filename, normalized) or fnmatch.fnmatchcase(relative_posix, normalized)
+    return fnmatch.fnmatchcase(relative_posix, normalized)
 
 
 class GlobTool(BaseTool):
@@ -41,67 +84,44 @@ class GlobTool(BaseTool):
 
     async def execute(self, pattern: str, path: str | None = None) -> dict[str, Any]:
         try:
-            search_path = Path(path) if path else Path.cwd()
-            if not search_path.exists():
-                return {"error": f"Path does not exist: {path}"}
-
-            # Apply shared guard to search_path if explicitly provided
             if path is not None:
                 error_message = is_blocked_path(path)
                 if error_message:
                     return {"error": error_message}
 
-            EXCLUDED_DIRS = {
-                ".venv",
-                "__pycache__",
-                ".git",
-                "node_modules",
-                ".pytest_cache",
-                ".ruff_cache",
-                "dist",
-                "build",
-                ".egg-info",
-            }
+            search_path = Path(path) if path else Path.cwd()
+            if not search_path.exists():
+                return {"error": f"Path does not exist: {path}"}
 
-            def should_include(path_obj: Path) -> bool:
-                try:
-                    if not path_obj.is_file():
-                        return False
-                    # Check if any parent directory should be excluded
-                    for part in path_obj.parts:
-                        if part in EXCLUDED_DIRS:
-                            return False
-                        if part.startswith(".venv"):
-                            return False
-                    # Check if the file itself exists and is readable
-                    path_obj.stat()
-                    return True
-                except (PermissionError, FileNotFoundError, OSError):
-                    return False
-
-            # Run rglob in a thread as it can be slow on large trees
-            def _find_matches():
-                results = [path_entry for path_entry in search_path.rglob(pattern) if should_include(path_entry)]
-
-                # Sort by mtime, ignoring files that might disappear during sorting
-                def _safe_mtime(path_entry_to_check):
-                    try:
-                        return path_entry_to_check.stat().st_mtime
-                    except (OSError, FileNotFoundError):
-                        return 0
-
-                results.sort(key=_safe_mtime, reverse=True)
-
-                relative_paths = []
+            def _find_matches() -> list[str]:
+                matched_with_mtime: list[tuple[float, Path]] = []
+                search_root = search_path.resolve()
                 current_working_directory = Path.cwd().resolve()
-                for path_entry in results:
-                    try:
-                        path_entry_absolute = path_entry.resolve()
-                        if path_entry_absolute.is_relative_to(current_working_directory):
-                            relative_paths.append(str(path_entry_absolute.relative_to(current_working_directory)))
-                        else:
-                            relative_paths.append(str(path_entry))
-                    except Exception:
+
+                for root_dir, dirnames, filenames in os.walk(search_root):
+                    # Prune excluded directories in-place so .venv / .git / node_modules are never traversed.
+                    dirnames[:] = [dirname for dirname in dirnames if not _is_excluded_dir(dirname)]
+                    root_path = Path(root_dir)
+                    for filename in filenames:
+                        candidate_path = root_path / filename
+                        try:
+                            relative_posix = candidate_path.relative_to(search_root).as_posix()
+                        except ValueError:
+                            continue
+                        if not _matches_glob(relative_posix, filename, pattern):
+                            continue
+                        try:
+                            mtime = candidate_path.stat().st_mtime
+                        except OSError:
+                            continue
+                        matched_with_mtime.append((mtime, candidate_path))
+
+                matched_with_mtime.sort(key=lambda pair: pair[0], reverse=True)
+                relative_paths: list[str] = []
+                for _mtime, path_entry in matched_with_mtime[:_MAX_GLOB_RESULTS]:
+                    if path_entry.is_relative_to(current_working_directory):
+                        relative_paths.append(str(path_entry.relative_to(current_working_directory)))
+                    else:
                         relative_paths.append(str(path_entry))
                 return relative_paths
 

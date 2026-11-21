@@ -8,10 +8,13 @@ import subprocess
 from typing import Any
 
 from dendrophis.tools.base import BaseTool
+from dendrophis.tools.bash_sandbox import BashSandbox
 from dendrophis.tools.names import ToolName
 
 # Matches /dev/null so it can be ignored by the /dev/* block check.
 _NULL_REDIRECT = re.compile(r"/dev/null\b")
+# Matches actual root /dev or /dev/... references, not relative paths like tests/dev/foo.py.
+_DEV_PATH_PATTERN = re.compile(r"(?:^|[\s><=|;&('\"])/dev(?:/|$|\s|['\"])")
 
 
 class BashTool(BaseTool):
@@ -66,7 +69,9 @@ class BashTool(BaseTool):
         }
 
     def execution_timeout(self, arguments: dict[str, Any]) -> float | None:
-        return max(1.0, float(arguments.get("timeout", 120000)) / 1000.0)
+        raw_timeout = arguments.get("timeout") if isinstance(arguments, dict) else None
+        timeout_ms = raw_timeout if isinstance(raw_timeout, (int, float)) and raw_timeout > 0 else 120000
+        return max(1.0, float(timeout_ms) / 1000.0)
 
     async def execute(
         self,
@@ -78,15 +83,12 @@ class BashTool(BaseTool):
         try:
             simulation = self._precomputed_simulations.pop(command, None)
             if simulation is None:
-                from dendrophis.tools.bash_sandbox import BashSandbox
-
                 simulation = BashSandbox().simulate(command)
             if simulation.dangerous:
                 return {"error": f"Dangerous command blocked: {simulation.reason}"}
 
-            # Reject commands that touch /dev/* (except the harmless /dev/null sink)
             stripped = _NULL_REDIRECT.sub("", command)
-            if "/dev/" in stripped or stripped.startswith("/dev"):
+            if _DEV_PATH_PATTERN.search(stripped):
                 return {
                     "error": (
                         f"Access to /dev blocked in command: {command}. "
@@ -95,7 +97,8 @@ class BashTool(BaseTool):
                     )
                 }
 
-            timeout_seconds = timeout / 1000
+            effective_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else 120000
+            timeout_seconds = effective_timeout / 1000
             result = await asyncio.to_thread(
                 subprocess.run,
                 command,

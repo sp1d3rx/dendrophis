@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,8 @@ from dendrophis.tools.base import BaseTool
 from dendrophis.tools.builtins.filesystem.utils import (
     backup_existing_file,
     is_blocked_path,
+    remove_backup_file,
+    restore_backup_file,
     run_auto_lint,
     try_unescape,
 )
@@ -31,8 +34,7 @@ class EditTool(BaseTool):
             "make the match 100% unique. IMPORTANT: Use ACTUAL raw characters "
             "(including literal newlines). Do NOT use escaped representations like "
             "'\\\\n' or '\\\\\\\\n' in your tool calls; the match is performed against "
-            "the raw file bytes. "
-            "A .bak backup is automatically created before modification."
+            "the raw file bytes."
         )
 
     @property
@@ -60,6 +62,7 @@ class EditTool(BaseTool):
         }
 
     async def execute(self, file_path: str, old_string: str, new_string: str) -> dict[str, Any]:
+        backup_path: Path | None = None
         try:
             error_message = is_blocked_path(file_path)
             if error_message:
@@ -91,8 +94,6 @@ class EditTool(BaseTool):
 
             new_content = content.replace(old_string, new_string, 1)
 
-            import difflib
-
             diff_lines = list(
                 difflib.unified_diff(
                     content.splitlines(keepends=True),
@@ -106,8 +107,12 @@ class EditTool(BaseTool):
                 1 for diff_line in diff_lines if diff_line.startswith("-") and not diff_line.startswith("---")
             )
 
-            await asyncio.to_thread(backup_existing_file, path)
-            await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
+            backup_path = await asyncio.to_thread(backup_existing_file, path)
+            try:
+                await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
+            except Exception:
+                await asyncio.to_thread(restore_backup_file, backup_path, path)
+                raise
 
             # Run auto-linting
             lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
@@ -125,3 +130,5 @@ class EditTool(BaseTool):
             return result
         except Exception as exception_error:
             return {"error": str(exception_error)}
+        finally:
+            await asyncio.to_thread(remove_backup_file, backup_path)

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from dendrophis.events.types import WriteApprovalEvent, WriteProposalEvent
 from dendrophis.tools.builtins.filesystem import WriteTool
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -26,10 +27,13 @@ class InteractiveWriteTool(InteractiveBaseTool):
 
     async def execute(self, file_path: str, content: str) -> dict[str, Any]:
         try:
+            error_message = is_blocked_path(file_path)
+            if error_message:
+                return {"error": error_message}
+
             if self.silent:
                 return await self._base_tool.execute(file_path=file_path, content=content)
 
-            # Propose via event bus and wait for human approval
             request_id = str(uuid.uuid4())
             proposal_event = WriteProposalEvent(
                 request_id=request_id,

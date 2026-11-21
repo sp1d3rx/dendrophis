@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import io
+from pathlib import Path
 from typing import Any
 
 import ruamel.yaml as yaml
 
 from dendrophis.tools.base import BaseTool
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path
+from dendrophis.tools.names import ToolName
 
 
 class FunctionAnalyzerTool(BaseTool):
@@ -16,7 +21,7 @@ class FunctionAnalyzerTool(BaseTool):
     @property
     def name(self) -> str:
         """The unique name of the tool."""
-        return "analyze_functions"
+        return ToolName.ANALYZE_FUNCTIONS
 
     @property
     def description(self) -> str:
@@ -46,27 +51,22 @@ class FunctionAnalyzerTool(BaseTool):
         if not file_path:
             raise ValueError("file_path parameter is required")
 
-        try:
-            # Read the file content
-            with open(file_path, encoding="utf-8") as f:
-                content = f.read()
+        error_message = is_blocked_path(file_path)
+        if error_message:
+            return {"error": error_message}
 
-            # Parse the AST
+        try:
+            target_path = Path(file_path)
+            content = await asyncio.to_thread(target_path.read_text, encoding="utf-8")
+            source_lines = content.splitlines()
             tree = ast.parse(content, filename=file_path)
 
-            # Find all function definitions
             functions = []
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    # Get the start line (line number of the 'def' statement)
                     start_line = node.lineno
-
-                    # Get the end line (last line of the function body)
                     end_line = node.end_lineno if node.end_lineno else node.lineno
-
-                    # Calculate indent level from the source code
-                    lines = content.splitlines()
-                    def_line = lines[start_line - 1]  # lineno is 1-indexed
+                    def_line = source_lines[start_line - 1]
                     indent_level = len(def_line) - len(def_line.lstrip())
 
                     functions.append(
@@ -78,15 +78,11 @@ class FunctionAnalyzerTool(BaseTool):
                         }
                     )
 
-            # Sort by line number for consistent output
-            functions.sort(key=lambda x: x["start_line"])
+            functions.sort(key=lambda function_info: function_info["start_line"])
 
-            # Return in requested format
             if output_format == "yaml":
                 yaml_instance = yaml.YAML()
                 yaml_instance.default_flow_style = False
-                import io
-
                 stream = io.StringIO()
                 yaml_instance.dump(functions, stream)
                 return stream.getvalue()
@@ -97,8 +93,7 @@ class FunctionAnalyzerTool(BaseTool):
         except SyntaxError as syntax_error:
             raise SyntaxError(f"Syntax error in file {file_path}: {syntax_error!s}") from syntax_error
         except Exception as analysis_error:
-            raise Exception(f"Error analyzing file {file_path}: {analysis_error!s}") from analysis_error
+            raise RuntimeError(f"Error analyzing file {file_path}: {analysis_error!s}") from analysis_error
 
 
-# Create an instance to be imported
 analyze_functions = FunctionAnalyzerTool()

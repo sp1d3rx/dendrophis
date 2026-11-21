@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from dendrophis.events import MultipleChoiceRequestEvent, MultipleChoiceResponseEvent
 from dendrophis.tools.base import BaseTool
+from dendrophis.tools.names import ToolName
 
 if TYPE_CHECKING:
     from dendrophis.events.protocol import IEventBus
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 class AskMultipleChoiceTool(BaseTool):
     """Tool to ask the user a multiple choice question."""
 
+    USER_RESPONSE_TIMEOUT_SECONDS = 300.0
+
     def __init__(self, event_bus: IEventBus) -> None:
         self._event_bus = event_bus
 
@@ -23,9 +26,12 @@ class AskMultipleChoiceTool(BaseTool):
     def permission_controlled(self) -> bool:
         return False
 
+    def execution_timeout(self, arguments: dict[str, Any]) -> float | None:
+        return self.USER_RESPONSE_TIMEOUT_SECONDS
+
     @property
     def name(self) -> str:
-        return "ask_multiple_choice"
+        return ToolName.ASK_MULTIPLE_CHOICE
 
     @property
     def description(self) -> str:
@@ -55,18 +61,16 @@ class AskMultipleChoiceTool(BaseTool):
             return {"error": "Options list cannot be empty"}
 
         request_id = str(uuid.uuid4())
-        future: asyncio.Future[str | None] = asyncio.Future()
+        running_loop = asyncio.get_running_loop()
+        future: asyncio.Future[str | None] = running_loop.create_future()
 
         def _on_response(event: MultipleChoiceResponseEvent) -> None:
             if event.request_id == request_id and not future.done():
-                # Run in event loop thread
-                loop = asyncio.get_running_loop()
-                loop.call_soon_threadsafe(future.set_result, event.selected_option)
+                running_loop.call_soon_threadsafe(future.set_result, event.selected_option)
 
         self._event_bus.subscribe(MultipleChoiceResponseEvent, _on_response)
 
         try:
-            # Publish request
             self._event_bus.publish(
                 MultipleChoiceRequestEvent(
                     request_id=request_id,
@@ -75,7 +79,6 @@ class AskMultipleChoiceTool(BaseTool):
                 )
             )
 
-            # Wait for response (no timeout, wait for user)
             selected = await future
 
             if selected is None:

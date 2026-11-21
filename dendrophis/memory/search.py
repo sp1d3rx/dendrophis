@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import datetime
 from typing import TYPE_CHECKING
+
+import numpy as np
 
 from dendrophis.memory.memory import MemoryStore, _blob_to_vector
 from dendrophis.memory.models import MemorySearchResult
@@ -33,67 +36,53 @@ class MemorySearcher:
         min_score: float = 0.0,
         project_ids: list[str] | None = None,
     ) -> list[MemorySearchResult]:
-        """Search memories for a query.
-
-        Uses a hybrid approach:
-        1. If spaCy model is available: vector similarity (cosine)
-        2. Always: ngram token overlap as fallback/complement
-        3. Tag filtering applied first to narrow the candidate set
-        4. Final score = weighted blend of vector + ngram + recency + usage score
-
-        ``project_id`` filters for one exact project; ``project_ids`` filters
-        for a set of scopes (e.g. current project + global tier).
-
-        Returns top-k results sorted by relevance.
-        """
-        # Step 1: Get candidate memories (filtered by tag/project/source)
+        """Search memories for a query using hybrid vector + ngram + recency + usage scoring."""
         candidates = self._store.list_memories(
             project_id=project_id,
             source=source,
             tag=tag,
-            limit=500,  # generous candidate set
+            limit=500,
             project_ids=project_ids,
         )
 
         if not candidates:
             return []
 
-        # Step 2: Compute query embedding if available
         query_vec = self._store.compute_embedding(query)
+        query_norm = float(np.linalg.norm(query_vec)) if query_vec is not None else 0.0
 
-        # Step 3: Score each candidate
+        query_tokens = re.findall(r"[a-z0-9]+", query.lower())
+        ngram_size = 1 if len(query_tokens) < 2 else 2
+        query_ngrams = Counter(self._tokens_to_ngrams(query_tokens, ngram_size))
+        reference_now = datetime.now()
+
         scored: list[tuple[float, MemoryEntry, str]] = []
         for entry in candidates:
-            # Vector score
             vec_score = 0.0
-            if query_vec is not None and entry.embedding_blob is not None:
+            has_matching_vector = False
+            if query_vec is not None and query_norm > 0 and entry.embedding_blob is not None:
                 entry_vec = _blob_to_vector(entry.embedding_blob)
-                vec_score = self._store.cosine_similarity(query_vec, entry_vec)
+                if entry_vec.shape == query_vec.shape:
+                    has_matching_vector = True
+                    entry_norm = float(np.linalg.norm(entry_vec))
+                    if entry_norm > 0:
+                        vec_score = float(np.dot(query_vec, entry_vec) / (query_norm * entry_norm))
 
-            # Ngram score
-            ngram_score = self._ngram_similarity(query, entry.content)
+            ngram_score = self._ngram_similarity_with_counter(query_ngrams, entry.content, ngram_size)
+            recency_score = self._recency_score(entry.created_at, now=reference_now)
+            usage_score = min(entry.score / 10.0, 1.0)
 
-            # Recency bonus (exponential decay, half-life ~30 days)
-            recency_score = self._recency_score(entry.created_at)
-
-            # Usage score (boost frequently-referenced memories)
-            usage_score = min(entry.score / 10.0, 1.0)  # cap at 1.0
-
-            # Hybrid blend
-            if query_vec is not None and entry.embedding_blob is not None:
-                # Vector-heavy when embeddings available (90% match relevance, 10% context)
+            if has_matching_vector:
                 final_score = 0.70 * vec_score + 0.20 * ngram_score + 0.05 * recency_score + 0.05 * usage_score
                 method = "hybrid"
             else:
-                # Ngram-only fallback (90% match relevance, 10% context)
                 final_score = 0.90 * ngram_score + 0.07 * recency_score + 0.03 * usage_score
                 method = "ngram"
 
             if final_score >= min_score:
                 scored.append((final_score, entry, method))
 
-        # Step 4: Sort by score descending, return top-k
-        scored.sort(key=lambda x: x[0], reverse=True)
+        scored.sort(key=lambda scored_tuple: scored_tuple[0], reverse=True)
         return [
             MemorySearchResult(memory=entry, score=round(score, 4), method=method)
             for score, entry, method in scored[:limit]
@@ -116,14 +105,15 @@ class MemorySearcher:
         if not candidates:
             return []
 
+        reference_now = datetime.now()
         scored: list[tuple[float, MemoryEntry]] = []
         for entry in candidates:
-            recency = self._recency_score(entry.created_at)
+            recency = self._recency_score(entry.created_at, now=reference_now)
             usage = min(entry.score / 10.0, 1.0)
             final = 0.6 * recency + 0.4 * usage
             scored.append((final, entry))
 
-        scored.sort(key=lambda x: x[0], reverse=True)
+        scored.sort(key=lambda scored_tuple: scored_tuple[0], reverse=True)
         return [
             MemorySearchResult(memory=entry, score=round(score, 4), method="tag") for score, entry in scored[:limit]
         ]
@@ -145,56 +135,53 @@ class MemorySearcher:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _ngram_similarity(query: str, content: str, n: int = 2) -> float:
-        """Compute n-gram overlap similarity between query and content.
-
-        Uses Jaccard-like normalization: intersection / union of n-gram sets.
-        """
-        # If the query is shorter than n, fall back to unigrams (n=1) for both
+    def _ngram_similarity(query: str, content: str, ngram_size: int = 2) -> float:
+        """Compute n-gram overlap similarity between query and content."""
         query_tokens = re.findall(r"[a-z0-9]+", query.lower())
-        actual_n = n
-        if len(query_tokens) < n:
-            actual_n = 1
+        actual_size = 1 if len(query_tokens) < ngram_size else ngram_size
+        query_ngrams = Counter(MemorySearcher._tokens_to_ngrams(query_tokens, actual_size))
+        return MemorySearcher._ngram_similarity_with_counter(query_ngrams, content, actual_size)
 
-        query_ngrams = Counter(MemorySearcher._token_ngrams(query, actual_n))
-        content_ngrams = Counter(MemorySearcher._token_ngrams(content, actual_n))
-
-        if not query_ngrams or not content_ngrams:
+    @staticmethod
+    def _ngram_similarity_with_counter(query_ngrams: Counter[str], content: str, ngram_size: int) -> float:
+        if not query_ngrams:
             return 0.0
-
-        # Intersection over union (Jaccard)
+        content_ngrams = Counter(MemorySearcher._token_ngrams(content, ngram_size))
+        if not content_ngrams:
+            return 0.0
         intersection = sum((query_ngrams & content_ngrams).values())
         union = sum((query_ngrams | content_ngrams).values())
         if union == 0:
             return 0.0
-
         return intersection / union
 
     @staticmethod
-    def _token_ngrams(text: str, n: int) -> list[str]:
-        """Extract n-grams from text (lowercased, alphanumeric tokens)."""
-        tokens = re.findall(r"[a-z0-9]+", text.lower())
-        if len(tokens) < n:
+    def _tokens_to_ngrams(tokens: list[str], ngram_size: int) -> list[str]:
+        if len(tokens) < ngram_size:
             return tokens
-        return [" ".join(tokens[i : i + n]) for i in range(len(tokens) - n + 1)]
+        return [
+            " ".join(tokens[start_idx : start_idx + ngram_size]) for start_idx in range(len(tokens) - ngram_size + 1)
+        ]
 
     @staticmethod
-    def _recency_score(created_at: str) -> float:
-        """Compute recency score (0..1) with exponential decay.
+    def _token_ngrams(text: str, ngram_size: int) -> list[str]:
+        """Extract n-grams from text (lowercased, alphanumeric tokens)."""
+        tokens = re.findall(r"[a-z0-9]+", text.lower())
+        return MemorySearcher._tokens_to_ngrams(tokens, ngram_size)
 
-        Half-life of 30 days.
-        """
-        from datetime import datetime
-
+    @staticmethod
+    def _recency_score(created_at: str, now: datetime | None = None) -> float:
+        """Compute recency score (0..1) with exponential decay (half-life 30 days)."""
         try:
             created = datetime.fromisoformat(created_at)
             if created.tzinfo is not None:
                 created = created.astimezone().replace(tzinfo=None)
-            age_days = (datetime.now() - created).total_seconds() / 86400
+            current_time = now if now is not None else datetime.now()
+            age_days = (current_time - created).total_seconds() / 86400
             half_life = 30.0
             return 0.5 ** (age_days / half_life)
         except (ValueError, TypeError):
-            return 0.5  # default for unknown dates
+            return 0.5
 
     # ------------------------------------------------------------------
     # Tag autocomplete

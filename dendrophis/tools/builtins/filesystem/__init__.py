@@ -3,78 +3,27 @@
 from __future__ import annotations
 
 from dendrophis.tools.base import BaseTool
-
-try:
-    from dendrophis.tools.builtins.filesystem.bash import BashTool
-except ImportError:
-    BashTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.edit import EditTool
-except ImportError:
-    EditTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.edit_function import EditFunctionTool
-except ImportError:
-    EditFunctionTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.glob import GlobTool
-except ImportError:
-    GlobTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.list_dir import ListDirTool
-except ImportError:
-    ListDirTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.read import ReadTool
-except ImportError:
-    ReadTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.read_file import ReadFileTool
-except ImportError:
-    ReadFileTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.ripgrep import RipgrepTool
-except ImportError:
-    RipgrepTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.write import WriteTool
-except ImportError:
-    WriteTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.write_file import WriteFileTool
-except ImportError:
-    WriteFileTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.append import AppendTool
-except ImportError:
-    AppendTool = None
-
-try:
-    from dendrophis.tools.builtins.filesystem.patch import PatchTool
-except ImportError:
-    PatchTool = None
+from dendrophis.tools.builtins.filesystem.append import AppendTool
+from dendrophis.tools.builtins.filesystem.bash import BashTool
+from dendrophis.tools.builtins.filesystem.edit import EditTool
+from dendrophis.tools.builtins.filesystem.edit_function import EditFunctionTool
+from dendrophis.tools.builtins.filesystem.glob import GlobTool
+from dendrophis.tools.builtins.filesystem.list_dir import ListDirTool
+from dendrophis.tools.builtins.filesystem.patch import PatchTool
+from dendrophis.tools.builtins.filesystem.read import ReadTool
+from dendrophis.tools.builtins.filesystem.ripgrep import RipgrepTool
+from dendrophis.tools.builtins.filesystem.write import WriteTool
 
 __all__ = [
+    "AppendTool",
     "BashTool",
     "EditFunctionTool",
     "EditTool",
     "GlobTool",
     "ListDirTool",
     "PatchTool",
-    "ReadFileTool",
     "ReadTool",
     "RipgrepTool",
-    "WriteFileTool",
     "WriteTool",
     "get_agent_tools",
     "get_filesystem_tools",
@@ -83,45 +32,26 @@ __all__ = [
 
 def get_filesystem_tools() -> list[BaseTool]:
     """Factory to create all filesystem tool instances."""
-    filesystem_tools: list[BaseTool] = []
-    if GlobTool is not None:
-        filesystem_tools.append(GlobTool())
-    if ReadTool is not None:
-        filesystem_tools.append(ReadTool())
-    if RipgrepTool is not None:
-        filesystem_tools.append(RipgrepTool())
-    if EditTool is not None:
-        filesystem_tools.append(EditTool())
-    if BashTool is not None:
-        filesystem_tools.append(BashTool())
-    if WriteTool is not None:
-        filesystem_tools.append(WriteTool())
-    if AppendTool is not None:
-        filesystem_tools.append(AppendTool())
-    if PatchTool is not None:
-        filesystem_tools.append(PatchTool())
-    return filesystem_tools
+    return [
+        GlobTool(),
+        ReadTool(),
+        RipgrepTool(),
+        EditTool(),
+        BashTool(),
+        WriteTool(),
+        AppendTool(),
+        PatchTool(),
+    ]
 
 
 def get_agent_tools() -> list[BaseTool]:
-    """Factory to create the agent-friendly, high-level toolset."""
-    agent_tools: list[BaseTool] = []
-    if ReadFileTool is not None:
-        agent_tools.append(ReadFileTool())
-    if WriteFileTool is not None:
-        agent_tools.append(WriteFileTool())
-    if EditFunctionTool is not None:
-        agent_tools.append(EditFunctionTool())
-    if ListDirTool is not None:
-        agent_tools.append(ListDirTool())
-    if EditTool is not None:
-        agent_tools.append(EditTool())
-    if PatchTool is not None:
-        agent_tools.append(PatchTool())
-    if WriteTool is not None:
-        agent_tools.append(WriteTool())
-    if AppendTool is not None:
-        agent_tools.append(AppendTool())
-    if ReadTool is not None:
-        agent_tools.append(ReadTool())
-    return agent_tools
+    """Factory to create the subagent filesystem toolset."""
+    return [
+        ReadTool(),
+        WriteTool(),
+        EditTool(),
+        PatchTool(),
+        AppendTool(),
+        EditFunctionTool(),
+        ListDirTool(),
+    ]

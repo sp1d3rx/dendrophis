@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dendrophis.memory.models import MemorySearchResult
+from dendrophis.memory.scope import current_project_id, default_scope, scope_for_project
+from dendrophis.memory.search import MemorySearcher
 from dendrophis.tools.base import BaseTool
+from dendrophis.tools.names import ToolName
 
 if TYPE_CHECKING:
     from dendrophis.memory import MemoryStore
 
 
-# Default memory database path
 DEFAULT_MEMORY_DB = Path.home() / ".config" / "dendrophis" / "memory.db"
 
 
@@ -23,7 +27,7 @@ class SaveMemoryTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "save_memory"
+        return ToolName.SAVE_MEMORY
 
     @property
     def description(self) -> str:
@@ -63,26 +67,19 @@ class SaveMemoryTool(BaseTool):
 
     async def execute(self, content: str, tags: list[str] | None = None, project_id: str = "") -> dict[str, Any]:
         try:
-            from dendrophis.memory.scope import current_project_id
-
-            # Auto-scope to the current project unless the caller chose a scope explicitly.
-            effective_project = project_id if project_id else current_project_id()
-
-            # Compute embedding for the content
-            embedding = self._store.compute_embedding(content)
-
-            entry = self._store.save_memory(
+            effective_project = project_id if project_id else await asyncio.to_thread(current_project_id)
+            entry = await asyncio.to_thread(
+                self._store.save_memory,
                 content=content,
                 tags=tags or [],
                 source="auto",
                 project_id=effective_project,
-                embedding=embedding,
             )
             return {
                 "success": True,
                 "memory_id": entry.id,
                 "project_id": effective_project,
-                "content": content[:100] + "...",
+                "content": content[:100] + "..." if len(content) > 100 else content,
             }
         except Exception as memory_error:
             return {"error": f"Failed to save memory: {memory_error}"}
@@ -96,7 +93,7 @@ class SearchMemoryTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "search_memory"
+        return ToolName.SEARCH_MEMORY
 
     @property
     def description(self) -> str:
@@ -136,6 +133,24 @@ class SearchMemoryTool(BaseTool):
             },
         }
 
+    def _run_search(
+        self,
+        query: str | None,
+        tag: str | None,
+        project_id: str | None,
+        limit: int,
+    ) -> list[MemorySearchResult]:
+        scope = scope_for_project(project_id) if project_id else default_scope()
+        searcher = MemorySearcher(self._store)
+        if not query:
+            if tag:
+                return searcher.search_by_tag(tag=tag, limit=limit, project_ids=scope)
+            if project_id:
+                return searcher.search_by_project(project_id=project_id, limit=limit)
+            candidates = self._store.list_memories(limit=limit, project_ids=scope)
+            return [MemorySearchResult(memory=entry, score=1.0, method="list") for entry in candidates]
+        return searcher.search(query=query, limit=limit, tag=tag, project_ids=scope)
+
     async def execute(
         self,
         query: str | None = None,
@@ -144,38 +159,7 @@ class SearchMemoryTool(BaseTool):
         limit: int = 5,
     ) -> dict[str, Any]:
         try:
-            from dendrophis.memory.scope import default_scope, scope_for_project
-            from dendrophis.memory.search import MemorySearcher
-
-            # Default visibility: current project + global tier. An explicit
-            # project_id narrows to that exact scope.
-            scope = scope_for_project(project_id) if project_id else default_scope()
-
-            searcher = MemorySearcher(self._store)
-            if not query:
-                if tag:
-                    results = searcher.search_by_tag(
-                        tag=tag,
-                        limit=limit,
-                        project_ids=scope,
-                    )
-                elif project_id:
-                    results = searcher.search_by_project(
-                        project_id=project_id,
-                        limit=limit,
-                    )
-                else:
-                    from dendrophis.memory.models import MemorySearchResult
-
-                    candidates = self._store.list_memories(limit=limit, project_ids=scope)
-                    results = [MemorySearchResult(memory=entry, score=1.0, method="list") for entry in candidates]
-            else:
-                results = searcher.search(
-                    query=query,
-                    limit=limit,
-                    tag=tag,
-                    project_ids=scope,
-                )
+            results = await asyncio.to_thread(self._run_search, query, tag, project_id, limit)
             return {
                 "success": True,
                 "results": [
@@ -211,7 +195,7 @@ class DeleteMemoryTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "delete_memory"
+        return ToolName.DELETE_MEMORY
 
     @property
     def description(self) -> str:
@@ -232,7 +216,7 @@ class DeleteMemoryTool(BaseTool):
 
     async def execute(self, memory_id: str) -> dict[str, Any]:
         try:
-            success = self._store.delete_memory(memory_id)
+            success = await asyncio.to_thread(self._store.delete_memory, memory_id)
             if success:
                 return {"success": True, "memory_id": memory_id, "message": "Memory deleted successfully."}
             return {"success": False, "memory_id": memory_id, "message": "Memory not found."}
@@ -248,7 +232,7 @@ class RecallMemoryTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "recall_memory"
+        return ToolName.RECALL_MEMORY
 
     @property
     def description(self) -> str:
@@ -273,7 +257,7 @@ class RecallMemoryTool(BaseTool):
 
     async def execute(self, memory_id: str) -> dict[str, Any]:
         try:
-            entry = self._store.get_memory(memory_id)
+            entry = await asyncio.to_thread(self._store.get_memory, memory_id)
             if entry is None:
                 return {"success": False, "memory_id": memory_id, "message": "Memory not found."}
             return {

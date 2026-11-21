@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 
 from dendrophis.config.loader import ConfigLoader
 from dendrophis.config.schema import DendrophisConfig
@@ -12,6 +13,8 @@ from dendrophis.events import ErrorEvent, TextDeltaEvent
 from dendrophis.llm.client import LLMClient
 
 from ..messages import SubagentRequest, SubagentResponse
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are the Planner subagent for Dendrophis.
 
@@ -54,17 +57,15 @@ Output format:
 
 def _extract_json(text: str) -> dict | None:
     """Extract JSON from text using multiple strategies."""
-    import re
-
     text = text.strip()
 
-    # Strategy 1: Direct JSON parse
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
     except json.JSONDecodeError:
         pass
 
-    # Strategy 2: Extract from markdown code block
     patterns = [
         r"```json\s*(\{.*?\})\s*```",
         r"```\s*(\{.*?\})\s*```",
@@ -74,14 +75,13 @@ def _extract_json(text: str) -> dict | None:
         match = re.search(pattern, text, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group(1))
+                parsed = json.loads(match.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
                 pass
 
     return None
-
-
-logger = logging.getLogger(__name__)
 
 
 class PlannerHandler:
@@ -120,11 +120,7 @@ class PlannerHandler:
             return None
 
     async def aclose(self) -> None:
-        """Close LLM clients this handler created itself.
-
-        Injected clients are owned by the caller and are not closed here.
-        The owned client slot is reset so a later use recreates a fresh client.
-        """
+        """Close LLM clients this handler created itself."""
         for client in self._owned_llm_clients:
             with contextlib.suppress(Exception):
                 await client.aclose()
@@ -145,7 +141,7 @@ class PlannerHandler:
 
         task_description = request.payload.get("task", "")
         constraints = request.payload.get("constraints", {})
-        context_data = request.payload.get("context", {})
+        context_data = {**(request.context or {}), **(request.payload.get("context") or {})}
 
         user_prompt = f"""Task: {task_description}
 
@@ -189,10 +185,8 @@ Provide a plan with steps, agent assignments, dependencies, and risk assessment.
                 result={"error": "No response from LLM"},
             )
 
-        # Parse JSON response - try multiple strategies
         plan = _extract_json(response_text)
         if plan is None:
-            # Fallback: wrap raw text as single-step plan
             plan = {
                 "steps": [{"order": 1, "agent": "code-writer", "instruction": response_text[:500]}],
                 "parallel_groups": [[1]],

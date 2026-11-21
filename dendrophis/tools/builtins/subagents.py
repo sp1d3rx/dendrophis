@@ -6,12 +6,12 @@ from typing import Any
 
 from dendrophis.subagents import get_session_executor
 from dendrophis.tools.base import BaseTool
+from dendrophis.tools.names import ToolName
 
 
 class InvokeSubagentTool(BaseTool):
     """Invoke a subagent to perform a task."""
 
-    # Subagent turns run their own LLM loops; allow longer than the default.
     SUBAGENT_TIMEOUT_SECONDS = 300.0
 
     def execution_timeout(self, arguments: dict[str, Any]) -> float | None:
@@ -23,7 +23,7 @@ class InvokeSubagentTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "invoke_subagent"
+        return ToolName.INVOKE_SUBAGENT
 
     @property
     def description(self) -> str:
@@ -70,7 +70,6 @@ class InvokeSubagentTool(BaseTool):
                 "error": "Subagent executor not initialized",
             }
 
-        # Map simple task to proper payload based on agent
         payload = self._build_payload(agent, task, context or {})
 
         result = await executor.execute(
@@ -87,7 +86,7 @@ class InvokeSubagentTool(BaseTool):
                 "status": result.response.status,
                 "clarification": result.response.clarification,
             }
-        # Extract error from response.result if available
+
         response_error = None
         if result.response and isinstance(result.response.result, dict):
             response_error = result.response.result.get("error")
@@ -120,20 +119,15 @@ class InvokeSubagentTool(BaseTool):
                 "focus": context.get("focus", ["correctness", "robustness", "maintainability", "pythonic_style"]),
                 "context": context,
             }
-        # Default: pass task through
         return {"task": task, **context}
 
 
 class ClarifyTool(BaseTool):
-    """Tool for the code-writer to ask the orchestrator for clarification.
-
-    Use this when you lack sufficient context to proceed. Provide specific,
-    numbered questions that the orchestrator can answer one-by-one.
-    """
+    """Tool for the code-writer to ask the orchestrator for clarification."""
 
     @property
     def name(self) -> str:
-        return "clarify"
+        return ToolName.CLARIFY
 
     @property
     def description(self) -> str:
@@ -159,11 +153,7 @@ class ClarifyTool(BaseTool):
         }
 
     async def execute(self, questions: list[str]) -> dict[str, Any]:
-        """Execute the clarify tool.
-
-        This doesn't do work itself — it signals that the code-writer needs
-        answers to the questions before it can proceed.
-        """
+        """Signal that the code-writer needs answers before proceeding."""
         return {
             "success": True,
             "tool": "clarify",

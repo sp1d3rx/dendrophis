@@ -1,17 +1,8 @@
-"""Project primer — captures project understanding for reuse across sessions.
-
-A primer stores:
-- Project structure overview (key dirs, key files)
-- Content hashes for change detection
-- Natural-language summary of project understanding
-- Coding patterns and conventions observed
-
-On load, files are re-hashed to detect changes — stale entries are flagged
-so the agent knows to re-read them.
-"""
+"""Project primer — captures project understanding for reuse across sessions."""
 
 from __future__ import annotations
 
+import configparser
 import hashlib
 import json
 import logging
@@ -23,41 +14,61 @@ from dendrophis.utils import _hash_content
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 _PRIMER_DIR = Path.home() / ".config" / "dendrophis" / "primers"
+
+
+def _resolve_git_dir(root: Path) -> Path | None:
+    """Resolve `.git` directory, supporting worktrees/submodules where `.git` is a gitfile."""
+    dot_git = root / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    if dot_git.is_file():
+        try:
+            first_line = dot_git.read_text(encoding="utf-8", errors="replace").splitlines()[0].strip()
+            if first_line.startswith("gitdir:"):
+                gitdir_raw = first_line.partition(":")[2].strip()
+                resolved_gitdir = (root / gitdir_raw).resolve()
+                if (resolved_gitdir / "commondir").is_file():
+                    common_rel = (resolved_gitdir / "commondir").read_text(encoding="utf-8").strip()
+                    return (resolved_gitdir / common_rel).resolve()
+                return resolved_gitdir
+        except Exception as gitfile_error:
+            logger.debug("Failed to resolve gitfile at %s: %s", dot_git, gitfile_error)
+    return None
+
+
+def _normalize_remote_url(raw_url: str) -> str:
+    url = raw_url.strip()
+    for prefix in ("https://", "http://", "git@", "ssh://"):
+        if url.startswith(prefix):
+            url = url[len(prefix) :]
+    return url.replace(":", "/").removesuffix(".git")
 
 
 def _project_id(root: Path) -> str:
     """Derive a stable identifier for a project root.
 
-    Uses the git remote origin if available, otherwise hashes the absolute path.
+    Uses the git remote `origin` URL if available (falling back to the first remote),
+    otherwise hashes the absolute path.
     """
-    git_dir = root / ".git"
-    if git_dir.exists():
-        # Try to get the remote origin URL for a human-readable identifier
+    git_dir = _resolve_git_dir(root)
+    if git_dir is not None:
         head = git_dir / "HEAD"
         if head.exists():
-            try:
-                # Try to get remote origin
-                config_path = git_dir / "config"
-                if config_path.exists():
-                    for line in config_path.read_text().splitlines():
-                        if "url = " in line:
-                            url = line.split("url = ", 1)[1].strip()
-                            # Normalise: strip protocol and .git suffix
-                            for prefix in ("https://", "http://", "git@", "ssh://"):
-                                if url.startswith(prefix):
-                                    url = url[len(prefix) :]
-                            return url.replace(":", "/").removesuffix(".git")
-            except Exception:
-                pass
-        # Fallback: use repo root path as identifier
+            config_path = git_dir / "config"
+            if config_path.exists():
+                try:
+                    parser = configparser.ConfigParser()
+                    parser.read(config_path, encoding="utf-8")
+                    if parser.has_section('remote "origin"') and parser.has_option('remote "origin"', "url"):
+                        return _normalize_remote_url(parser.get('remote "origin"', "url"))
+                    for section_name in parser.sections():
+                        if section_name.startswith("remote ") and parser.has_option(section_name, "url"):
+                            return _normalize_remote_url(parser.get(section_name, "url"))
+                except Exception as parse_error:
+                    logger.debug("Failed to parse git config at %s: %s", config_path, parse_error)
         return f"local:{root.resolve()}"
 
-    # Non-git project: hash the absolute path
     raw = str(root.resolve()).encode()
     return f"anon:{hashlib.sha256(raw).hexdigest()[:12]}"
 
@@ -70,19 +81,14 @@ def _hash_file(path: Path) -> str | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class FileEntry:
     """A tracked file in the project primer."""
 
-    path: str  # Relative to project root
-    content_hash: str  # SHA-256 of last-known content
-    language: str = ""  # Guessed language (extension-based)
-    summary: str = ""  # Optional human summary
+    path: str
+    content_hash: str
+    language: str = ""
+    summary: str = ""
     size_bytes: int = 0
 
 
@@ -97,19 +103,14 @@ class ProjectPrimer:
     updated_at: str = ""
     turn_count: int = 0
 
-    # Structure
     key_directories: list[str] = field(default_factory=list)
     key_files: list[FileEntry] = field(default_factory=list)
 
-    # Understanding
-    understanding: str = ""  # Free-text summary of what the project does
-    patterns: list[str] = field(default_factory=list)  # Observed conventions
-    tech_stack: list[str] = field(default_factory=list)  # Languages / frameworks
+    understanding: str = ""
+    patterns: list[str] = field(default_factory=list)
+    tech_stack: list[str] = field(default_factory=list)
 
-    # Tracks which files have been invalidated since last save
     _stale_files: set[str] = field(default_factory=set, repr=False)
-
-    # ── Serialisation ──────────────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
         primer_data = asdict(self)
@@ -119,7 +120,6 @@ class ProjectPrimer:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectPrimer:
-        # Operate on a copy so the caller's dict is never mutated.
         payload = dict(data)
         file_entries = [FileEntry(**entry) for entry in payload.pop("key_files", [])]
         payload.pop("_stale_files", None)
@@ -127,20 +127,13 @@ class ProjectPrimer:
         primer.key_files = file_entries
         return primer
 
-    # ── Change detection ───────────────────────────────────────────
-
     def verify_files(self, root: Path) -> list[str]:
-        """Re-hash all tracked files and return paths that have changed.
-
-        Also updates _stale_files so callers can inspect which entries
-        are no longer trustworthy.
-        """
+        """Re-hash all tracked files and return paths that have changed."""
         changed: list[str] = []
         for entry in self.key_files:
             full_path = root / entry.path
             current_hash = _hash_file(full_path)
             if current_hash is None:
-                # File was deleted
                 changed.append(entry.path)
                 self._stale_files.add(entry.path)
             elif current_hash != entry.content_hash:
@@ -162,8 +155,6 @@ class ProjectPrimer:
     def mark_all_fresh(self) -> None:
         self._stale_files.clear()
 
-    # ── Build helpers ──────────────────────────────────────────────
-
     def add_file(self, path: str, content: str, summary: str = "") -> None:
         """Add or update a tracked file."""
         ext = Path(path).suffix.lstrip(".")
@@ -175,19 +166,17 @@ class ProjectPrimer:
             summary=summary,
             size_bytes=len(content.encode()),
         )
-        # Replace existing entry if present
-        for i, existing in enumerate(self.key_files):
-            if existing.path == path:
-                self.key_files[i] = entry
+        for existing_index, existing_entry in enumerate(self.key_files):
+            if existing_entry.path == path:
+                self.key_files[existing_index] = entry
                 return
         self.key_files.append(entry)
 
     def remove_file(self, path: str) -> None:
-        self.key_files = [f for f in self.key_files if f.path != path]
+        self.key_files = [file_entry for file_entry in self.key_files if file_entry.path != path]
         self._stale_files.discard(path)
 
 
-# Extension → language map (subset, enough for most projects)
 _EXTENSION_MAP = {
     "py": "python",
     "js": "javascript",
@@ -234,14 +223,8 @@ _EXTENSION_MAP = {
 }
 
 
-# ---------------------------------------------------------------------------
-# I/O
-# ---------------------------------------------------------------------------
-
-
 def _primer_path(project_id: str) -> Path:
     """Return the filesystem path for a given project ID."""
-    # Sanitise: replace path separators and colons with safe chars
     safe = project_id.replace("/", "_").replace(":", "_").replace("\\", "_")
     return _PRIMER_DIR / f"{safe}.primer.json"
 
@@ -282,7 +265,12 @@ def list_primers() -> list[tuple[str, str, str]]:
     if not _PRIMER_DIR.exists():
         return []
     results: list[tuple[str, str, str]] = []
-    for primer_file in sorted(_PRIMER_DIR.glob("*.primer.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    sorted_files = sorted(
+        _PRIMER_DIR.glob("*.primer.json"),
+        key=lambda primer_path: primer_path.stat().st_mtime,
+        reverse=True,
+    )
+    for primer_file in sorted_files:
         try:
             primer_data = json.loads(primer_file.read_text())
             results.append(
@@ -298,21 +286,14 @@ def list_primers() -> list[tuple[str, str, str]]:
     return results
 
 
-# ---------------------------------------------------------------------------
-# Auto-detect project root
-# ---------------------------------------------------------------------------
-
-
 def detect_project_root(path: str | Path | None = None) -> Path | None:
     """Walk up from *path* (or CWD) to find a git root, or return the directory itself."""
     start = Path(path or Path.cwd()).resolve()
     if not start.is_dir():
         start = start.parent
 
-    # Walk up looking for .git
     for candidate in [start, *list(start.parents)]:
         if (candidate / ".git").exists():
             return candidate
 
-    # No git repo — use the starting directory
     return start

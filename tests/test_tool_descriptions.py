@@ -40,8 +40,7 @@ OLD_DESCRIPTIONS: dict[str, str] = {
         "Use with caution."
     ),
     "analyze_functions": "Analyze Python file and return function locations and indentation as YAML",
-    "get_function": "Extract a function's source code by name from a Python file",
-    "replace_function": "Replace a function's implementation by reading from a file",
+    "edit_function": "Replace a function's implementation in a Python file with new source code",
 }
 
 # ---------------------------------------------------------------------------
@@ -80,17 +79,10 @@ NEW_DESCRIPTIONS: dict[str, str] = {
     ),
     "analyze_functions": (
         "List every function in a Python file with its name, start line, end line, and indent level. "
-        "Call this first to discover function names before using get_function."
+        "Call this first to discover function names before using edit_function."
     ),
-    "get_function": (
-        "Extract one named function from a Python file and save it to a temporary file for editing. "
-        "Returns the temp file path — edit it, then call replace_function to write it back. "
-        "Has a side effect: writes a .temp/ file. "
-        "Do not use just to inspect source; use read instead for that."
-    ),
-    "replace_function": (
-        "Overwrite a named function in a Python file with the contents of a temp file. "
-        "Use after get_function + editing the temp file. "
+    "edit_function": (
+        "Replace a named function in a Python file directly with new source code. "
         "Does not create new functions — the function name must already exist in the source file."
     ),
 }
@@ -104,7 +96,7 @@ TEST_CASES = [
     ("search the codebase for the string 'compaction_threshold'", "ripgrep"),
     ("read the file dendrophis/config/schema.py", "read"),
     ("list all functions defined in dendrophis/tools/builtins/filesystem.py", "analyze_functions"),
-    ("show me the append_tool_result function from dendrophis/context/manager.py so I can edit it", "get_function"),
+    ("replace the append_tool_result function in dendrophis/context/manager.py", "edit_function"),
     ("search for any file whose name contains 'tokenizer'", "glob"),
     ("find all places in the code that call count_tokens", "ripgrep"),
     ("what functions exist in dendrophis/llm/client.py?", "analyze_functions"),

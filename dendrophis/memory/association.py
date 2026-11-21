@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from dendrophis.events.types import MemoryAssociationEvent
+from dendrophis.memory.scope import default_scope
 from dendrophis.memory.search import MemorySearcher
 
 if TYPE_CHECKING:
@@ -53,8 +54,6 @@ class MemoryAssociationGenerator:
 
     def _generate_association(self, trigger: str) -> MemoryAssociationEvent | None:
         """Find a memory and frame it with narrative voice."""
-        from dendrophis.memory.scope import default_scope
-
         # Scope to the current project + global tier so other projects'
         # memories don't leak into this session's associations.
         scope = default_scope()
@@ -93,8 +92,6 @@ class MemoryAssociationGenerator:
 
     def _random_association(self, trigger: str) -> MemoryAssociationEvent | None:
         """Pick a random memory when nothing seems relevant."""
-        from dendrophis.memory.scope import default_scope
-
         # Get recent memories (scoped to current project + global tier), pick one randomly
         memories = self._store.list_memories(limit=20, project_ids=default_scope())
         if not memories:

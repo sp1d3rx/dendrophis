@@ -13,7 +13,7 @@ from dendrophis.events.types import (
     EditProposalEvent,
 )
 from dendrophis.tools.builtins.filesystem import EditTool
-from dendrophis.tools.builtins.filesystem.utils import try_unescape
+from dendrophis.tools.builtins.filesystem.utils import is_blocked_path, try_unescape
 from dendrophis.tools.interactive.base import InteractiveBaseTool
 
 if TYPE_CHECKING:
@@ -33,6 +33,10 @@ class InteractiveEditTool(InteractiveBaseTool):
 
     async def execute(self, file_path: str, old_string: str, new_string: str) -> dict[str, Any]:
         try:
+            error_message = is_blocked_path(file_path)
+            if error_message:
+                return {"error": error_message}
+
             if self.silent:
                 return await self._base_tool.execute(
                     file_path=file_path,
@@ -79,7 +83,6 @@ class InteractiveEditTool(InteractiveBaseTool):
             if not diff_text:
                 return {"success": True, "message": "No changes detected."}
 
-            # Propose via event bus and wait for human approval
             request_id = str(uuid.uuid4())
             proposal_event = EditProposalEvent(
                 request_id=request_id,

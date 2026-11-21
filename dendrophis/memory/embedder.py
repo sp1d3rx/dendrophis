@@ -53,11 +53,7 @@ class NullEmbedder(BaseEmbedder):
 
 
 class SpacyEmbedder(BaseEmbedder):
-    """spaCy-based embedder using local language models.
-
-    Requires a spaCy model with word vectors, e.g., en_core_web_md.
-    Embedding dimension is 300 for most spaCy models.
-    """
+    """spaCy-based embedder using local language models."""
 
     def __init__(self, nlp: Language) -> None:
         self._nlp = nlp
@@ -66,15 +62,14 @@ class SpacyEmbedder(BaseEmbedder):
         doc = self._nlp(text)
         if doc.has_vector:
             return doc.vector.astype(np.float32)
-        # Fallback: average of word vectors
-        vectors = [w.vector for w in doc if w.has_vector and w.vector.any()]
+        vectors = [token.vector for token in doc if token.has_vector and token.vector.any()]
         if vectors:
             return np.mean(vectors, axis=0).astype(np.float32)
         return None
 
     @property
     def dimension(self) -> int:
-        return 300  # Standard for en_core_web_md
+        return 300
 
     @property
     def name(self) -> str:
@@ -82,15 +77,7 @@ class SpacyEmbedder(BaseEmbedder):
 
 
 class OpenAIEmbedder(BaseEmbedder):
-    """OpenAI embedding API client.
-
-    Uses the /v1/embeddings endpoint. Supports text-embedding-3-small (1536-dim),
-    text-embedding-3-large (3072-dim), and text-embedding-ada-002 (1536-dim).
-
-    Can be initialized with either:
-    - An official OpenAI client (from `openai` package)
-    - A base URL and API key (uses httpx internally)
-    """
+    """OpenAI embedding API client."""
 
     MODEL_DIMENSIONS: ClassVar[dict[str, int]] = {
         "text-embedding-3-small": 1536,
@@ -109,22 +96,27 @@ class OpenAIEmbedder(BaseEmbedder):
         self._model = model
         self._base_url = base_url
         self._api_key = api_key
+        self._http_client: httpx.Client | None = None
 
         if model not in self.MODEL_DIMENSIONS:
             known = ", ".join(self.MODEL_DIMENSIONS.keys())
             raise ValueError(f"Unknown OpenAI embedding model: {model}. Known models: {known}")
 
+    def close(self) -> None:
+        """Close the persistent HTTP client if opened."""
+        if self._http_client is not None:
+            self._http_client.close()
+            self._http_client = None
+
     def embed(self, text: str) -> np.ndarray | None:
         try:
             if self._client is not None:
-                # Use official OpenAI client
                 response = self._client.embeddings.create(
                     model=self._model,
                     input=text,
                 )
                 embedding = response.data[0].embedding
             else:
-                # Use httpx to call the API directly
                 embedding = self._fetch_embedding_httpx(text)
 
             if embedding is None:
@@ -135,11 +127,12 @@ class OpenAIEmbedder(BaseEmbedder):
             return None
 
     def _fetch_embedding_httpx(self, text: str) -> list[float] | None:
-        """Fetch embedding using httpx directly."""
+        """Fetch embedding using a persistent httpx client."""
         if self._base_url is None or self._api_key is None:
             return None
 
-        url = f"{self._base_url.rstrip('/')}/v1/embeddings"
+        normalized_base = self._base_url.rstrip("/")
+        url = f"{normalized_base}/embeddings" if normalized_base.endswith("/v1") else f"{normalized_base}/v1/embeddings"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -149,11 +142,13 @@ class OpenAIEmbedder(BaseEmbedder):
             "input": text,
         }
 
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            return data["data"][0]["embedding"]
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.Client(timeout=30.0)
+
+        response = self._http_client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        response_data = response.json()
+        return response_data["data"][0]["embedding"]
 
     @property
     def dimension(self) -> int:
@@ -172,19 +167,7 @@ def create_embedder(
     base_url: str | None = None,
     api_key: str | None = None,
 ) -> BaseEmbedder:
-    """Factory function to create embedders by name.
-
-    Args:
-        embedder_type: "none", "spacy", or "openai"
-        nlp: spaCy language model (required for "spacy")
-        openai_client: OpenAI client (required for "openai" if not using base_url/api_key)
-        openai_model: OpenAI embedding model name
-        base_url: Base URL for OpenAI-compatible API (e.g., "https://api.deepinfra.com/v1")
-        api_key: API key for OpenAI-compatible API
-
-    Returns:
-        Configured embedder instance
-    """
+    """Factory function to create embedders by name."""
     if embedder_type == "none":
         return NullEmbedder()
     if embedder_type == "spacy":

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ruamel.yaml import YAML
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -31,7 +36,7 @@ class SkillManager:
         if not self.skills_dir.exists():
             return
 
-        for md_file in self.skills_dir.glob("*.md"):
+        for md_file in sorted(self.skills_dir.glob("*.md")):
             content = md_file.read_text(encoding="utf-8")
             skill = self._parse_skill(content)
             if skill:
@@ -47,8 +52,6 @@ class SkillManager:
 
         frontmatter_text = frontmatter_match.group(1)
         try:
-            from ruamel.yaml import YAML
-
             yaml_parser = YAML(typ="safe")
             frontmatter_data = yaml_parser.load(frontmatter_text)
             if isinstance(frontmatter_data, dict):
@@ -69,8 +72,8 @@ class SkillManager:
                     raw_content=content,
                     aliases=aliases,
                 )
-        except Exception:
-            pass
+        except Exception as yaml_error:
+            logger.debug("Falling back to regex skill frontmatter parser: %s", yaml_error)
 
         skill_name = self._extract_frontmatter_value(frontmatter_text, "name")
         if not skill_name:
@@ -94,13 +97,11 @@ class SkillManager:
 
     def _extract_aliases(self, fm: str) -> tuple[str, ...]:
         """Parse optional aliases from frontmatter (inline list or YAML block list)."""
-        # Inline list: aliases: [a, b, c]
         inline = re.search(r"^aliases:\s*(\[.*?\])\s*$", fm, re.MULTILINE)
         if inline:
             items = re.findall(r"['\"]?([A-Za-z0-9_-]+)['\"]?", inline.group(1))
             return tuple(item.strip() for item in items if item.strip())
 
-        # YAML block list
         block_match = re.search(r"^aliases:\s*$\n((?:\s*-\s*\S+\s*\n)+)", fm, re.MULTILINE)
         if block_match:
             items = re.findall(r"^\s*-\s*(\S+)", block_match.group(1), re.MULTILINE)
@@ -137,18 +138,12 @@ class SkillManager:
 
         instructions = ["\n# Active Skills Instructions\n"]
         for skill in self.active_skills.values():
-            # We want the rules part, usually after the frontmatter
-            # Split only twice to handle frontmatter (--- content ---) and ignore
-            # any additional --- in the content itself
             parts = skill.raw_content.split("---", 2)
             if len(parts) >= 3:
-                # Skill has frontmatter, take content after closing ---
                 instructions.append(parts[2].strip())
             elif len(parts) >= 2:
-                # No frontmatter but has --- in content, take after first ---
                 instructions.append(parts[1].strip())
             else:
-                # No --- at all, take entire content
                 instructions.append(skill.raw_content)
 
         return "\n".join(instructions)
@@ -158,4 +153,4 @@ class SkillManager:
         return sorted(self._all_skills.keys())
 
     def is_active(self, name: str) -> bool:
-        return name in self.active_skills
+        return self._resolve_name(name) in self.active_skills

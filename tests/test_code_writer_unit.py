@@ -72,11 +72,11 @@ async def test_code_writer_tool_loop_execution(local_temp_directory: Path) -> No
 
     mock_llm_client = MagicMock()
 
-    # Turn 1: LLM decides to call write_file
+    # Turn 1: LLM decides to call write
     tool_call_item = ToolCall(
         index=0,
         id="call_write_001",
-        name="write_file",
+        name="write",
         arguments=json.dumps(
             {
                 "file_path": relative_target_path,

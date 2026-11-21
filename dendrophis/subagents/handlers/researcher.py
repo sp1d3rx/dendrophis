@@ -8,17 +8,13 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dendrophis.config.loader import ConfigLoader
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.events import TextDeltaEvent
 from dendrophis.llm.client import LLMClient
 from dendrophis.subagents.messages import SubagentRequest, SubagentResponse
-
-try:
-    from dendrophis.tools.builtins.filesystem import GlobTool, ReadTool, RipgrepTool
-except ImportError:
-    GlobTool = None
-    ReadTool = None
-    RipgrepTool = None
+from dendrophis.tools.builtins.filesystem import GlobTool, ReadTool, RipgrepTool
+from dendrophis.tools.builtins.memory import RecallMemoryTool, SearchMemoryTool
 
 if TYPE_CHECKING:
     from dendrophis.memory import MemoryStore
@@ -71,8 +67,6 @@ class ResearcherHandler:
             return self._llm_client
 
         try:
-            from dendrophis.config.loader import ConfigLoader
-
             config_loader = ConfigLoader.load()
             self._llm_client = LLMClient(config_loader.config.llm)
             self._owned_llm_clients.add(self._llm_client)
@@ -98,8 +92,6 @@ class ResearcherHandler:
         """Lazy init memory tools if store available."""
         if self._memory_store is None:
             return None, None
-        from dendrophis.tools.builtins.memory import RecallMemoryTool, SearchMemoryTool
-
         return SearchMemoryTool(self._memory_store), RecallMemoryTool(self._memory_store)
 
     async def execute(self, request: SubagentRequest) -> SubagentResponse:
@@ -212,7 +204,11 @@ class ResearcherHandler:
                 if any(trimmed_symbol.endswith(extension_item) for extension_item in file_extensions):
                     filename_candidates_set.add(trimmed_symbol)
                 else:
-                    content_patterns_set.add(trimmed_symbol)
+                    try:
+                        re.compile(trimmed_symbol)
+                        content_patterns_set.add(trimmed_symbol)
+                    except re.error:
+                        content_patterns_set.add(re.escape(trimmed_symbol))
 
         # 3. Extract identifier and filename candidates
         stop_words = {
@@ -627,8 +623,6 @@ class ResearcherHandler:
     @staticmethod
     def _extract_knowledge_gaps(synthesis_text: str) -> list[str]:
         """Extract bullet points or list items from Knowledge Gaps section."""
-        import re
-
         knowledge_gaps: list[str] = []
         gaps_match = re.search(
             r"(?:###?\s*Knowledge Gaps|Knowledge Gaps:?)\s*\n(.*?)(?=\n###?|\Z)",

@@ -9,19 +9,19 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from dendrophis.config.schema import DendrophisConfig
+from dendrophis.config.loader import ConfigLoader
+from dendrophis.config.schema import DendrophisConfig, LLMConfig
 from dendrophis.context.manager import ContextManager
 from dendrophis.llm.client import LLMClient, TurnResult
-from dendrophis.tools.executor import ToolExecutor, is_tool_error
+from dendrophis.session.tools import tool_call_to_payload
+from dendrophis.tools.builtins.filesystem import BashTool, GlobTool, RipgrepTool, get_agent_tools
+from dendrophis.tools.builtins.subagents import ClarifyTool
+from dendrophis.tools.executor import ToolExecutor, ToolResult, is_tool_error
 from dendrophis.tools.registry import ToolRegistry
 
 from ..messages import SubagentRequest, SubagentResponse
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# System prompt for the CodeWriter agent
-# ---------------------------------------------------------------------------
 
 CODE_WRITER_SYSTEM_PROMPT = """You are Dendrophis CodeWriter, an expert autonomous coding subagent.
 
@@ -29,7 +29,7 @@ Your goal is to inspect code, implement requested changes surgically, verify you
 
 ### Execution Workflow:
 1. **Explore & Understand First**:
-   - Inspect files before modifying them. Use `read_file(file_path, offset, limit)` to read existing content.
+   - Inspect files before modifying them. Use `read(file_path, offset, limit)` to read existing content.
    - Use `glob(pattern)` or `list_dir(path)` to locate files if you are unsure of their exact location.
    - Use `ripgrep(pattern)` to search for function definitions, variable names, or references.
 
@@ -40,16 +40,16 @@ Your goal is to inspect code, implement requested changes surgically, verify you
        Use real newlines.
    - For multiple search/replace edits in one file: use `patch(file_path, edits=[...])`.
    - For replacing whole Python functions: use `edit_function(file_path, function_name, new_source)`.
-   - For creating new files: use `write_file(file_path, content)` or `write(file_path, content)`.
+   - For creating or overwriting files: use `write(file_path, content)`.
    - For appending to the end of files: use `append(file_path, content)`.
 
 3. **Verify Your Work**:
-   - After editing, verify your changes by reading the modified section with `read_file`.
+   - After editing, verify your changes by reading the modified section with `read`.
    - Run tests or linting with `bash` (e.g. `pytest tests/...` or `ruff check file.py`) when relevant.
 
 4. **Error Recovery & Clarification**:
    - If a tool fails (e.g. "old_string not found" or "Ambiguous edit"), do NOT repeat the same tool call.
-     Re-read the file with `read_file`, inspect the actual file contents, adjust your context, and retry.
+     Re-read the file with `read`, inspect the actual file contents, adjust your context, and retry.
    - If the task requirements are contradictory, fundamentally ambiguous, or missing critical specifications
      that cannot be deduced from the codebase, call `clarify(questions=[...])`.
 
@@ -69,11 +69,6 @@ Your goal is to inspect code, implement requested changes surgically, verify you
 """
 
 
-# ---------------------------------------------------------------------------
-# Custom exceptions
-# ---------------------------------------------------------------------------
-
-
 class CodeWriterError(Exception):
     """Base exception for code-writer errors."""
 
@@ -86,9 +81,9 @@ class ToolExecutionError(CodeWriterError):
     """Tool execution failed."""
 
 
-# ---------------------------------------------------------------------------
-# CodeWriterHandler — agentic loop
-# ---------------------------------------------------------------------------
+def _is_dev_path(path_obj: Path) -> bool:
+    parts = path_obj.resolve().parts
+    return any(part == "dev" and index > 0 and parts[index - 1] == "/" for index, part in enumerate(parts))
 
 
 class CodeWriterHandler:
@@ -106,15 +101,6 @@ class CodeWriterHandler:
         config: DendrophisConfig | None = None,
         model: str | None = None,
     ) -> None:
-        """Initialize with dependency injection.
-
-        Args:
-            llm_client: LLM client for making API calls. If None, created lazily.
-            tool_registry: Tool registry for available tools. If None, created lazily.
-            tool_executor: Tool executor for executing tool calls. If None, created lazily.
-            config: Dendrophis configuration. If None, loaded lazily.
-            model: Optional model name override for code-writer.
-        """
         self._llm_client = llm_client
         self._dedicated_llm_client: LLMClient | None = None
         self._owned_llm_clients: set[LLMClient] = set()
@@ -143,11 +129,8 @@ class CodeWriterHandler:
             self._owned_llm_clients.add(self._llm_client)
             return self._llm_client
 
-        from dendrophis.config.loader import ConfigLoader
-
         config_loader = ConfigLoader.load()
         cfg = config_loader.config
-        from dendrophis.config.schema import LLMConfig
 
         model_name = self._model_override or cfg.llm.code_writer_model or cfg.llm.model
         llm_config = LLMConfig(
@@ -163,11 +146,7 @@ class CodeWriterHandler:
         return self._llm_client
 
     async def aclose(self) -> None:
-        """Close LLM clients this handler created itself.
-
-        Injected clients are owned by the caller and are not closed here.
-        Owned client slots are reset so a later use recreates a fresh client.
-        """
+        """Close LLM clients this handler created itself."""
         for client in self._owned_llm_clients:
             with contextlib.suppress(Exception):
                 await client.aclose()
@@ -182,49 +161,14 @@ class CodeWriterHandler:
         """Lazily create tool registry if not injected."""
         if self._tool_registry is None:
             self._tool_registry = ToolRegistry()
-            try:
-                from dendrophis.tools.builtins.filesystem import get_agent_tools
-
-                if get_agent_tools is not None:
-                    for tool in get_agent_tools():
-                        self._tool_registry.add(tool)
-            except ImportError:
-                pass
-
-            try:
-                from dendrophis.tools.builtins.filesystem.bash import BashTool
-
-                if BashTool is not None:
-                    self._tool_registry.add(BashTool())
-            except ImportError:
-                pass
-
-            try:
-                from dendrophis.tools.builtins.subagents import ClarifyTool
-
-                if ClarifyTool is not None:
-                    self._tool_registry.add(ClarifyTool())
-            except ImportError:
-                pass
-
-            try:
-                from dendrophis.tools.builtins.filesystem.glob import GlobTool
-
-                if GlobTool is not None:
-                    self._tool_registry.add(GlobTool())
-            except ImportError:
-                pass
-
-            try:
-                from dendrophis.tools.builtins.filesystem.ripgrep import RipgrepTool
-
-                if RipgrepTool is not None:
-                    self._tool_registry.add(RipgrepTool())
-            except ImportError:
-                pass
-
-            from dendrophis.tools.executor import ToolExecutor
-
+            for tool in get_agent_tools():
+                self._tool_registry.add(tool)
+            self._tool_registry.add(BashTool())
+            self._tool_registry.add(ClarifyTool())
+            self._tool_registry.add(GlobTool())
+            self._tool_registry.add(RipgrepTool())
+            self._tool_executor = ToolExecutor(self._tool_registry)
+        elif self._tool_executor is None:
             self._tool_executor = ToolExecutor(self._tool_registry)
         return self._tool_registry
 
@@ -232,6 +176,7 @@ class CodeWriterHandler:
     def tool_executor(self) -> ToolExecutor:
         """Return the tool executor."""
         _ = self.tool_registry
+        assert self._tool_executor is not None
         return self._tool_executor
 
     @property
@@ -239,12 +184,10 @@ class CodeWriterHandler:
         """Return the injected config."""
         return self._config
 
-    def _get_llm_config(self) -> Any:
+    def _get_llm_config(self) -> LLMConfig:
         """Get LLM config for code-writer from injected config."""
         if self._config is None:
             raise ValueError("No config available to create LLM client")
-
-        from dendrophis.config.schema import LLMConfig
 
         model_name = self._config.llm.code_writer_model or self._model_override or self._config.llm.model
         return LLMConfig(
@@ -264,7 +207,6 @@ class CodeWriterHandler:
         files = request.payload.get("files", [])
         context = request.context
 
-        # Build isolated context with system prompt and consolidated task details
         context_manager = self._build_isolated_context(task, files, context)
 
         changes: list[dict[str, Any]] = []
@@ -276,19 +218,15 @@ class CodeWriterHandler:
             while iteration < max_iterations:
                 iteration += 1
 
-                # Call LLM with current context
                 turn = await self._call_llm(context_manager)
 
                 if not turn.tool_calls:
-                    # No tool calls — LLM completed the task
-                    self._logger.debug(f"[CODE-WRITER] Completed in {iteration} iteration(s)")
+                    self._logger.debug("[CODE-WRITER] Completed in %d iteration(s)", iteration)
                     final_summary = turn.text or "Task completed successfully."
                     break
 
-                # Execute tool calls
                 tool_results = await self._execute_tool_calls(turn.tool_calls, context_manager)
 
-                # Check if the code-writer called the clarify tool
                 clarify_results = [tool_result for tool_result in tool_results if tool_result.name == "clarify"]
                 if clarify_results:
                     questions: list[str] = []
@@ -298,25 +236,22 @@ class CodeWriterHandler:
                             questions.extend(clarify_payload.get("questions", []))
                         except (json.JSONDecodeError, AttributeError, TypeError):
                             pass
-                    self._logger.info(f"[CODE-WRITER] Clarification requested: {len(questions)} question(s)")
+                    self._logger.info("[CODE-WRITER] Clarification requested: %d question(s)", len(questions))
                     return SubagentResponse(
                         agent="code-writer",
                         task_id=request.task_id,
                         status="needs_clarification",
-                        result={
-                            "changes": changes,
-                        },
+                        result={"changes": changes},
                         clarification=questions,
                     )
 
-                # Track changes from successful tool executions
                 for tool_result in tool_results:
                     change_information = self._extract_change_info(tool_result)
                     if change_information is not None:
                         changes.append(change_information)
 
             if iteration >= max_iterations and not final_summary:
-                self._logger.warning(f"[CODE-WRITER] Hit max iterations ({max_iterations})")
+                self._logger.warning("[CODE-WRITER] Hit max iterations (%d)", max_iterations)
                 return SubagentResponse(
                     agent="code-writer",
                     task_id=request.task_id,
@@ -340,7 +275,7 @@ class CodeWriterHandler:
             )
 
         except LLMCallError as llm_error:
-            self._logger.error(f"LLM call error: {llm_error}")
+            self._logger.error("LLM call error: %s", llm_error)
             return SubagentResponse(
                 agent="code-writer",
                 task_id=request.task_id,
@@ -348,7 +283,7 @@ class CodeWriterHandler:
                 result={"error": str(llm_error)},
             )
         except ToolExecutionError as tool_error:
-            self._logger.error(f"Tool execution error: {tool_error}")
+            self._logger.error("Tool execution error: %s", tool_error)
             return SubagentResponse(
                 agent="code-writer",
                 task_id=request.task_id,
@@ -356,7 +291,7 @@ class CodeWriterHandler:
                 result={"error": str(tool_error)},
             )
         except Exception as unexpected_error:
-            self._logger.error(f"Unexpected error in code-writer: {unexpected_error}", exc_info=True)
+            self._logger.error("Unexpected error in code-writer: %s", unexpected_error, exc_info=True)
             return SubagentResponse(
                 agent="code-writer",
                 task_id=request.task_id,
@@ -372,14 +307,15 @@ class CodeWriterHandler:
 
         prompt_sections: list[str] = []
 
-        # Add referenced files if provided
         if files:
             file_sections: list[str] = []
             for file_path in files:
                 path = Path(file_path)
-                if path.exists():
+                if _is_dev_path(path):
+                    file_sections.append(f"--- {file_path} ---\n[Access to /dev blocked]")
+                elif path.exists() and path.is_file():
                     try:
-                        file_content = path.read_text(encoding="utf-8")[:5000]
+                        file_content = path.read_text(encoding="utf-8", errors="replace")[:5000]
                         file_sections.append(f"--- {file_path} ---\n{file_content}\n--- end {file_path} ---")
                     except Exception as read_error:
                         file_sections.append(f"--- {file_path} ---\n[Error reading file: {read_error}]")
@@ -389,7 +325,6 @@ class CodeWriterHandler:
             if file_sections:
                 prompt_sections.append("Referenced Files:\n" + "\n\n".join(file_sections))
 
-        # Add contextual patterns and constraints if provided
         if context.get("patterns"):
             patterns_text = "\n".join(f"- {pattern}" for pattern in context["patterns"])
             prompt_sections.append(f"Patterns to follow:\n{patterns_text}")
@@ -397,7 +332,6 @@ class CodeWriterHandler:
             constraints_text = "\n".join(f"- {constraint}" for constraint in context["constraints"])
             prompt_sections.append(f"Constraints:\n{constraints_text}")
 
-        # Add primary task instruction
         prompt_sections.append(f"Task Instruction:\n{task}")
 
         context_manager.append_user("\n\n".join(prompt_sections))
@@ -415,40 +349,30 @@ class CodeWriterHandler:
         except Exception as llm_error:
             raise LLMCallError(f"LLM call failed: {llm_error}") from llm_error
 
-        # Format assistant tool calls payload for context storage
-        tool_calls_payload = None
-        if turn.tool_calls:
-            from dendrophis.session.tools import tool_call_to_payload
-
-            tool_calls_payload = [tool_call_to_payload(tool_call) for tool_call in turn.tool_calls]
-
-        # Append assistant response to context
+        tool_calls_payload = (
+            [tool_call_to_payload(tool_call) for tool_call in turn.tool_calls] if turn.tool_calls else None
+        )
         context_manager.append_assistant(turn.text, tool_calls_payload, turn.reasoning)
-
         return turn
 
-    async def _execute_tool_calls(self, tool_calls: list[Any], context_manager: ContextManager) -> list[Any]:
+    async def _execute_tool_calls(self, tool_calls: list[Any], context_manager: ContextManager) -> list[ToolResult]:
         """Execute tool calls and append results to context."""
         executor = self.tool_executor
-        results = []
+        results: list[ToolResult] = []
 
         for tool_call in tool_calls:
             try:
                 result = await executor.execute(tool_call)
                 context_manager.append_tool_result(result.tool_call_id, result.name, result.content)
                 results.append(result)
-
             except Exception as execution_error:
                 error_content = json.dumps({"error": f"Tool execution failed: {execution_error}"})
-                error_result = type(
-                    "FallbackToolResult",
-                    (),
-                    {
-                        "tool_call_id": tool_call.id,
-                        "name": tool_call.name,
-                        "content": error_content,
-                    },
-                )()
+                error_result = ToolResult(
+                    tool_call_id=tool_call.id,
+                    name=tool_call.name,
+                    content=error_content,
+                    success=False,
+                )
                 results.append(error_result)
                 context_manager.append_tool_result(tool_call.id, tool_call.name, error_content)
 
@@ -467,14 +391,14 @@ class CodeWriterHandler:
         tool_name = getattr(result, "name", "")
         file_path = content.get("file", "")
 
-        if tool_name in ("write_file", "write"):
+        if tool_name == "write":
             return {
                 "action": "created" if content.get("created", False) else "written",
                 "file": file_path,
                 "description": f"Wrote {file_path}",
             }
 
-        if tool_name in ("edit", "edit_function", "replace_function"):
+        if tool_name in ("edit", "edit_function"):
             return {
                 "action": "edited",
                 "file": file_path,
@@ -493,11 +417,7 @@ class CodeWriterHandler:
 
     @staticmethod
     def _is_tool_error(result: Any) -> bool:
-        """Check if a tool result indicates an error without false positives on raw text.
-
-        Delegates to the canonical ``is_tool_error`` predicate (tools/executor.py)
-        so subagent and session error detection cannot drift apart.
-        """
+        """Check if a tool result indicates an error without false positives on raw text."""
         try:
             return is_tool_error(result.content)
         except AttributeError:

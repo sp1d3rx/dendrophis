@@ -1,23 +1,21 @@
-"""A tool that sends requests to manage a session-scoped todo list."""
+"""A tool that manages a session-scoped todo list."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any
 
 from dendrophis.events import get_event_bus
-from dendrophis.events.types import TodoRequestEvent, TodoUpdatedEvent
+from dendrophis.events.types import TodoRequestEvent
 from dendrophis.tools.base import BaseTool
+from dendrophis.tools.names import ToolName
 
 logger = logging.getLogger(__name__)
 
-_UPDATE_TIMEOUT = 5.0
-
 
 class TodoTool(BaseTool):
-    """A tool that emits events to manage a todo list."""
+    """A tool that manages the session todo list."""
 
     def __init__(self, todo_manager: Any = None) -> None:
         super().__init__()
@@ -25,7 +23,7 @@ class TodoTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "todo"
+        return ToolName.TODO
 
     @property
     def description(self) -> str:
@@ -58,8 +56,6 @@ class TodoTool(BaseTool):
         }
 
     async def execute(self, action: str, text: str | None = None, todo_id: str | None = None) -> Any:
-        # Validate up front; the manager silently ignores malformed requests,
-        # so this is the only place such errors can surface to the LLM.
         if action == "add" and not text:
             return {"status": "error", "action": action, "error": "'text' is required for action 'add'."}
         if action in ("toggle", "remove") and not todo_id:
@@ -68,37 +64,25 @@ class TodoTool(BaseTool):
                 "action": action,
                 "error": f"'todo_id' is required for action '{action}'.",
             }
-
-        event_bus = get_event_bus()
+        if action not in ("add", "toggle", "remove", "list"):
+            return {"status": "error", "action": action, "error": f"Unknown todo action '{action}'."}
 
         if self._todo_manager is None:
-            # Defensive fallback: fire-and-forget (factory always injects the manager).
+            event_bus = get_event_bus()
             event_bus.publish(TodoRequestEvent(action=action, text=text, todo_id=todo_id))
             return {"status": "request_sent", "action": action}
 
-        # The bus dispatches handlers asynchronously, so await the TodoUpdatedEvent
-        # that TodoManager publishes after applying the request. Correlate by
-        # request_id so concurrent todo ops (parallel tools) don't cross-talk.
         request_id = uuid.uuid4().hex
-        updated = asyncio.Event()
-        result: dict[str, Any] = {}
-
-        def _on_updated(event: TodoUpdatedEvent) -> None:
-            if event.request_id != request_id:
-                return
-            result["todos"] = event.todos
-            updated.set()
-
-        subscription = event_bus.subscribe(TodoUpdatedEvent, _on_updated)
         try:
-            event_bus.publish(TodoRequestEvent(action=action, text=text, todo_id=todo_id, request_id=request_id))
-            await asyncio.wait_for(updated.wait(), timeout=_UPDATE_TIMEOUT)
-        except TimeoutError:
-            # The mutation may have landed even if the event didn't round-trip;
-            # fall back to reading the manager directly.
-            logger.warning("Timed out waiting for TodoUpdatedEvent; reading manager state directly.")
-            result["todos"] = self._todo_manager.get_all()
-        finally:
-            subscription.unsubscribe()
+            if action == "add" and text is not None:
+                self._todo_manager.add(text, request_id=request_id)
+            elif action == "toggle" and todo_id is not None:
+                self._todo_manager.toggle(todo_id, request_id=request_id)
+            elif action == "remove" and todo_id is not None:
+                self._todo_manager.remove(todo_id, request_id=request_id)
+            elif action == "list":
+                self._todo_manager._emit_change(request_id=request_id)
+        except ValueError as value_error:
+            return {"status": "error", "action": action, "error": str(value_error)}
 
-        return {"status": "ok", "action": action, "todos": result["todos"]}
+        return {"status": "ok", "action": action, "todos": self._todo_manager.get_all()}

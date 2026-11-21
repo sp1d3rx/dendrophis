@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import json
@@ -10,8 +11,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+from dendrophis.config.loader import ConfigLoader
 from dendrophis.config.schema import DendrophisConfig, LLMConfig
-from dendrophis.events import TextDeltaEvent
+from dendrophis.events import ErrorEvent, TextDeltaEvent
 from dendrophis.llm.client import LLMClient
 
 from ..messages import SubagentRequest, SubagentResponse
@@ -61,6 +63,11 @@ Respond with a single JSON object and nothing else:
 """
 
 
+def _is_dev_path(path_obj: Path) -> bool:
+    parts = path_obj.resolve().parts
+    return any(part == "dev" and index > 0 and parts[index - 1] == "/" for index, part in enumerate(parts))
+
+
 class CodeReviewerHandler:
     """Handler for code-reviewer subagent."""
 
@@ -96,8 +103,6 @@ class CodeReviewerHandler:
             self._owned_llm_clients.add(self._cached_llm)
             return self._cached_llm
 
-        from dendrophis.config.loader import ConfigLoader
-
         config_loader = ConfigLoader.load()
         cfg = config_loader.config
         reviewer_llm_config = dataclasses.replace(cfg.llm, model=cfg.llm.code_reviewer_model or cfg.llm.model)
@@ -106,11 +111,7 @@ class CodeReviewerHandler:
         return self._cached_llm
 
     async def aclose(self) -> None:
-        """Close LLM clients this handler created itself.
-
-        Injected clients are owned by the caller and are not closed here.
-        Owned client slots are reset so a later use recreates a fresh client.
-        """
+        """Close LLM clients this handler created itself."""
         for client in self._owned_llm_clients:
             with contextlib.suppress(Exception):
                 await client.aclose()
@@ -156,9 +157,11 @@ class CodeReviewerHandler:
             file_contents_list: list[str] = []
             for target_file_path in files_list:
                 resolved_path = Path(target_file_path)
-                if resolved_path.exists():
+                if _is_dev_path(resolved_path):
+                    file_contents_list.append(f"--- File: {target_file_path} [Access to /dev blocked] ---")
+                elif resolved_path.exists() and resolved_path.is_file():
                     try:
-                        file_text = resolved_path.read_text(encoding="utf-8")
+                        file_text = await asyncio.to_thread(resolved_path.read_text, encoding="utf-8", errors="replace")
                         preview_length = 8000
                         content_preview = file_text[:preview_length]
                         if len(file_text) > preview_length:
@@ -195,9 +198,20 @@ class CodeReviewerHandler:
 
         try:
             response_text = ""
+            error_messages: list[str] = []
             async for event in self.llm.stream_chat(messages):
                 if isinstance(event, TextDeltaEvent):
                     response_text += event.delta
+                elif isinstance(event, ErrorEvent):
+                    error_messages.append(event.message)
+
+            if error_messages and not response_text.strip():
+                return SubagentResponse(
+                    agent=request.agent,
+                    task_id=request.task_id,
+                    status="failure",
+                    result={"error": "; ".join(error_messages)},
+                )
 
             review_payload = self._parse_review_json(response_text)
 
@@ -209,7 +223,7 @@ class CodeReviewerHandler:
             )
 
         except Exception as review_error:
-            self._logger.error(f"Code review failed: {review_error}", exc_info=True)
+            self._logger.error("Code review failed: %s", review_error, exc_info=True)
             return SubagentResponse(
                 agent=request.agent,
                 task_id=request.task_id,
@@ -220,18 +234,21 @@ class CodeReviewerHandler:
     def _parse_review_json(self, response_text: str) -> dict[str, Any]:
         """Extract and parse structured review JSON from model response."""
         try:
-            return json.loads(response_text)
+            parsed = json.loads(response_text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
 
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
         if json_match:
             try:
-                return json.loads(json_match.group(1))
+                parsed = json.loads(json_match.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
                 pass
 
-        # Fallback structured wrapper with explicit parse_error flag
         return {
             "approval": "comment",
             "parse_error": True,

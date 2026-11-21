@@ -6,9 +6,12 @@ import contextlib
 import json
 import logging
 import re
+import shlex
 import shutil
+from pathlib import Path
 from typing import Any
 
+from dendrophis.config.loader import ConfigLoader
 from dendrophis.config.schema import DendrophisConfig
 from dendrophis.events import TextDeltaEvent
 from dendrophis.llm.client import LLMClient
@@ -52,8 +55,6 @@ class TestRunnerHandler:
             return self._llm_client
 
         try:
-            from dendrophis.config.loader import ConfigLoader
-
             config_loader = ConfigLoader.load()
             self._llm_client = LLMClient(config_loader.config.llm)
             self._owned_llm_clients.add(self._llm_client)
@@ -63,11 +64,7 @@ class TestRunnerHandler:
             return None
 
     async def aclose(self) -> None:
-        """Close LLM clients this handler created itself.
-
-        Injected clients are owned by the caller and are not closed here.
-        The owned client slot is reset so a later use recreates a fresh client.
-        """
+        """Close LLM clients this handler created itself."""
         for client in self._owned_llm_clients:
             with contextlib.suppress(Exception):
                 await client.aclose()
@@ -75,25 +72,44 @@ class TestRunnerHandler:
             self._llm_client = None
         self._owned_llm_clients.clear()
 
+    @staticmethod
+    def _resolve_target(payload: dict[str, Any], context: dict[str, Any]) -> str:
+        """Resolve a safe test target path without passing natural-language sentences to pytest."""
+        explicit_target = payload.get("target")
+        if isinstance(explicit_target, str) and explicit_target.strip():
+            return explicit_target.strip()
+
+        context_files = context.get("files") or payload.get("files") or []
+        if isinstance(context_files, list):
+            for candidate_file in context_files:
+                if isinstance(candidate_file, str) and Path(candidate_file).exists():
+                    return candidate_file
+
+        raw_task = payload.get("task", "")
+        if isinstance(raw_task, str):
+            stripped_task = raw_task.strip()
+            if stripped_task and " " not in stripped_task and Path(stripped_task).exists():
+                return stripped_task
+
+        return "."
+
     async def execute(self, request: SubagentRequest) -> SubagentResponse:
         """Execute test task."""
         command = request.payload.get("command", "pytest")
-        target = request.payload.get("target") or request.payload.get("task") or "."
-        options = request.payload.get("options", {})
         context = request.context or {}
+        target = self._resolve_target(request.payload, context)
+        options = request.payload.get("options", {})
 
         try:
-            # Build test command
             test_cmd = self._build_command(command, target, options)
 
-            # Run tests
             result = await self.bash_tool.execute(
                 command=test_cmd,
                 description=f"Run {command} tests on {target}",
-                timeout=options.get("timeout", 300000),  # 5 min default
+                timeout=options.get("timeout", 300000),
+                full_output=True,
             )
 
-            # Parse results
             output = result.get("stdout", "") + "\n" + result.get("stderr", "")
             returncode = result.get("returncode", 1)
 
@@ -104,24 +120,20 @@ class TestRunnerHandler:
             else:
                 parsed = self._parse_generic_output(output, returncode)
 
-            # Categorize failures if we have changed files context
             if context.get("changed_files"):
                 parsed["failures"] = self._categorize_failures(
                     parsed.get("failures", []),
                     context["changed_files"],
                 )
 
-            # Run coverage if requested
             if options.get("coverage"):
                 coverage = await self._run_coverage(command, target)
                 parsed["coverage"] = coverage
 
-            # Generate recommendations
             parsed["recommendations"] = self._generate_recommendations(parsed)
 
             status = "success" if parsed.get("summary", {}).get("failed", 0) == 0 and returncode == 0 else "failure"
 
-            # If tests failed, perform LLM diagnosis if available
             if status == "failure" and parsed.get("failures"):
                 diagnosis = await self._diagnose_failures(parsed, context)
                 if diagnosis:
@@ -135,7 +147,7 @@ class TestRunnerHandler:
             )
 
         except Exception as test_execution_error:
-            self._logger.error(f"TestRunner execution failed: {test_execution_error}", exc_info=True)
+            self._logger.error("TestRunner execution failed: %s", test_execution_error, exc_info=True)
             return SubagentResponse(
                 agent="test-runner",
                 task_id=request.task_id,
@@ -188,7 +200,7 @@ class TestRunnerHandler:
                     response_text += event.delta
             return response_text.strip() if response_text.strip() else None
         except Exception as diagnosis_error:
-            self._logger.debug(f"Diagnosis generation failed: {diagnosis_error}")
+            self._logger.debug("Diagnosis generation failed: %s", diagnosis_error)
             return None
 
     def _build_command(self, command: str, target: str, options: dict[str, Any]) -> str:
@@ -204,11 +216,11 @@ class TestRunnerHandler:
             if options.get("verbose"):
                 parts.append("-v")
             if options.get("parallel"):
-                parts.append("-n auto")
+                parts.extend(["-n", "auto"])
             if options.get("coverage"):
                 parts.append("--cov")
         elif command == "unittest":
-            parts.append("python -m unittest")
+            parts.extend(["python", "-m", "unittest"])
             if options.get("verbose"):
                 parts.append("-v")
         else:
@@ -217,7 +229,7 @@ class TestRunnerHandler:
                 parts.append("-v")
 
         if target and target != ".":
-            parts.append(target)
+            parts.append(shlex.quote(target))
 
         return " ".join(part for part in parts if part)
 
@@ -226,9 +238,6 @@ class TestRunnerHandler:
         summary = {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "error": 0}
         failures = []
 
-        # Parse summary line
-        # Example: "5 passed, 2 failed, 1 skipped in 0.45s" or "1 passed, 1 failed, 1 error, 1 skipped in 0.01s"
-        # Match each count independently
         passed_match = re.search(r"(\d+) passed", output)
         failed_match = re.search(r"(\d+) failed", output)
         skipped_match = re.search(r"(\d+) skipped", output)
@@ -238,28 +247,23 @@ class TestRunnerHandler:
         summary["failed"] = int(failed_match.group(1)) if failed_match else 0
         summary["skipped"] = int(skipped_match.group(1)) if skipped_match else 0
         summary["error"] = int(error_match.group(1)) if error_match else 0
-        summary["total"] = sum(summary.values()) - summary["total"]  # exclude total itself
+        summary["total"] = sum(summary.values()) - summary["total"]
 
-        # Parse failure details
-        # Look for FAILED sections
         failure_pattern = r"FAILED\s+([\w/\.]+::\w+)\s*-\s*(.+?)(?=\n\n|\nFAILED|\Z)"
         for match in re.finditer(failure_pattern, output, re.DOTALL):
             test_name = match.group(1)
             error_text = match.group(2).strip()
-
-            # Extract file and line
             location = self._extract_location(error_text)
 
             failures.append(
                 {
                     "test": test_name,
-                    "error": error_text[:500],  # Truncate long errors
+                    "error": error_text[:500],
                     "location": location,
                     "category": "unknown",
                 }
             )
 
-        # Parse errors (setup/teardown failures)
         error_pattern = r"ERROR\s+([\w/\.]+)\s*-\s*(.+?)(?=\n\n|\nERROR|\Z)"
         failures.extend(
             [
@@ -276,7 +280,7 @@ class TestRunnerHandler:
         return {
             "summary": summary,
             "failures": failures,
-            "raw_output": output[-5000:] if len(output) > 5000 else output,  # Last 5k chars
+            "raw_output": output[-5000:] if len(output) > 5000 else output,
             "artifacts": [],
         }
 
@@ -285,25 +289,19 @@ class TestRunnerHandler:
         summary = {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "error": 0}
         failures = []
 
-        # Parse summary line
-        # Example: "Ran 5 tests in 0.45s"
         ran_match = re.search(r"Ran (\d+) tests? in", output)
         if ran_match:
             summary["total"] = int(ran_match.group(1))
 
-        # Parse OK/FAIL
         if "OK" in output:
             summary["passed"] = summary["total"]
         elif "FAIL" in output or returncode != 0:
-            # Count failures
             fail_match = re.search(r"failures=(\d+)", output)
             error_match = re.search(r"errors=(\d+)", output)
             summary["failed"] = int(fail_match.group(1)) if fail_match else 0
             summary["error"] = int(error_match.group(1)) if error_match else 0
             summary["passed"] = summary["total"] - summary["failed"] - summary["error"]
 
-        # Parse failure details
-        # Look for traceback sections
         fail_pattern = r"(FAIL|ERROR):\s+(\w+)\s*\((\w+)\).*?\n(-+\n)(.+?)(?=\n\n\n|=+)"
         for match in re.finditer(fail_pattern, output, re.DOTALL):
             test_method = match.group(2)
@@ -343,7 +341,6 @@ class TestRunnerHandler:
 
     def _extract_location(self, error_text: str) -> str:
         """Extract file:line from error text."""
-        # Look for File "...", line N
         match = re.search(r'File "([^"]+)", line (\d+)', error_text)
         if match:
             return f"{match.group(1)}:{match.group(2)}"
@@ -356,20 +353,14 @@ class TestRunnerHandler:
         for failure in failures:
             error = failure.get("error", "").lower()
             location = failure.get("location", "")
+            in_changed = any(changed_file in location for changed_file in changed_set)
 
-            # Check if failure is in changed file
-            in_changed = any(cf in location for cf in changed_set)
-
-            # Check for environment issues
-            if any(x in error for x in ["connection", "timeout", "permission", "not found", "module"]):
+            if any(indicator in error for indicator in ("connection", "timeout", "permission", "not found", "module")):
                 failure["category"] = "env"
-            # Check for flaky indicators
-            elif any(x in error for x in ["race", "deadlock", "timeout", "temporary"]):
+            elif any(indicator in error for indicator in ("race", "deadlock", "timeout", "temporary")):
                 failure["category"] = "flaky"
-            # New failure in changed code
             elif in_changed:
                 failure["category"] = "new"
-            # Regression in unchanged code
             else:
                 failure["category"] = "regression"
 
@@ -381,21 +372,23 @@ class TestRunnerHandler:
             result = await self.bash_tool.execute(
                 command="coverage report --format=json",
                 description="Get coverage report",
+                full_output=True,
             )
 
-            # Try to parse JSON output
             try:
                 cov_data = json.loads(result.get("stdout", "{}"))
                 return {
                     "overall": cov_data.get("totals", {}).get("percent_covered", 0.0),
-                    "by_file": {f: d.get("percent_covered", 0.0) for f, d in cov_data.get("files", {}).items()},
+                    "by_file": {
+                        file_path: file_coverage.get("percent_covered", 0.0)
+                        for file_path, file_coverage in cov_data.get("files", {}).items()
+                    },
                 }
             except json.JSONDecodeError:
-                # Fallback: parse text output
                 return self._parse_coverage_text(result.get("stdout", ""))
 
         except Exception as coverage_error:
-            self._logger.error(f"Coverage analysis failed: {coverage_error}", exc_info=True)
+            self._logger.error("Coverage analysis failed: %s", coverage_error, exc_info=True)
             return {"overall": 0.0, "by_file": {}, "error": str(coverage_error)}
 
     def _parse_coverage_text(self, output: str) -> dict[str, Any]:
@@ -403,12 +396,10 @@ class TestRunnerHandler:
         overall = 0.0
         by_file = {}
 
-        # Look for total line
         total_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", output)
         if total_match:
             overall = float(total_match.group(1))
 
-        # Parse file lines
         for line in output.split("\n"):
             parts = line.split()
             if len(parts) >= 4 and parts[0].endswith(".py"):
@@ -435,11 +426,10 @@ class TestRunnerHandler:
             recommendations.append("All tests passed. No action needed.")
             return recommendations
 
-        # Categorize failures
-        categories = {}
-        for f in failures:
-            cat = f.get("category", "unknown")
-            categories[cat] = categories.get(cat, 0) + 1
+        categories: dict[str, int] = {}
+        for failure_entry in failures:
+            category_name = failure_entry.get("category", "unknown")
+            categories[category_name] = categories.get(category_name, 0) + 1
 
         if categories.get("env", 0) > 0:
             recommendations.append(

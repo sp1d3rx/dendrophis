@@ -2,16 +2,7 @@
 
 Parses command strings into typed Effect objects describing what the command
 would do, then flags dangerous effects. Handles chaining, subshells, backtick
-substitution, process substitution, and common wrapper commands.
-
-Usage:
-    result = BashSandbox().simulate(command)
-    if result.dangerous:
-        block(result.reason)
-
-    # Policy-based allow/deny by category
-    result.is_denied({CommandCategory.NETWORK, CommandCategory.SYSTEM_DESTRUCTIVE})
-    result.is_allowed({CommandCategory.FILESYSTEM_READ, CommandCategory.FILESYSTEM_WRITE})
+substitution, process substitution, redirections, and common wrapper commands.
 """
 
 from __future__ import annotations
@@ -162,7 +153,7 @@ class SimResult:
 
     @property
     def categories(self) -> set[CommandCategory]:
-        return {e.category for e in self.effects if hasattr(e, "category")}
+        return {effect.category for effect in self.effects if hasattr(effect, "category")}
 
     def is_denied(self, denied: set[CommandCategory]) -> bool:
         """True if any effect's category is in the denied set."""
@@ -170,7 +161,7 @@ class SimResult:
 
     def is_allowed(self, allowed: set[CommandCategory]) -> bool:
         """True if all effect categories are within the allowed set."""
-        return self.categories.issubset(allowed) and not self.dangerous
+        return bool(self.categories) and self.categories.issubset(allowed) and not self.dangerous
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +171,20 @@ class SimResult:
 _FORK_BOMB = re.compile(r":\(\)\{")
 _DEVICE_REDIRECT = re.compile(r">\s*/dev/(sda\w*|mem|kmem|hd\w+|nvme\w+)", re.IGNORECASE)
 _RM_DANGEROUS_TARGETS = {"/", "/*", "~", "~/", "$HOME", "${HOME}", "$HOME/", "${HOME}/"}
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
-# Passthrough wrappers that just delegate to the next command
-_DELEGATION_CMDS = {"sudo", "doas", "nice", "nohup", "timeout", "time", "strace", "ltrace", "watch"}
+# Passthrough wrappers and the flags on each wrapper that consume the following argument.
+_DELEGATION_CMDS: dict[str, set[str]] = {
+    "sudo": {"-u", "-g", "-C", "-D", "-R", "-T", "-p", "-h"},
+    "doas": {"-u", "-C"},
+    "nice": {"-n"},
+    "nohup": set(),
+    "timeout": {"-k", "-s"},
+    "time": {"-f", "-o"},
+    "strace": {"-e", "-o", "-p", "-s", "-u"},
+    "ltrace": {"-e", "-o", "-p", "-s", "-u"},
+    "watch": {"-n"},
+}
 
 # Package managers and their typical install/remove verbs
 _PACKAGE_MANAGERS: dict[str, list[str]] = {
@@ -201,8 +203,8 @@ _PACKAGE_MANAGERS: dict[str, list[str]] = {
     "apk": ["add", "del"],
 }
 
-# Git subcommands that can be destructive
-_GIT_DESTRUCTIVE = {"reset", "clean", "checkout", "rebase", "push", "force-push"}
+# Git global flags that take a separate value token before the subcommand
+_GIT_GLOBAL_VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
 
 
 # ---------------------------------------------------------------------------
@@ -226,13 +228,13 @@ class BashSandbox:
             result.flag("fork bomb")
             return
 
-        if _DEVICE_REDIRECT.search(command):
-            m = _DEVICE_REDIRECT.search(command)
-            result.add(DeviceAccessEffect(command=command, device=m.group(0).strip()))
-            result.flag(f"direct device write: {m.group(0).strip()}")
+        device_match = _DEVICE_REDIRECT.search(command)
+        if device_match:
+            device_target = device_match.group(0).strip()
+            result.add(DeviceAccessEffect(command=command, device=device_target))
+            result.flag(f"direct device write: {device_target}")
             return
 
-        # Normalise backtick substitution → $(...) before further processing
         command = self._normalise_backticks(command)
 
         for segment in self._split_operators(command):
@@ -243,14 +245,26 @@ class BashSandbox:
         if not segment:
             return
 
+        # Unwrap plain subshells (...) and brace groups { ...; }
+        if (segment.startswith("(") and segment.endswith(")")) or (segment.startswith("{") and segment.endswith("}")):
+            inner_body = segment[1:-1].strip()
+            if inner_body:
+                self._simulate_str(inner_body, result)
+            return
+
         # Extract and recurse into all substitution forms before tokenising
-        for inner in self._extract_substitutions(segment):
+        for inner_sub in self._extract_substitutions(segment):
             inner_result = SimResult()
-            self._simulate_str(inner, inner_result)
-            shell_effect = ShellExecutionEffect(command=inner, inner_effects=inner_result.effects)
+            self._simulate_str(inner_sub, inner_result)
+            shell_effect = ShellExecutionEffect(command=inner_sub, inner_effects=inner_result.effects)
             result.add(shell_effect)
             if inner_result.dangerous:
                 result.flag(f"dangerous substitution: {inner_result.reason}")
+
+        # Detect output redirections (>, >>, &>, 2>) outside quotes before shlex splitting
+        for redirect_target, is_truncate in self._extract_output_redirections(segment):
+            if redirect_target != "/dev/null" and not redirect_target.startswith("&"):
+                result.add(FileWriteEffect(command=segment, path=redirect_target, truncate=is_truncate))
 
         try:
             tokens = shlex.split(segment)
@@ -261,22 +275,35 @@ class BashSandbox:
         if not tokens:
             return
 
+        # Strip leading VAR=val inline environment assignments
+        leading_env: dict[str, str] = {}
+        token_index = 0
+        while token_index < len(tokens) and _ENV_ASSIGNMENT.match(tokens[token_index]):
+            var_name, _, var_value = tokens[token_index].partition("=")
+            leading_env[var_name] = var_value
+            token_index += 1
+
+        if leading_env:
+            result.add(EnvironmentEffect(command=segment, variables=leading_env))
+            tokens = tokens[token_index:]
+            if not tokens:
+                return
+
         cmd = Path(tokens[0]).name
 
-        # Unwrap pure delegation wrappers
+        # Unwrap delegation wrappers (sudo, timeout, nice, etc.)
         if cmd in _DELEGATION_CMDS:
-            # Skip flags, re-simulate the remainder
-            rest = [t for t in tokens[1:] if not t.startswith("-") or "=" in t]
-            if rest:
-                self._simulate_segment(shlex.join(rest), result)
+            rest_tokens = self._unwrap_delegation(cmd, tokens[1:])
+            if rest_tokens:
+                self._simulate_segment(shlex.join(rest_tokens), result)
             return
 
         # bash/sh/zsh -c "..."
         if cmd in ("bash", "sh", "zsh", "fish", "dash", "ksh") and "-c" in tokens:
-            idx = tokens.index("-c")
-            if idx + 1 < len(tokens):
+            flag_index = tokens.index("-c")
+            if flag_index + 1 < len(tokens):
                 inner_result = SimResult()
-                self._simulate_str(tokens[idx + 1], inner_result)
+                self._simulate_str(tokens[flag_index + 1], inner_result)
                 result.add(ShellExecutionEffect(command=segment, inner_effects=inner_result.effects))
                 if inner_result.dangerous:
                     result.flag(f"dangerous shell -c: {inner_result.reason}")
@@ -297,320 +324,436 @@ class BashSandbox:
         # source / .
         if cmd in ("source", "."):
             result.add(ShellExecutionEffect(command=segment, inner_effects=[]))
-            # Can't know what the file contains statically; flag as shell execution
             return
 
         # env VAR=val cmd args
         if cmd == "env":
-            env_vars = {}
+            env_vars: dict[str, str] = {}
             rest_tokens = []
-            for t in tokens[1:]:
-                if "=" in t and not t.startswith("-"):
-                    k, _, v = t.partition("=")
-                    env_vars[k] = v
+            found_command = False
+            for token_item in tokens[1:]:
+                if not found_command and "=" in token_item and not token_item.startswith("-"):
+                    env_key, _, env_val = token_item.partition("=")
+                    env_vars[env_key] = env_val
+                elif not found_command and token_item.startswith("-"):
+                    continue
                 else:
-                    rest_tokens.append(t)
+                    found_command = True
+                    rest_tokens.append(token_item)
             if env_vars:
                 result.add(EnvironmentEffect(command=segment, variables=env_vars))
             if rest_tokens:
                 self._simulate_segment(shlex.join(rest_tokens), result)
             return
 
-        # export / unset
+        # export
         if cmd == "export":
-            env_vars = {}
-            for t in tokens[1:]:
-                if "=" in t:
-                    k, _, v = t.partition("=")
-                    env_vars[k] = v
+            export_vars: dict[str, str] = {}
+            for token_item in tokens[1:]:
+                if "=" in token_item:
+                    env_key, _, env_val = token_item.partition("=")
+                    export_vars[env_key] = env_val
                 else:
-                    env_vars[t] = ""
-            result.add(EnvironmentEffect(command=segment, variables=env_vars))
+                    export_vars[token_item] = ""
+            result.add(EnvironmentEffect(command=segment, variables=export_vars))
             return
 
         self._handle_leaf(cmd, tokens, segment, result)
 
+    @staticmethod
+    def _unwrap_delegation(wrapper_cmd: str, args: list[str]) -> list[str]:
+        """Strip wrapper flags (and positional duration for `timeout`) to find the delegated command."""
+        value_flags = _DELEGATION_CMDS.get(wrapper_cmd, set())
+        cursor = 0
+        while cursor < len(args):
+            arg_token = args[cursor]
+            if arg_token == "--":
+                cursor += 1
+                break
+            if arg_token in value_flags:
+                cursor += 2
+                continue
+            if arg_token.startswith("-"):
+                cursor += 1
+                continue
+            break
+        # `timeout [FLAGS] DURATION COMMAND ...` has one positional duration argument before COMMAND
+        if wrapper_cmd == "timeout" and cursor < len(args):
+            cursor += 1
+        return args[cursor:]
+
     # -- Leaf handlers -------------------------------------------------------
 
     def _handle_leaf(self, cmd: str, tokens: list[str], raw: str, result: SimResult) -> None:
-        # --- Filesystem delete ---
         if cmd in ("rm", "rmdir", "unlink"):
-            flags = "".join(t.lstrip("-") for t in tokens[1:] if t.startswith("-") and t != "--")
-            recursive = "r" in flags.lower()
-            force = "f" in flags
-            targets = [t for t in tokens[1:] if not t.startswith("-") or t == "--"]
-            targets = [t for t in targets if t != "--"]
+            combined_flags = "".join(
+                token_item.lstrip("-") for token_item in tokens[1:] if token_item.startswith("-") and token_item != "--"
+            )
+            recursive = "r" in combined_flags.lower()
+            force = "f" in combined_flags
+            targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-") and token_item != "--"]
             result.add(FileDeleteEffect(command=raw, paths=targets, recursive=recursive, force=force))
-            if recursive and force and any(t in _RM_DANGEROUS_TARGETS for t in targets):
+            if recursive and force and any(target_path in _RM_DANGEROUS_TARGETS for target_path in targets):
                 result.flag(f"rm -rf on dangerous target: {targets}")
 
         elif cmd in ("shred", "wipe"):
-            targets = [t for t in tokens[1:] if not t.startswith("-")]
+            targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
             result.add(FileDeleteEffect(command=raw, paths=targets, recursive=False, force=True))
             result.flag(f"{cmd} permanently destroys files: {targets}")
 
         elif cmd == "truncate":
-            targets = [t for t in tokens[1:] if not t.startswith("-") and "=" not in t]
-            for t in targets:
-                result.add(FileWriteEffect(command=raw, path=t, truncate=True))
+            targets = [
+                token_item for token_item in tokens[1:] if not token_item.startswith("-") and "=" not in token_item
+            ]
+            for target_path in targets:
+                result.add(FileWriteEffect(command=raw, path=target_path, truncate=True))
 
-        # --- Filesystem write ---
         elif cmd in ("cp", "mv"):
-            targets = [t for t in tokens[1:] if not t.startswith("-")]
-            for t in targets:
-                result.add(FileWriteEffect(command=raw, path=t))
+            targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
+            for target_path in targets:
+                result.add(FileWriteEffect(command=raw, path=target_path))
             if cmd == "mv" and len(targets) >= 1:
-                # source is deleted
                 result.add(FileDeleteEffect(command=raw, paths=targets[:1]))
 
-        elif cmd in ("touch", "mkdir", "ln", "mktemp") or cmd == "tee":
-            targets = [t for t in tokens[1:] if not t.startswith("-")]
-            for t in targets:
-                result.add(FileWriteEffect(command=raw, path=t))
+        elif cmd in ("touch", "mkdir", "ln", "mktemp", "tee"):
+            targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
+            for target_path in targets:
+                result.add(FileWriteEffect(command=raw, path=target_path))
 
-        # --- Filesystem read ---
         elif cmd in ("cat", "less", "more", "head", "tail", "bat", "view"):
-            targets = [t for t in tokens[1:] if not t.startswith("-")]
+            targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
             result.add(FileReadEffect(command=raw, paths=targets))
 
         elif cmd in ("ls", "find", "stat", "file", "wc", "diff", "grep", "rg", "awk", "sed"):
-            # find gets special handling for -exec and -delete
             if cmd == "find":
                 if "-delete" in tokens:
                     result.add(FileDeleteEffect(command=raw, paths=[], recursive=True, force=False))
-                if "-exec" in tokens:
-                    idx = tokens.index("-exec")
-                    exec_tokens = []
-                    for t in tokens[idx + 1 :]:
-                        if t in (";", r"\;", "+"):
-                            break
-                        exec_tokens.append(t)
-                    if exec_tokens:
-                        self._simulate_segment(shlex.join(exec_tokens), result)
-                if "-execdir" in tokens:
-                    idx = tokens.index("-execdir")
-                    exec_tokens = []
-                    for t in tokens[idx + 1 :]:
-                        if t in (";", r"\;", "+"):
-                            break
-                        exec_tokens.append(t)
-                    if exec_tokens:
-                        self._simulate_segment(shlex.join(exec_tokens), result)
+                for exec_flag in ("-exec", "-execdir"):
+                    if exec_flag in tokens:
+                        exec_index = tokens.index(exec_flag)
+                        exec_tokens = []
+                        for token_item in tokens[exec_index + 1 :]:
+                            if token_item in (";", r"\;", "+"):
+                                break
+                            exec_tokens.append(token_item)
+                        if exec_tokens:
+                            self._simulate_segment(shlex.join(exec_tokens), result)
+                if "-delete" not in tokens and "-exec" not in tokens and "-execdir" not in tokens:
+                    targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
+                    result.add(FileReadEffect(command=raw, paths=targets))
+            elif (
+                cmd == "sed"
+                and any(
+                    token_item == "-i" or token_item.startswith("-i") or token_item.startswith("--in-place")
+                    for token_item in tokens[1:]
+                )
+            ) or (
+                cmd == "awk"
+                and any(token_item in ("-i", "--include") and "inplace" in tokens for token_item in tokens[1:])
+            ):
+                targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
+                target_file = targets[-1] if targets else ""
+                result.add(FileWriteEffect(command=raw, path=target_file))
             else:
-                targets = [t for t in tokens[1:] if not t.startswith("-")]
+                targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
                 result.add(FileReadEffect(command=raw, paths=targets))
 
-        # --- xargs ---
         elif cmd == "xargs":
-            # xargs rm, xargs chmod, etc.
-            rest = [t for t in tokens[1:] if not t.startswith("-")]
-            if rest:
-                self._simulate_segment(shlex.join(rest), result)
+            rest_tokens = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
+            if rest_tokens:
+                self._simulate_segment(shlex.join(rest_tokens), result)
 
-        # --- Permissions ---
         elif cmd in ("chmod", "chown", "chgrp"):
-            flags = [t for t in tokens[1:] if t.startswith("-")]
-            args = [t for t in tokens[1:] if not t.startswith("-")]
-            recursive = any("R" in f for f in flags)
-            mode = args[0] if args else ""
-            paths = args[1:] if len(args) > 1 else []
+            flag_tokens = [token_item for token_item in tokens[1:] if token_item.startswith("-")]
+            arg_tokens = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
+            recursive = any("R" in flag_item for flag_item in flag_tokens)
+            mode = arg_tokens[0] if arg_tokens else ""
+            paths = arg_tokens[1:] if len(arg_tokens) > 1 else []
             result.add(PermissionChangeEffect(command=raw, mode=mode, paths=paths, recursive=recursive))
             if cmd == "chmod" and recursive and mode == "777":
                 result.flag("chmod -R 777")
 
-        # --- System destructive ---
         elif cmd == "mkfs":
-            device = next((t for t in tokens[1:] if not t.startswith("-")), "unknown")
+            device = next((token_item for token_item in tokens[1:] if not token_item.startswith("-")), "unknown")
             result.add(DeviceAccessEffect(command=raw, device=device))
             result.flag(f"mkfs would format: {device}")
 
         elif cmd == "dd":
-            of = next((t.split("=", 1)[1] for t in tokens if t.startswith("of=")), None)
-            if of:
-                result.add(FileWriteEffect(command=raw, path=of))
-                if of.startswith("/dev/"):
-                    result.flag(f"dd writing to device: {of}")
+            output_file = next(
+                (token_item.split("=", 1)[1] for token_item in tokens if token_item.startswith("of=")),
+                None,
+            )
+            if output_file:
+                result.add(FileWriteEffect(command=raw, path=output_file))
+                if output_file.startswith("/dev/"):
+                    result.flag(f"dd writing to device: {output_file}")
 
         elif cmd in ("fdisk", "parted", "gdisk", "sgdisk"):
-            device = next((t for t in tokens[1:] if not t.startswith("-")), "unknown")
+            device = next((token_item for token_item in tokens[1:] if not token_item.startswith("-")), "unknown")
             result.add(DeviceAccessEffect(command=raw, device=device))
             result.flag(f"{cmd} modifies partition table: {device}")
 
-        # --- Network ---
         elif cmd in ("curl", "wget", "http", "httpie"):
-            url = next((t for t in tokens[1:] if t.startswith("http")), "")
+            url = next((token_item for token_item in tokens[1:] if token_item.startswith("http")), "")
             result.add(NetworkEffect(command=raw, url=url, tool=cmd))
 
         elif cmd in ("ssh", "scp", "sftp", "rsync", "nc", "netcat", "ncat"):
             result.add(NetworkEffect(command=raw, tool=cmd))
 
-        # --- Process control ---
         elif cmd in ("kill", "pkill", "killall"):
-            signal = next((t for t in tokens[1:] if t.startswith("-")), "")
-            targets = [t for t in tokens[1:] if not t.startswith("-")]
+            signal = next((token_item for token_item in tokens[1:] if token_item.startswith("-")), "")
+            targets = [token_item for token_item in tokens[1:] if not token_item.startswith("-")]
             result.add(ProcessControlEffect(command=raw, signal=signal, targets=targets))
 
-        # --- Package managers ---
         elif cmd in _PACKAGE_MANAGERS:
             verbs = _PACKAGE_MANAGERS[cmd]
-            operation = next((t for t in tokens[1:] if t in verbs), "")
-            packages = [t for t in tokens[1:] if not t.startswith("-") and t != operation]
+            operation = next((token_item for token_item in tokens[1:] if token_item in verbs), "")
+            packages = [
+                token_item for token_item in tokens[1:] if not token_item.startswith("-") and token_item != operation
+            ]
             result.add(PackageManagerEffect(command=raw, manager=cmd, operation=operation, packages=packages))
 
-        # --- Git ---
         elif cmd == "git":
-            subcommand = tokens[1] if len(tokens) > 1 else ""
-            flags = [t for t in tokens[2:] if t.startswith("-")]
+            subcommand, sub_tokens = self._parse_git_subcommand(tokens[1:])
+            flag_tokens = [token_item for token_item in sub_tokens if token_item.startswith("-")]
+            short_flags = "".join(
+                token_item[1:]
+                for token_item in flag_tokens
+                if token_item.startswith("-") and not token_item.startswith("--")
+            )
             is_destructive = False
 
-            if subcommand == "reset" and "--hard" in flags:
+            if subcommand == "reset" and "--hard" in flag_tokens:
                 is_destructive = True
                 result.flag("git reset --hard discards uncommitted changes")
-            elif subcommand == "clean" and any(f in flags for f in ("-f", "--force")):
+            elif subcommand == "clean" and ("f" in short_flags or "--force" in flag_tokens):
                 is_destructive = True
                 result.flag("git clean -f removes untracked files")
-            elif subcommand == "push" and any(f in flags for f in ("--force", "-f", "--force-with-lease")):
+            elif subcommand == "push" and (
+                "f" in short_flags or any(flag_item in flag_tokens for flag_item in ("--force", "--force-with-lease"))
+            ):
                 is_destructive = True
                 result.flag("git push --force rewrites remote history")
-            elif subcommand == "checkout" and any(t == "." or t == "--" for t in tokens[2:]):
+            elif subcommand == "checkout" and any(token_item in (".", "--") for token_item in sub_tokens):
                 is_destructive = True
                 result.flag("git checkout -- discards working tree changes")
 
-            result.add(GitEffect(command=raw, subcommand=subcommand, flags=flags, is_destructive=is_destructive))
+            result.add(GitEffect(command=raw, subcommand=subcommand, flags=flag_tokens, is_destructive=is_destructive))
 
-        # --- Unknown ---
         else:
             result.add(UnknownCommandEffect(command=raw))
 
-    # -- Command substitution extraction -------------------------------------
+    @staticmethod
+    def _parse_git_subcommand(git_args: list[str]) -> tuple[str, list[str]]:
+        """Skip global git flags like `-C dir` or `-c k=v` to locate the subcommand."""
+        cursor = 0
+        while cursor < len(git_args):
+            token_item = git_args[cursor]
+            if token_item in _GIT_GLOBAL_VALUE_FLAGS:
+                cursor += 2
+                continue
+            if token_item.startswith("-"):
+                cursor += 1
+                continue
+            return token_item, git_args[cursor + 1 :]
+        return "", []
+
+    # -- Redirection & Substitution extraction -------------------------------
+
+    @staticmethod
+    def _extract_output_redirections(segment: str) -> list[tuple[str, bool]]:
+        """Return (target_path, truncate) pairs for unquoted >, >>, &>, 2> redirections."""
+        redirections: list[tuple[str, bool]] = []
+        cursor = 0
+        in_single = False
+        in_double = False
+        text_len = len(segment)
+
+        while cursor < text_len:
+            char = segment[cursor]
+            if char == "\\" and not in_single and cursor + 1 < text_len:
+                cursor += 2
+                continue
+            if char == "'" and not in_double:
+                in_single = not in_single
+                cursor += 1
+                continue
+            if char == '"' and not in_single:
+                in_double = not in_double
+                cursor += 1
+                continue
+            if not in_single and not in_double and char == ">":
+                # Ignore process substitution >(...)
+                if cursor + 1 < text_len and segment[cursor + 1] == "(":
+                    cursor += 2
+                    continue
+                is_append = cursor + 1 < text_len and segment[cursor + 1] == ">"
+                target_start = cursor + (2 if is_append else 1)
+                while target_start < text_len and segment[target_start] in (" ", "\t"):
+                    target_start += 1
+                target_end = target_start
+                while target_end < text_len and segment[target_end] not in (" ", "\t", ";", "|", "&", "\n", ")"):
+                    target_end += 1
+                target_token = segment[target_start:target_end].strip("'\"")
+                if target_token:
+                    redirections.append((target_token, not is_append))
+                cursor = target_end
+                continue
+            cursor += 1
+        return redirections
 
     def _extract_substitutions(self, text: str) -> list[str]:
-        """Extract all $(...), `...`, <(...), >(...) substitution contents."""
+        """Extract all $(...), <(...), >(...) substitution contents outside single quotes."""
         results: list[str] = []
-        i = 0
-        while i < len(text):
-            # $(...) and <(...) and >(...)
-            if text[i] in ("$", "<", ">") and i + 1 < len(text) and text[i + 1] == "(":
-                inner, consumed = self._extract_parens(text, i + 1)
+        cursor = 0
+        in_single = False
+        in_double = False
+        while cursor < len(text):
+            char = text[cursor]
+            if char == "\\" and not in_single and cursor + 1 < len(text):
+                cursor += 2
+                continue
+            if char == "'" and not in_double:
+                in_single = not in_single
+                cursor += 1
+                continue
+            if char == '"' and not in_single:
+                in_double = not in_double
+                cursor += 1
+                continue
+            if not in_single and char in ("$", "<", ">") and cursor + 1 < len(text) and text[cursor + 1] == "(":
+                inner, consumed = self._extract_parens(text, cursor + 1)
                 if inner is not None:
                     results.append(inner)
-                    # Recurse for nested substitutions
                     results.extend(self._extract_substitutions(inner))
-                    i += consumed
+                    cursor += consumed
                     continue
-            i += 1
+            cursor += 1
         return results
 
     def _extract_parens(self, text: str, start: int) -> tuple[str | None, int]:
-        """Extract content of balanced parens starting at `start` (the opening paren index).
-        Returns (inner_content, chars_consumed) or (None, 0).
-        """
+        """Extract content of balanced parens starting at `start` (the opening paren index)."""
         if start >= len(text) or text[start] != "(":
             return None, 0
         depth = 1
-        j = start + 1
-        while j < len(text) and depth > 0:
-            if text[j] == "(":
+        scan_index = start + 1
+        while scan_index < len(text) and depth > 0:
+            if text[scan_index] == "\\" and scan_index + 1 < len(text):
+                scan_index += 2
+                continue
+            if text[scan_index] == "(":
                 depth += 1
-            elif text[j] == ")":
+            elif text[scan_index] == ")":
                 depth -= 1
-            j += 1
+            scan_index += 1
         if depth == 0:
-            return text[start + 1 : j - 1], j - start
+            return text[start + 1 : scan_index - 1], scan_index - start
         return None, 0
 
     def _normalise_backticks(self, command: str) -> str:
-        """Replace `cmd` with $(cmd) for uniform processing."""
-        result = []
-        i = 0
-        while i < len(command):
-            if command[i] == "`":
-                j = i + 1
-                while j < len(command) and command[j] != "`":
-                    j += 1
-                inner = command[i + 1 : j]
-                result.append(f"$({inner})")
-                i = j + 1
-            else:
-                result.append(command[i])
-                i += 1
+        """Replace unquoted/double-quoted `cmd` with $(cmd), leaving single-quoted literals untouched."""
+        result: list[str] = []
+        cursor = 0
+        in_single = False
+        in_double = False
+        while cursor < len(command):
+            char = command[cursor]
+            if char == "\\" and not in_single and cursor + 1 < len(command):
+                result.append(command[cursor : cursor + 2])
+                cursor += 2
+                continue
+            if char == "'" and not in_double:
+                in_single = not in_single
+                result.append(char)
+                cursor += 1
+                continue
+            if char == '"' and not in_single:
+                in_double = not in_double
+                result.append(char)
+                cursor += 1
+                continue
+            if char == "`" and not in_single:
+                end_index = cursor + 1
+                while end_index < len(command) and command[end_index] != "`":
+                    if command[end_index] == "\\" and end_index + 1 < len(command):
+                        end_index += 2
+                        continue
+                    end_index += 1
+                if end_index < len(command):
+                    inner = command[cursor + 1 : end_index]
+                    result.append(f"$({inner})")
+                    cursor = end_index + 1
+                    continue
+            result.append(char)
+            cursor += 1
         return "".join(result)
 
     # -- Operator splitting --------------------------------------------------
 
     def _split_operators(self, command: str) -> list[str]:
-        """Split on ;, &&, ||, |, &, newlines — respecting quotes and paren depth."""
+        """Split on ;, &&, ||, |, &, newlines — respecting quotes, escapes, and paren depth."""
         segments: list[str] = []
         current: list[str] = []
-        i = 0
+        cursor = 0
         depth = 0
         in_single = False
         in_double = False
 
-        while i < len(command):
-            c = command[i]
+        while cursor < len(command):
+            char = command[cursor]
 
-            if c == "'" and not in_double:
+            if char == "\\" and not in_single and cursor + 1 < len(command):
+                current.append(command[cursor : cursor + 2])
+                cursor += 2
+                continue
+            if char == "'" and not in_double:
                 in_single = not in_single
-                current.append(c)
-            elif c == '"' and not in_single:
+                current.append(char)
+            elif char == '"' and not in_single:
                 in_double = not in_double
-                current.append(c)
+                current.append(char)
             elif in_single or in_double:
-                current.append(c)
-            elif c in ("(", "{"):
+                current.append(char)
+            elif char in ("(", "{"):
                 depth += 1
-                current.append(c)
-            elif c in (")", "}"):
-                depth -= 1
-                current.append(c)
+                current.append(char)
+            elif char in (")", "}"):
+                depth = max(0, depth - 1)
+                current.append(char)
             elif depth == 0:
-                ahead = command[i : i + 2]
-                if c == "\n" or c == ";":
+                ahead = command[cursor : cursor + 2]
+                prev_char = command[cursor - 1] if cursor > 0 else ""
+                if char in ("\n", ";"):
                     segments.append("".join(current))
                     current = []
                 elif ahead in ("&&", "||"):
                     segments.append("".join(current))
                     current = []
-                    i += 1  # skip second char
-                elif c == "|" and ahead != "||":
-                    segments.append("".join(current))
-                    current = []
-                elif c == "&" and ahead != "&&":
-                    # background — treat as segment boundary
+                    cursor += 1
+                elif (char == "|" and ahead != "||") or (
+                    char == "&" and ahead not in ("&&", "&>") and prev_char != ">"
+                ):
                     segments.append("".join(current))
                     current = []
                 else:
-                    current.append(c)
+                    current.append(char)
             else:
-                current.append(c)
+                current.append(char)
 
-            i += 1
+            cursor += 1
 
         if current:
             segments.append("".join(current))
 
-        return [s.strip() for s in segments if s.strip()]
+        return [segment_item.strip() for segment_item in segments if segment_item.strip()]
 
 
-# Heredoc with a redirect on the same line, e.g. `cat << EOF > file.txt`.
-# `env` / `sh -c` prefixed forms are covered too: the heredoc signature is
-# detected anywhere in the line, so no prefix anchoring is needed.
 _HEREDOC_REDIRECT = re.compile(r"<<\s*['\"]?\w+['\"]?.*>", re.MULTILINE)
-# `echo`/`printf` with a quoted payload on one line and a redirect on a later line.
 _ECHO_LINE_REDIRECT = re.compile(r"^\s*(?:echo|printf)\s+[\'\"].*\n.*[>][>]*[^>]+\S+", re.MULTILINE)
 
 
 def is_heredoc_write_pattern(command: str) -> bool:
-    """Return True if the bash command uses heredoc or redirect to write a file.
-
-    Detects patterns like:
-    - cat << EOF > file.txt
-    - echo "content"\n> file
-
-    This is a UX guard (steer the agent to the write tool), not a security
-    boundary -- keep the heuristics conservative and pinned by tests.
-    """
+    """Return True if the bash command uses heredoc or redirect to write a file."""
     if not command:
         return False
 
@@ -618,7 +761,6 @@ def is_heredoc_write_pattern(command: str) -> bool:
         return True
     if _ECHO_LINE_REDIRECT.search(command):
         return True
-    # Multi-line command that both mentions a writer and redirects somewhere.
     return bool(
         command.count("\n") > 1
         and re.search(r"[>][>]*\s*\S+", command)

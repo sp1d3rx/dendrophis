@@ -14,12 +14,12 @@ PREFERRED_TOOL_ORDER: tuple[str, ...] = (
     ToolName.GLOB,
     ToolName.RIPGREP,
     ToolName.READ,
-    ToolName.READ_FILE,
     ToolName.LIST_DIR,
     ToolName.EDIT,
+    ToolName.PATCH,
     ToolName.EDIT_FUNCTION,
     ToolName.WRITE,
-    ToolName.WRITE_FILE,
+    ToolName.APPEND,
     ToolName.BASH,
 )
 
@@ -47,10 +47,15 @@ class ToolRegistry:
         self._disabled_tools.pop(tool.name, None)
 
     def remove(self, name: str) -> None:
-        """Remove a tool from the registry by name."""
+        """Disable and remove a tool from active registration by name."""
         tool = self._tools.pop(name, None)
         if tool:
             self._disabled_tools[name] = tool
+
+    def purge(self, name: str) -> None:
+        """Completely remove a tool from both active and disabled sets."""
+        self._tools.pop(name, None)
+        self._disabled_tools.pop(name, None)
 
     def is_disabled(self, name: str) -> bool:
         """Return True if the tool is currently disabled."""

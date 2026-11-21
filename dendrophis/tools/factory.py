@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from dendrophis.tools.builtins.todo_manager import TodoManager
 from dendrophis.tools.discovery import discover_tool_classes, resolve_dependencies_and_instantiate
+from dendrophis.tools.interactive.base import InteractiveBaseTool
 from dendrophis.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from dendrophis.events.protocol import IEventBus
     from dendrophis.memory import MemoryStore
+
+# ClarifyTool is scoped exclusively to the code-writer subagent, not the main session.
+_MAIN_SESSION_EXCLUDED_CLASSES = frozenset({"InteractiveBaseTool", "BaseTool", "ClarifyTool"})
 
 
 def create_builtin_registry(
@@ -27,17 +32,8 @@ def create_builtin_registry(
         no_interactive: If True, skip interactive approval flow for python exec (useful for tests)
     """
     registry = ToolRegistry()
+    todo_manager = TodoManager(event_bus)
 
-    # Try to import and instantiate TodoManager safely
-    todo_manager = None
-    try:
-        from dendrophis.tools.builtins.todo_manager import TodoManager
-
-        todo_manager = TodoManager(event_bus)
-    except ImportError:
-        pass
-
-    # Build the dictionary of dependencies to inject
     dependency_dictionary = {
         "event_bus": event_bus,
         "memory_store": memory_store,
@@ -46,49 +42,38 @@ def create_builtin_registry(
         "no_interactive": no_interactive,
     }
 
-    # Discover and load tool classes dynamically from builtins and interactive packages
+    # pkgutil.walk_packages recurses into dendrophis.tools.builtins.filesystem automatically.
     discovered_classes = discover_tool_classes(
         [
             "dendrophis.tools.builtins",
-            "dendrophis.tools.builtins.filesystem",
             "dendrophis.tools.interactive",
         ]
     )
 
     instantiated_tools = []
     for tool_class in discovered_classes:
-        if tool_class.__name__ in ("InteractiveBaseTool", "BaseTool"):
+        if tool_class.__name__ in _MAIN_SESSION_EXCLUDED_CLASSES:
             continue
         tool_instance = resolve_dependencies_and_instantiate(tool_class, dependency_dictionary)
         if tool_instance is not None:
             instantiated_tools.append(tool_instance)
 
-    # Separate interactive tools from base tools
-    from dendrophis.tools.interactive.base import InteractiveBaseTool
-
     interactive_tools = [tool for tool in instantiated_tools if isinstance(tool, InteractiveBaseTool)]
     base_tools = [tool for tool in instantiated_tools if not isinstance(tool, InteractiveBaseTool)]
 
     if interactive:
-        # Enable silent mode for safe interactive tools
         for tool in interactive_tools:
-            if tool.name in ("edit", "write", "patch"):
-                tool.silent = True
-            else:
-                tool.silent = False
+            tool.silent = tool.name in ("edit", "write", "patch")
 
         interactive_names = {tool.name for tool in interactive_tools}
 
-        # Register interactive versions first
         for tool in interactive_tools:
             registry.add(tool)
 
-        # Register non-interactive versions for tools that don't have interactive equivalents
         for tool in base_tools:
             if tool.name not in interactive_names:
                 registry.add(tool)
     else:
-        # Register all non-interactive tools
         for tool in base_tools:
             registry.add(tool)
 

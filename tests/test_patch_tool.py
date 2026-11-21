@@ -196,8 +196,9 @@ async def test_patch_tool_auto_lint(local_tmp_dir) -> None:
 
 
 @pytest.mark.anyio
-async def test_patch_tool_fallback_keys_and_backup(local_tmp_dir) -> None:
-    sample_file_path = local_tmp_dir / "test_fallback.txt"
+async def test_patch_tool_fallback_keys_and_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sample_file_path = tmp_path / "test_fallback.txt"
     initial_content = "alpha line\nbeta line\ngamma line\n"
     sample_file_path.write_text(initial_content, encoding="utf-8")
 
@@ -208,9 +209,8 @@ async def test_patch_tool_fallback_keys_and_backup(local_tmp_dir) -> None:
         {"old": "gamma line", "new": "gamma updated"},
     ]
 
-    relative_path = sample_file_path.relative_to(Path.cwd())
     execution_result = await patch_tool_instance.execute(
-        file_path=str(relative_path),
+        file_path="test_fallback.txt",
         edits=edit_list,
     )
 
@@ -218,9 +218,9 @@ async def test_patch_tool_fallback_keys_and_backup(local_tmp_dir) -> None:
     assert execution_result.get("applied_edits_count") == 2
     assert sample_file_path.read_text(encoding="utf-8") == "alpha updated\nbeta line\ngamma updated\n"
 
+    # Backup file is automatically removed once the edit completes
     backup_file_path = sample_file_path.with_suffix(".txt.bak")
-    assert backup_file_path.exists()
-    assert backup_file_path.read_text(encoding="utf-8") == initial_content
+    assert not backup_file_path.exists()
 
 
 @pytest.mark.anyio

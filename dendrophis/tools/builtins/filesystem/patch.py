@@ -10,6 +10,8 @@ from dendrophis.tools.base import BaseTool
 from dendrophis.tools.builtins.filesystem.utils import (
     backup_existing_file,
     is_blocked_path,
+    remove_backup_file,
+    restore_backup_file,
     run_auto_lint,
     try_unescape,
 )
@@ -81,12 +83,13 @@ class PatchTool(BaseTool):
         }
 
     async def execute(self, file_path: str, edits: list[dict[str, str]]) -> dict[str, Any]:
+        backup_path: Path | None = None
+        path = Path(file_path)
         try:
             error_message = is_blocked_path(file_path)
             if error_message:
                 return {"error": error_message}
 
-            path = Path(file_path)
             if not (path.exists() and path.is_file()):
                 return {"error": f"Path is not a valid file: {file_path}"}
 
@@ -142,13 +145,16 @@ class PatchTool(BaseTool):
                     }
                 )
 
-            await asyncio.to_thread(backup_existing_file, path)
-            await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
+            backup_path = await asyncio.to_thread(backup_existing_file, path)
+            try:
+                await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
+            except Exception:
+                await asyncio.to_thread(restore_backup_file, backup_path, path)
+                raise
 
-            # Run auto-linting
             lint_errors = await asyncio.to_thread(run_auto_lint, file_path)
 
-            result = {
+            result: dict[str, Any] = {
                 "success": True,
                 "file": str(path),
                 "applied_edits_count": len(applied_edits),
@@ -159,3 +165,5 @@ class PatchTool(BaseTool):
             return result
         except Exception as exception_error:
             return {"error": str(exception_error)}
+        finally:
+            await asyncio.to_thread(remove_backup_file, backup_path)

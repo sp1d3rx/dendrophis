@@ -15,6 +15,8 @@ from dendrophis.events import (
 from .messages import SubagentRequest, SubagentResponse
 from .registry import get_registry
 
+_MAX_TRACKED_TASK_STATUSES = 200
+
 
 @dataclass
 class ExecutionResult:
@@ -40,23 +42,19 @@ class SubagentExecutor:
         if self._event_bus:
             self._event_bus.publish(event)
 
+    def _record_status(self, task_id: str, status: Literal["pending", "running", "complete", "failed"]) -> None:
+        self._task_status[task_id] = status
+        if len(self._task_status) > _MAX_TRACKED_TASK_STATUSES:
+            oldest_key = next(iter(self._task_status))
+            self._task_status.pop(oldest_key, None)
+
     async def execute(
         self,
         agent: str,
         payload: dict[str, Any],
         context: dict[str, Any] | None = None,
     ) -> ExecutionResult:
-        """Execute a subagent request.
-
-        Args:
-            agent: Name of the subagent to invoke
-            payload: Task-specific data
-            context: Additional context (files, memories, etc.)
-
-        Returns:
-            ExecutionResult with response or error
-        """
-        # Validate agent exists
+        """Execute a subagent request."""
         definition = self.registry.get(agent)
         if not definition:
             error_message = f"Unknown agent: {agent}"
@@ -65,7 +63,6 @@ class SubagentExecutor:
                 error=error_message,
             )
 
-        # Create request
         task_id = str(uuid.uuid4())[:8]
         request = SubagentRequest(
             agent=agent,
@@ -74,7 +71,7 @@ class SubagentExecutor:
             context=context or {},
         )
         self._active_tasks[task_id] = request
-        self._task_status[task_id] = "pending"
+        self._record_status(task_id, "pending")
 
         self._emit(
             SubagentTaskStartedEvent(
@@ -85,8 +82,7 @@ class SubagentExecutor:
         )
 
         try:
-            self._task_status[task_id] = "running"
-            # Invoke handler if registered
+            self._record_status(task_id, "running")
             if definition.handler:
                 response = await definition.handler(request)
             else:
@@ -97,8 +93,8 @@ class SubagentExecutor:
                     result={"error": f"No handler registered for {agent}"},
                 )
 
-            is_successful = response.status == "success"
-            self._task_status[task_id] = "complete" if is_successful else "failed"
+            is_successful = response.status in ("success", "needs_clarification")
+            self._record_status(task_id, "complete" if is_successful else "failed")
 
             self._emit(
                 SubagentTaskFinishedEvent(
@@ -113,7 +109,7 @@ class SubagentExecutor:
 
         except Exception as subagent_execution_error:
             error_message = str(subagent_execution_error)
-            self._task_status[task_id] = "failed"
+            self._record_status(task_id, "failed")
             self._emit(
                 SubagentTaskFinishedEvent(
                     task_id=task_id,

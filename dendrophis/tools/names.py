@@ -16,15 +16,13 @@ class ToolName(StrEnum):
     GLOB = "glob"
     RIPGREP = "ripgrep"
     READ = "read"
-
-    # Agent-friendly aliases (high-level, descriptive names for subagents)
-    READ_FILE = "read_file"
-    WRITE_FILE = "write_file"
     EDIT_FUNCTION = "edit_function"
     LIST_DIR = "list_dir"
 
-    # Interaction
+    # Interaction & session state
     ASK_MULTIPLE_CHOICE = "ask_multiple_choice"
+    TODO = "todo"
+    CLARIFY = "clarify"
 
     # Memory
     SAVE_MEMORY = "save_memory"
@@ -37,8 +35,6 @@ class ToolName(StrEnum):
 
     # Function analysis
     ANALYZE_FUNCTIONS = "analyze_functions"
-    GET_FUNCTION = "get_function"
-    REPLACE_FUNCTION = "replace_function"
 
     # Code execution
     EXECUTE_CODE = "execute_code"

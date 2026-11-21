@@ -3,6 +3,8 @@
 Orchestrator + specialized workers architecture.
 """
 
+from __future__ import annotations
+
 from .executor import ExecutionResult, SubagentExecutor
 from .messages import SubagentRequest, SubagentResponse
 from .registry import SubagentRegistry, get_registry
@@ -21,7 +23,7 @@ __all__ = [
 _session_executor: SubagentExecutor | None = None
 
 
-def set_session_executor(executor: SubagentExecutor) -> None:
+def set_session_executor(executor: SubagentExecutor | None) -> None:
     """Set the global session executor reference."""
     global _session_executor
     _session_executor = executor

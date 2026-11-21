@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from dendrophis.memory.embedder import BaseEmbedder, NullEmbedder
+from dendrophis.memory.embedder import BaseEmbedder, NullEmbedder, SpacyEmbedder
 from dendrophis.memory.models import MemoryEntry, MemoryStats
 from dendrophis.utils import ensure_secure_dir, ensure_secure_file
 
@@ -25,8 +25,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_UPDATABLE_COLUMNS = frozenset(
+    {"tags", "content", "summary", "score", "source", "project_id", "session_id", "embedding"}
+)
 
-# Vector-to-BLOB helpers (SQLite stores BLOBs, not arrays)
+
 def _vector_to_blob(vec: np.ndarray) -> bytes:
     return vec.astype(np.float32).tobytes()
 
@@ -51,17 +54,13 @@ class MemoryStore:
         self._db_path = Path(db_path).expanduser()
         ensure_secure_dir(self._db_path.parent)
 
-        # Backward compatibility: if nlp is provided but no embedder, wrap it
         if embedder is None and nlp is not None:
-            from dendrophis.memory.embedder import SpacyEmbedder
-
             embedder = SpacyEmbedder(nlp)
         if embedder is None:
             embedder = NullEmbedder()
 
         self._embedder = embedder
         self._lock = threading.Lock()
-        self._conn: sqlite3.Connection | None = None
         self._init_db()
         ensure_secure_file(self._db_path)
 
@@ -73,10 +72,8 @@ class MemoryStore:
     def embedder(self, value: BaseEmbedder) -> None:
         self._embedder = value
 
-    # Backward compatibility property for nlp
     @property
     def nlp(self) -> Language | None:
-        # Try to extract nlp from SpacyEmbedder
         if hasattr(self._embedder, "_nlp"):
             return self._embedder._nlp  # type: ignore[attr-defined]
         return None
@@ -84,8 +81,6 @@ class MemoryStore:
     @nlp.setter
     def nlp(self, value: Language) -> None:
         if value is not None:
-            from dendrophis.memory.embedder import SpacyEmbedder
-
             self._embedder = SpacyEmbedder(value)
         else:
             self._embedder = NullEmbedder()
@@ -130,7 +125,6 @@ class MemoryStore:
                         score REAL NOT NULL DEFAULT 0.0
                     );
                 """)
-                # Migration: add summary column if it doesn't exist (legacy DBs)
                 with contextlib.suppress(sqlite3.OperationalError):
                     cursor.execute("ALTER TABLE memories ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
 
@@ -174,49 +168,42 @@ class MemoryStore:
         embedding: np.ndarray | None = None,
     ) -> MemoryEntry:
         """Save a memory entry. Returns the created entry."""
-        # EAFP: Validate inputs with edge case handling
         if not content or not isinstance(content, str):
             raise ValueError("Content must be a non-empty string")
 
-        # Edge case: Limit content size to prevent database issues
-        if len(content) > 1000000:  # 1MB limit
+        if len(content) > 1000000:
             raise ValueError("Content exceeds maximum size of 1MB")
 
         if tags is not None and not isinstance(tags, list):
             raise ValueError("Tags must be a list or None")
 
-        # Edge case: Limit number of tags
         if tags and len(tags) > 100:
             raise ValueError("Maximum of 100 tags allowed")
 
-        # Edge case: Validate tag formats
         if tags:
             for tag in tags:
                 if not isinstance(tag, str):
                     raise ValueError("All tags must be strings")
-                if len(tag) > 255:  # Database column limit
+                if len(tag) > 255:
                     raise ValueError(f"Tag '{tag[:20]}...' exceeds maximum length of 255 characters")
 
         if embedding is not None and not isinstance(embedding, np.ndarray):
             raise ValueError("Embedding must be a numpy array or None")
 
-        # Edge case: Limit embedding size
         if embedding is not None and embedding.size > 10000:
             raise ValueError("Embedding vector too large (max 10000 dimensions)")
 
         try:
             now = datetime.now().isoformat()
             entry_id = uuid.uuid4().hex[:16]
-            tags = tags or []
+            deduped_tags = list(dict.fromkeys(tags)) if tags else []
 
-            # Compute embedding if not provided
             if embedding is None:
                 embedding = self.compute_embedding(content)
 
             with self._lock, self._connect() as conn:
                 cursor = conn.cursor()
                 try:
-                    # EAFP: Handle database operation errors gracefully
                     try:
                         cursor.execute(
                             "INSERT OR REPLACE INTO memories"
@@ -226,9 +213,9 @@ class MemoryStore:
                             (
                                 entry_id,
                                 content,
-                                "",  # summary - empty by default, can be updated later
+                                "",
                                 _vector_to_blob(embedding) if embedding is not None else None,
-                                json.dumps(tags),
+                                json.dumps(deduped_tags),
                                 source,
                                 project_id,
                                 session_id,
@@ -240,68 +227,53 @@ class MemoryStore:
                     except sqlite3.Error as db_error:
                         raise RuntimeError(f"Failed to save memory to database: {db_error!s}") from db_error
 
-                    # Upsert tags with error handling
-                    for tag in tags:
+                    for tag in deduped_tags:
                         try:
-                            if not isinstance(tag, str):
-                                continue  # Skip invalid tags
                             cursor.execute(
                                 """INSERT INTO tags (name, memory_count) VALUES (?, 1)
                                        ON CONFLICT(name) DO UPDATE SET memory_count = memory_count + 1""",
                                 (tag,),
                             )
                         except sqlite3.Error as tag_error:
-                            # Don't fail the whole save for one bad tag, but record it.
                             logger.warning("Failed to upsert tag %r for memory %s: %s", tag, entry_id, tag_error)
-                            continue
-
-                    # Link tag -> memory with error handling
-                    for tag in tags:
                         try:
-                            if not isinstance(tag, str):
-                                continue  # Skip invalid tags
                             cursor.execute(
                                 "INSERT OR IGNORE INTO tag_memories (tag_name, memory_id) VALUES (?, ?)",
                                 (tag, entry_id),
                             )
-                        except sqlite3.Error as link_error:
-                            # Don't fail the whole save for one bad link, but record it.
-                            logger.warning("Failed to link tag %r to memory %s: %s", tag, entry_id, link_error)
-                            continue
+                        except sqlite3.Error as tag_error:
+                            logger.warning("Failed to link tag %r for memory %s: %s", tag, entry_id, tag_error)
                 finally:
                     cursor.close()
 
+            final_score = 0.0
             try:
                 self.increment_score(entry_id)
-            except Exception as score_error:
-                # Score is a best-effort ranking hint; a failure here must not fail the
-                # save, but it should be visible rather than silently swallowed.
+                final_score = 1.0
+            except sqlite3.Error as score_error:
                 logger.warning("Failed to increment score for memory %s: %s", entry_id, score_error)
 
             return MemoryEntry(
                 id=entry_id,
                 content=content,
-                tags=tags,
+                tags=deduped_tags,
                 source=source,
                 project_id=project_id,
                 session_id=session_id,
                 created_at=now,
                 updated_at=now,
-                score=1.0,  # Initial score after increment
+                score=final_score,
             )
         except Exception as save_error:
-            # EAFP: Provide meaningful error message for any unexpected failures
             raise RuntimeError(f"Failed to save memory: {save_error!s}") from save_error
 
     def get_memory(self, memory_id: str) -> MemoryEntry | None:
         """Retrieve a memory by ID."""
-        # EAFP: Validate input
         if not memory_id or not isinstance(memory_id, str):
             raise ValueError("memory_id must be a non-empty string")
 
         try:
             with self._connect() as conn:
-                # EAFP: Handle database query errors gracefully
                 cursor = conn.cursor()
                 try:
                     row = cursor.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
@@ -320,51 +292,63 @@ class MemoryStore:
                         f"Failed to convert database row to memory entry: {conversion_error!s}"
                     ) from conversion_error
         except Exception as retrieval_error:
-            # EAFP: Provide meaningful error message for any unexpected failures
             raise RuntimeError(f"Failed to retrieve memory: {retrieval_error!s}") from retrieval_error
 
     def update_memory(self, memory_id: str, **fields: Any) -> MemoryEntry | None:
         """Update fields of an existing memory. Returns the updated entry or None."""
+        unknown_columns = set(fields.keys()) - _UPDATABLE_COLUMNS
+        if unknown_columns:
+            raise ValueError(f"Unsupported memory field(s): {', '.join(sorted(unknown_columns))}")
+
         now = datetime.now().isoformat()
+
+        if "content" in fields and "embedding" not in fields and isinstance(fields["content"], str):
+            recomputed = self.compute_embedding(fields["content"])
+            fields["embedding"] = _vector_to_blob(recomputed) if recomputed is not None else None
+        elif "embedding" in fields and isinstance(fields["embedding"], np.ndarray):
+            fields["embedding"] = _vector_to_blob(fields["embedding"])
 
         with self._lock, self._connect() as conn:
             cursor = conn.cursor()
             try:
-                # Handle tags within the same connection for atomicity
                 if "tags" in fields:
                     old_tags = self._get_memory_tags(memory_id, conn=conn)
-                    new_tags = fields["tags"]
+                    new_tags = list(dict.fromkeys(fields["tags"] or []))
                     for tag in old_tags:
                         if tag not in new_tags:
+                            cursor.execute(
+                                "DELETE FROM tag_memories WHERE tag_name = ? AND memory_id = ?",
+                                (tag, memory_id),
+                            )
                             self._decrement_tag_count(tag, conn=conn)
                     for tag in new_tags:
                         if tag not in old_tags:
                             self._increment_tag_count(tag, conn=conn)
+                            cursor.execute(
+                                "INSERT OR IGNORE INTO tag_memories (tag_name, memory_id) VALUES (?, ?)",
+                                (tag, memory_id),
+                            )
                     fields["tags"] = json.dumps(new_tags)
 
-                updates: list[tuple[str, Any]] = []
+                updates: list[str] = []
                 params: list[Any] = []
 
-                for key, value in fields.items():
-                    if key == "tags":
-                        updates.append(("tags = ?", value))
-                    elif key == "content":
-                        updates.append(("content = ?", value))
-                    elif key == "score":
-                        updates.append(("score = score + ?", value))
+                for column_name, column_value in fields.items():
+                    if column_name == "score":
+                        updates.append("score = score + ?")
                     else:
-                        updates.append((f"{key} = ?", value))
-                    params.append(value)
+                        updates.append(f"{column_name} = ?")
+                    params.append(column_value)
 
                 if not updates:
                     return self.get_memory(memory_id)
 
-                updates.append(("updated_at = ?", now))
+                updates.append("updated_at = ?")
                 params.append(now)
                 params.append(memory_id)
 
                 cursor.execute(
-                    f"UPDATE memories SET {', '.join(u[0] for u in updates)} WHERE id = ?",
+                    f"UPDATE memories SET {', '.join(updates)} WHERE id = ?",
                     params,
                 )
             finally:
@@ -384,7 +368,6 @@ class MemoryStore:
                 tags = json.loads(row["tags"])
                 cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
                 cursor.execute("DELETE FROM tag_memories WHERE memory_id = ?", (memory_id,))
-                # Clean up tag counts
                 for tag in tags:
                     self._decrement_tag_count(tag, conn=conn)
             finally:
@@ -400,12 +383,7 @@ class MemoryStore:
         offset: int = 0,
         project_ids: list[str] | None = None,
     ) -> list[MemoryEntry]:
-        """List memories with optional filters.
-
-        ``project_id`` filters for an exact project. ``project_ids`` filters
-        for a set of projects (e.g. the current project plus the global
-        tier); an empty list matches nothing.
-        """
+        """List memories with optional filters."""
         conditions: list[str] = []
         params: list[Any] = []
 
@@ -423,11 +401,7 @@ class MemoryStore:
             conditions.append("source = ?")
             params.append(source)
         if tag:
-            # Subquery for tag filtering
-            subquery = """
-                SELECT memory_id FROM tag_memories
-                WHERE tag_name = ?
-            """
+            subquery = "SELECT memory_id FROM tag_memories WHERE tag_name = ?"
             conditions.append(f"id IN ({subquery})")
             params.append(tag)
 
@@ -452,11 +426,9 @@ class MemoryStore:
                 ).fetchone()[0]
                 stats.total_tags = cursor.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
 
-                # Memories by source
                 rows = cursor.execute("SELECT source, COUNT(*) as cnt FROM memories GROUP BY source").fetchall()
                 stats.memories_by_source = {row["source"]: row["cnt"] for row in rows}
 
-                # Top tags
                 rows = cursor.execute(
                     "SELECT name, memory_count FROM tags ORDER BY memory_count DESC LIMIT 20"
                 ).fetchall()
@@ -477,8 +449,8 @@ class MemoryStore:
                 return [row["tag_name"] for row in rows]
             finally:
                 cursor.close()
-        with self._connect() as conn:
-            cursor = conn.cursor()
+        with self._connect() as local_conn:
+            cursor = local_conn.cursor()
             try:
                 rows = cursor.execute("SELECT tag_name FROM tag_memories WHERE memory_id = ?", (memory_id,)).fetchall()
                 return [row["tag_name"] for row in rows]
@@ -497,8 +469,8 @@ class MemoryStore:
             finally:
                 cursor.close()
         else:
-            with self._connect() as conn:
-                cursor = conn.cursor()
+            with self._connect() as local_conn:
+                cursor = local_conn.cursor()
                 try:
                     cursor.execute(
                         """INSERT INTO tags (name, memory_count) VALUES (?, 1)
@@ -517,8 +489,8 @@ class MemoryStore:
             finally:
                 cursor.close()
         else:
-            with self._connect() as conn:
-                cursor = conn.cursor()
+            with self._connect() as local_conn:
+                cursor = local_conn.cursor()
                 try:
                     cursor.execute("UPDATE tags SET memory_count = memory_count - 1 WHERE name = ?", (tag,))
                     cursor.execute("DELETE FROM tags WHERE name = ? AND memory_count <= 0", (tag,))
@@ -550,7 +522,7 @@ class MemoryStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             score=row["score"],
-            embedding_blob=row["embedding"],  # raw BLOB for search
+            embedding_blob=row["embedding"],
         )
 
     # ------------------------------------------------------------------
@@ -558,21 +530,15 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def compute_embedding(self, text: str) -> np.ndarray | None:
-        """Compute an embedding for text using the configured embedder.
-
-        Returns None if no embedder is available or embedding fails.
-        """
+        """Compute an embedding for text using the configured embedder."""
         return self._embedder.embed(text)
 
-    def cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Compute cosine similarity between two vectors.
-
-        Works for any dimension vectors (spaCy 300, OpenAI 1536/3072, etc.).
-        """
-        import numpy as np
-
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
+    def cosine_similarity(self, vector_a: np.ndarray, vector_b: np.ndarray) -> float:
+        """Compute cosine similarity between two vectors, returning 0.0 on shape mismatch or zero norm."""
+        if vector_a.shape != vector_b.shape:
+            return 0.0
+        norm_a = np.linalg.norm(vector_a)
+        norm_b = np.linalg.norm(vector_b)
         if norm_a == 0 or norm_b == 0:
             return 0.0
-        return float(np.dot(a, b) / (norm_a * norm_b))
+        return float(np.dot(vector_a, vector_b) / (norm_a * norm_b))

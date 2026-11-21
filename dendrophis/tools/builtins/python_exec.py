@@ -70,7 +70,7 @@ class PythonExecTool(BaseTool):
             sys.stderr = stderr_buffer
             exec(code_string, execution_namespace)
             success = True
-        except Exception:
+        except (Exception, SystemExit):
             exception_string = traceback.format_exc()
         finally:
             sys.stdout = original_stdout
@@ -94,14 +94,17 @@ class PythonExecTool(BaseTool):
             except Exception:
                 serializable_locals[local_key] = f"<Unrepresentable value: {type(local_value).__name__}>"
 
-        return {
+        result: dict[str, Any] = {
             "success": success,
             "stdout": stdout_buffer.getvalue(),
             "stderr": stderr_buffer.getvalue(),
             "exception": exception_string,
             "local_variables": serializable_locals,
         }
+        if not success and exception_string:
+            summary_lines = [line for line in exception_string.strip().splitlines() if line.strip()]
+            result["error"] = summary_lines[-1] if summary_lines else "Code execution failed"
+        return result
 
 
-# Create instance
 execute_code = PythonExecTool()

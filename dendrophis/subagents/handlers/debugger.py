@@ -5,10 +5,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 
 from dendrophis.config.loader import ConfigLoader
 from dendrophis.config.schema import DendrophisConfig
-from dendrophis.events import TextDeltaEvent
+from dendrophis.events import ErrorEvent, TextDeltaEvent
 from dendrophis.llm.client import LLMClient
 
 from ..messages import SubagentRequest, SubagentResponse
@@ -69,11 +70,7 @@ class DebuggerHandler:
             return None
 
     async def aclose(self) -> None:
-        """Close LLM clients this handler created itself.
-
-        Injected clients are owned by the caller and are not closed here.
-        The owned client slot is reset so a later use recreates a fresh client.
-        """
+        """Close LLM clients this handler created itself."""
         for client in self._owned_llm_clients:
             with contextlib.suppress(Exception):
                 await client.aclose()
@@ -92,9 +89,9 @@ class DebuggerHandler:
                 result={"error": "LLM client not available for debugger subagent"},
             )
 
-        symptom_description = request.payload.get("symptom", "")
+        symptom_description = request.payload.get("symptom") or request.payload.get("task", "")
         error_details = request.payload.get("error", {})
-        context_data = request.payload.get("context", {})
+        context_data = {**(request.context or {}), **(request.payload.get("context") or {})}
         artifacts_list = request.payload.get("artifacts", [])
 
         user_prompt = f"""Debug the following issue:
@@ -116,41 +113,17 @@ Provide a diagnosis with root cause, location, reproduction steps, error analysi
             {"role": "user", "content": user_prompt},
         ]
 
+        response_text = ""
+        error_messages: list[str] = []
+
         try:
-            response_text = ""
             async for event in client.stream_chat(messages):
                 if isinstance(event, TextDeltaEvent):
                     response_text += event.delta
-
-            # Parse JSON response
-            try:
-                diagnosis = json.loads(response_text)
-            except json.JSONDecodeError:
-                import re
-
-                json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
-                if json_match:
-                    diagnosis = json.loads(json_match.group(1))
-                else:
-                    diagnosis = {
-                        "root_cause": "Could not parse debugger output",
-                        "location": {"file": "", "line": 0, "function": ""},
-                        "reproduction": "N/A",
-                        "analysis": response_text[:500],
-                        "fix_strategy": "Review the error manually",
-                        "confidence": "low",
-                        "related_issues": [],
-                    }
-
-            return SubagentResponse(
-                agent=request.agent,
-                task_id=request.task_id,
-                status="success",
-                result=diagnosis,
-            )
-
+                elif isinstance(event, ErrorEvent):
+                    error_messages.append(event.message)
         except Exception as debug_error:
-            logger.error(f"Debugger execution failed: {debug_error}", exc_info=True)
+            logger.error("Debugger execution failed: %s", debug_error, exc_info=True)
             endpoint_url = getattr(client._config, "base_url", "unknown endpoint")
             return SubagentResponse(
                 agent=request.agent,
@@ -158,6 +131,41 @@ Provide a diagnosis with root cause, location, reproduction steps, error analysi
                 status="failure",
                 result={"error": f"LLM endpoint at '{endpoint_url}' unreachable: {debug_error}"},
             )
+
+        if error_messages and not response_text.strip():
+            return SubagentResponse(
+                agent=request.agent,
+                task_id=request.task_id,
+                status="failure",
+                result={"error": "; ".join(error_messages)},
+            )
+
+        diagnosis = None
+        try:
+            diagnosis = json.loads(response_text)
+        except json.JSONDecodeError:
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
+            if json_match:
+                with contextlib.suppress(json.JSONDecodeError):
+                    diagnosis = json.loads(json_match.group(1))
+
+        if not isinstance(diagnosis, dict):
+            diagnosis = {
+                "root_cause": "Could not parse debugger output",
+                "location": {"file": "", "line": 0, "function": ""},
+                "reproduction": "N/A",
+                "analysis": response_text[:500],
+                "fix_strategy": "Review the error manually",
+                "confidence": "low",
+                "related_issues": [],
+            }
+
+        return SubagentResponse(
+            agent=request.agent,
+            task_id=request.task_id,
+            status="success",
+            result=diagnosis,
+        )
 
 
 async def execute(request: SubagentRequest) -> SubagentResponse:

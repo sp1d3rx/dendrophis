@@ -1,9 +1,10 @@
 """Subagent registry for managing agent definitions and capabilities."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -20,15 +21,13 @@ class AgentDefinition:
 class SubagentRegistry:
     """Registry of available subagents."""
 
-    _agents: ClassVar[dict[str, AgentDefinition]] = {}
-
-    def __init__(self, specs_dir: Path | None = None):
+    def __init__(self, specs_dir: Path | None = None) -> None:
         self.specs_dir = specs_dir or Path(__file__).parent / "specs"
+        self._agents: dict[str, AgentDefinition] = {}
         self._load_specs()
 
     def _load_specs(self) -> None:
         """Load agent definitions from spec files."""
-        # Hardcoded for now — could parse from markdown
         self._agents = {
             "researcher": AgentDefinition(
                 name="researcher",
@@ -78,13 +77,12 @@ class SubagentRegistry:
 
     def get_file_modifiers(self) -> list[str]:
         """Get names of agents that modify files."""
-        return [a.name for a in self._agents.values() if a.modifies_files]
+        return [agent_def.name for agent_def in self._agents.values() if agent_def.modifies_files]
 
     def register_handler(self, name: str, handler: Callable) -> None:
         """Register a handler for an agent."""
         if name not in self._agents:
             raise ValueError(f"Unknown agent: {name}")
-        # Create new definition with handler
         old = self._agents[name]
         self._agents[name] = AgentDefinition(
             name=old.name,
@@ -95,7 +93,6 @@ class SubagentRegistry:
         )
 
 
-# Global registry instance
 _registry: SubagentRegistry | None = None
 
 

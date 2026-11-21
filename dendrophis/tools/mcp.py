@@ -7,8 +7,11 @@ import contextlib
 import logging
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+import httpx
+import mcp.client.streamable_http as streamable_http_module
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -62,17 +65,12 @@ class HTTPClientContextManager:
         self.stream_ctx: Any = None
 
     async def __aenter__(self) -> tuple[Any, Any]:
-        import httpx
-        from mcp.client.streamable_http import streamable_http_client
-
         self.http_client = httpx.AsyncClient(verify=self.verify_ssl)
         await self.http_client.__aenter__()
-        self.stream_ctx = streamable_http_client(url=self.url, http_client=self.http_client)
+        self.stream_ctx = streamable_http_module.streamable_http_client(url=self.url, http_client=self.http_client)
         try:
             read_stream, write_stream, _get_session_id = await self.stream_ctx.__aenter__()
         except BaseException:
-            # Entry failed: release the already-opened HTTP client so a failed
-            # connect cannot leak its socket pool.
             with contextlib.suppress(Exception):
                 await self.http_client.__aexit__(None, None, None)
             self.http_client = None
@@ -81,8 +79,6 @@ class HTTPClientContextManager:
         return read_stream, write_stream
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        # Release both resources even if one fails, so a stream teardown error
-        # cannot leave the HTTP client's socket pool open.
         errors: list[BaseException] = []
         if self.stream_ctx:
             try:
@@ -113,9 +109,9 @@ class MCPManager:
         self.tool_registry = tool_registry
         self.debug_logger = debug_logger
         self._sessions: dict[str, ClientSession] = {}
-        self._contexts: dict[str, Any] = {}  # Keeps the stdio_client context managers alive
-        self._tasks: list[asyncio.Task] = []
-        self._launch_configs: dict[str, tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
+        self._contexts: dict[str, Any] = {}
+        self._tasks: list[asyncio.Task[None]] = []
+        self._launch_configs: dict[str, tuple[str, tuple[str, ...], tuple[tuple[str, str], ...], str | None]] = {}
 
     def log(self, message: str) -> None:
         if self.debug_logger:
@@ -129,14 +125,20 @@ class MCPManager:
             self.log("No MCP servers configured.")
             return
 
+        self._tasks = [task for task in self._tasks if not task.done()]
         for name, cfg in self.config.mcp_servers.items():
             if not cfg.enabled:
                 self.log(f"MCP server '{name}' is disabled in configuration.")
                 continue
             self._tasks.append(asyncio.create_task(self._connect_server(name, cfg)))
 
+    @staticmethod
+    def _open_debug_log(debug_log_path: str):
+        log_path = Path(debug_log_path).expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        return open(log_path, "a", encoding="utf-8")
+
     async def _connect_server(self, name: str, cfg: Any) -> None:
-        # Merge current environment with configured env
         env = os.environ.copy()
         if cfg.env:
             env.update(cfg.env)
@@ -144,9 +146,11 @@ class MCPManager:
         if cfg.url:
             self.log(f"Connecting to MCP server '{name}' via HTTP: {cfg.url}")
             verify_ssl = env.get("NODE_TLS_REJECT_UNAUTHORIZED") != "0"
-            ctx = HTTPClientContextManager(cfg.url, verify_ssl)
+            ctx: Any = HTTPClientContextManager(cfg.url, verify_ssl)
+            server_params = None
         else:
             self.log(f"Connecting to MCP server '{name}' via command: {cfg.command} {' '.join(cfg.args)}")
+            ctx = None
             server_params = StdioServerParameters(
                 command=cfg.command,
                 args=cfg.args,
@@ -156,47 +160,37 @@ class MCPManager:
         log_file = None
         if not cfg.url and self.config.debug_log:
             try:
-                from pathlib import Path
-
-                log_path = Path(self.config.debug_log).expanduser()
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                log_file = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
+                log_file = await asyncio.to_thread(self._open_debug_log, self.config.debug_log)
             except Exception as exc:
                 self.log(f"Failed to open debug log for MCP redirection: {exc}")
 
         try:
-            # Enter the async context manager. Register the context before
-            # entering it so a failed entry is still released by
-            # _cleanup_server() instead of leaking a partial connection.
             if cfg.url:
                 self._contexts[name] = ctx
                 read, write = await ctx.__aenter__()
             else:
+                assert server_params is not None
                 try:
                     ctx = stdio_client(server_params, errlog=log_file)
                     self._contexts[name] = ctx
                     read, write = await ctx.__aenter__()
                 finally:
                     if log_file:
-                        log_file.close()
+                        await asyncio.to_thread(log_file.close)
 
             session = ClientSession(read, write)
             await session.__aenter__()
             self._sessions[name] = session
 
-            # Initialize MCP session
             await session.initialize()
             self.log(f"Initialized MCP session with '{name}'")
 
-            # Store launch configuration parameters for change-detection on reload
             env_tuple = tuple(sorted(cfg.env.items())) if cfg.env else ()
             self._launch_configs[name] = (cfg.command, tuple(cfg.args) if cfg.args else (), env_tuple, cfg.url)
 
-            # Query tools
             tools_result = await session.list_tools()
             self.log(f"Discovered tools from '{name}': {[tool_item.name for tool_item in tools_result.tools]}")
 
-            # Register each tool
             for mcp_tool in tools_result.tools:
                 schema = mcp_tool.inputSchema
                 if hasattr(schema, "model_dump"):
@@ -226,7 +220,6 @@ class MCPManager:
         self.log(f"Calling tool '{tool_name}' on server '{server_name}' with args: {arguments}")
         result = await session.call_tool(tool_name, arguments=arguments)
 
-        # Parse text content from CallToolResult
         text_parts = []
         for content in result.content:
             if hasattr(content, "text"):
@@ -242,31 +235,30 @@ class MCPManager:
         if session:
             try:
                 await session.__aexit__(None, None, None)
-            except Exception as error:
+            except BaseException as error:
                 self.log(f"Error closing session for '{name}': {error}")
 
         ctx = self._contexts.pop(name, None)
         if ctx:
             try:
                 await ctx.__aexit__(None, None, None)
-            except Exception as error:
+            except BaseException as error:
                 self.log(f"Error exiting context for '{name}': {error}")
 
         self._launch_configs.pop(name, None)
 
-        # Remove tools associated with this server from the registry
         for tool_name in list(self.tool_registry._tools.keys()):
             tool = self.tool_registry.get(tool_name)
             if isinstance(tool, MCPTool) and tool._server_name == name:
-                self.tool_registry.remove(tool_name)
+                self.tool_registry.purge(tool_name)
                 self.log(f"Removed MCP tool '{tool_name}' associated with server '{name}'")
 
     async def sync_servers(self) -> None:
         """Synchronize running servers with current configuration."""
+        self._tasks = [task for task in self._tasks if not task.done()]
         active_names = set(self._sessions.keys())
         config_names = set(self.config.mcp_servers.keys())
 
-        # 1. Detect servers that need to be stopped
         to_stop = []
         for name in active_names:
             if name not in config_names:
@@ -285,7 +277,6 @@ class MCPManager:
             self.log(f"Stopping MCP server '{name}' due to config reload.")
             await self._cleanup_server(name)
 
-        # 2. Detect servers that need to be started
         for name, cfg in self.config.mcp_servers.items():
             if cfg.enabled and name not in self._sessions:
                 task = asyncio.create_task(self._connect_server(name, cfg))
@@ -293,16 +284,12 @@ class MCPManager:
 
     async def aclose(self) -> None:
         self.log("Closing all MCP servers...")
-        # Cancel pending connection tasks and wait for them to unwind (also
-        # retrieving their exceptions) so no in-flight connect can register
-        # sessions, contexts, or tools after the cleanup below.
         pending_tasks = [task for task in self._tasks if not task.done()]
         for task in pending_tasks:
             task.cancel()
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-        # Close all active connections
         servers = list(self._sessions.keys()) + list(self._contexts.keys())
         for name in set(servers):
             await self._cleanup_server(name)
