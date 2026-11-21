@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dendrophis.events import (
@@ -29,8 +31,6 @@ class MainScreenCommands:
 
     def _export_session(self) -> None:
         """Export the full conversation to a markdown file."""
-        from datetime import datetime
-
         session_identifier = self._session.session_id[:8]
         timestamp_str = datetime.now().strftime("%Y-%m-%d.%H%M%S")
         export_filename = f"session-{session_identifier}.{timestamp_str}.md"
@@ -44,6 +44,10 @@ class MainScreenCommands:
             for message in self._session.context.messages:
                 role_name = message.get("role", "unknown").capitalize()
                 message_content = message.get("content", "")
+                if isinstance(message_content, list):
+                    message_content = "\n".join(
+                        part.get("text", "") for part in message_content if isinstance(part, dict) and part.get("text")
+                    )
 
                 markdown_parts.append(f"### {role_name}\n")
                 if message_content:
@@ -57,8 +61,7 @@ class MainScreenCommands:
 
                 markdown_parts.append("\n")
 
-            with open(export_filename, "w", encoding="utf-8") as file_handle:
-                file_handle.write("\n".join(markdown_parts))
+            Path(export_filename).write_text("\n".join(markdown_parts), encoding="utf-8")
 
             notification_message = f"Session exported to {export_filename}"
             self._debug_widget.write(f"[NOTIFY] {notification_message}")
@@ -166,7 +169,8 @@ class MainScreenCommands:
                 "",
                 "[bold]Key Bindings[/bold]",
                 "  Ctrl+L  — Clear chat (same as /clear)",
-                "  Ctrl+S  — Open session picker",
+                "  Ctrl+O  — Open session picker",
+                "  Ctrl+M  — Open memory viewer",
                 "  Ctrl+T  — Open settings",
                 "  Ctrl+E  — Export session (same as /export)",
                 "  Esc     — Interrupt streaming",
@@ -249,11 +253,15 @@ class MainScreenCommands:
                 return
             self._load_primer()
             return
-        if event.text.strip().startswith("/track "):
+        stripped_input = event.text.strip()
+        if command_string == "/track" or command_string.startswith("/track "):
             if not self._session.config.caching.pr_enabled:
                 self.notify("Primer feature is disabled in settings.", severity="warning")
                 return
-            track_file_path = event.text.strip()[7:].strip()
+            track_file_path = stripped_input[6:].strip()
+            if not track_file_path:
+                self.query_one(ChatView).add_system_message("Usage: /track <file_path>")
+                return
             if self._session.track_file(track_file_path):
                 chat = self.query_one(ChatView)
                 chat.add_system_message(f"Tracking file: [bold]{track_file_path}[/bold]")
@@ -261,11 +269,14 @@ class MainScreenCommands:
             else:
                 self.notify(f"Failed to track: {track_file_path}", severity="error")
             return
-        if event.text.strip().startswith("/untrack "):
+        if command_string == "/untrack" or command_string.startswith("/untrack "):
             if not self._session.config.caching.pr_enabled:
                 self.notify("Primer feature is disabled in settings.", severity="warning")
                 return
-            untrack_file_path = event.text.strip()[9:].strip()
+            untrack_file_path = stripped_input[8:].strip()
+            if not untrack_file_path:
+                self.query_one(ChatView).add_system_message("Usage: /untrack <file_path>")
+                return
             if self._session.untrack_file(untrack_file_path):
                 chat = self.query_one(ChatView)
                 chat.add_system_message(f"Stopped tracking: [bold]{untrack_file_path}[/bold]")
@@ -273,16 +284,19 @@ class MainScreenCommands:
             else:
                 self.notify(f"Failed to untrack: {untrack_file_path}", severity="error")
             return
-        if event.text.strip().startswith("/set "):
-            override_text = event.text.strip()[5:]
+        if command_string == "/set" or command_string.startswith("/set "):
             chat = self.query_one(ChatView)
+            override_text = stripped_input[4:].strip()
+            if not override_text:
+                chat.add_system_message("Usage: /set <replacement_text>")
+                return
             if self._session.context.replace_last_assistant(override_text):
                 chat.add_system_message("Last response overridden.")
             else:
                 chat.add_system_message("No assistant message to override.")
             return
-        if event.text.strip().startswith("/"):
-            self._execute_slash_command(event.text.strip())
+        if stripped_input.startswith("/"):
+            self._execute_slash_command(stripped_input)
             return
 
         chat = self.query_one(ChatView)

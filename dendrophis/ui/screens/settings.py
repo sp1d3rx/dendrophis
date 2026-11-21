@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import io
-import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.markup import escape
 from ruamel.yaml import YAML
 from textual import events
 from textual.app import ComposeResult
@@ -28,6 +28,7 @@ from textual.widgets import (
     TextArea,
 )
 
+from dendrophis.tools.bash_sandbox import CommandCategory
 from dendrophis.ui.widgets.panels import PanelRegistry
 
 if TYPE_CHECKING:
@@ -36,73 +37,6 @@ if TYPE_CHECKING:
 
 TOOL_PERM_OPTIONS = [("Allow", "allow"), ("Confirm", "confirm"), ("Deny", "deny")]
 CAT_PERM_OPTIONS = [("Auto-approve", "auto"), ("Require confirm", "confirm"), ("Deny", "deny")]
-
-
-class HookEntryRow(Horizontal):
-    """Dynamic row for editing a single hook entry."""
-
-    DEFAULT_CSS = """
-    HookEntryRow {
-        height: auto;
-        margin-bottom: 1;
-    }
-    .hook-matcher { width: 15; margin-right: 1; }
-    .hook-command { width: 1fr; margin-right: 1; }
-    .hook-del { width: 5; min-width: 5; }
-    """
-
-    def __init__(self, matcher: str, command: str) -> None:
-        super().__init__()
-        self._initial_matcher = matcher
-        self._initial_command = command
-
-    def compose(self) -> ComposeResult:
-        yield Input(value=self._initial_matcher, placeholder="Matcher (e.g. bash)", classes="hook-matcher")
-        yield Input(value=self._initial_command, placeholder="Command", classes="hook-command")
-        yield Button("X", variant="error", classes="hook-del")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.has_class("hook-del"):
-            self.remove()
-
-    def get_data(self) -> dict:
-        inputs = self.query(Input)
-        return {"matcher": inputs[0].value, "command": inputs[1].value}
-
-
-class HookListEditor(Vertical):
-    """Editor for a list of hooks."""
-
-    DEFAULT_CSS = """
-    HookListEditor {
-        height: auto;
-        margin-bottom: 1;
-        padding: 1;
-        border: solid $primary 30%;
-    }
-    """
-
-    def __init__(self, title: str, initial_data: list[dict], id: str) -> None:
-        super().__init__(id=id)
-        self._title = title
-        self._initial_data = initial_data
-
-    def compose(self) -> ComposeResult:
-        yield Label(self._title, classes="settings-section")
-        with Vertical(id="hook-container"):
-            for entry in self._initial_data:
-                # Support both dict and Pydantic model formats dynamically
-                matcher = entry.matcher if hasattr(entry, "matcher") else entry.get("matcher", "")
-                command = entry.command if hasattr(entry, "command") else entry.get("command", "")
-                yield HookEntryRow(matcher, command)
-        yield Button("+ Add Hook", classes="add-hook", variant="success")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.has_class("add-hook"):
-            self.query_one("#hook-container").mount(HookEntryRow("", ""))
-
-    def get_list(self) -> list[dict]:
-        return [row.get_data() for row in self.query(HookEntryRow)]
 
 
 class McpServerEntryRow(Vertical):
@@ -413,8 +347,6 @@ class Slider(Widget, can_focus=True):
 
 class SettingsScreen(Screen):
     """Full-screen config editor."""
-
-    from typing import ClassVar
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("ctrl+s", "save", "Save"),
@@ -908,16 +840,11 @@ class SettingsScreen(Screen):
                         with Horizontal(classes="column-layout"):
                             with Vertical():
                                 yield self._make_input(
-                                    "tools.extra_paths",
-                                    "Extra PATH Directories (comma-separated)",
-                                    ", ".join(self._cfg.tools.extra_paths),
-                                )
-                            with Vertical():
-                                yield self._make_input(
                                     "tools.max_consecutive_failures",
                                     "Max Consecutive Failures",
                                     str(self._cfg.tools.max_consecutive_failures),
                                 )
+                            with Vertical():
                                 yield self._make_switch(
                                     "tools.parallel_tools", "Allow Parallel Execution", self._cfg.tools.parallel_tools
                                 )
@@ -935,10 +862,6 @@ class SettingsScreen(Screen):
 
                 with TabPane("Permissions", id="tab-permissions"), VerticalScroll():
                     yield from self._make_permissions_tab()
-
-                with TabPane("Hooks", id="tab-hooks"), VerticalScroll(), Horizontal(classes="column-layout"):
-                    yield HookListEditor("Pre-Tool Use Hooks", self._cfg.hooks.pre_tool_use, id="editor-pre-hooks")
-                    yield HookListEditor("Post-Tool Use Hooks", self._cfg.hooks.post_tool_use, id="editor-post-hooks")
 
                 with TabPane("Advanced (YAML)", id="tab-yaml"):
                     with Horizontal(classes="settings-row"):
@@ -961,8 +884,6 @@ class SettingsScreen(Screen):
         yield Footer()
 
     def _make_permissions_tab(self):
-        from dendrophis.tools.bash_sandbox import CommandCategory
-
         perms = self._cfg.permissions
         denied = set(perms.denied_tools)
         confirm = set(perms.require_confirmation)
@@ -1024,19 +945,19 @@ class SettingsScreen(Screen):
                     ", ".join(perms.bash.allowed_categories or []),
                 )
 
-    def _make_input(self, id: str, label: str, value: str, password: bool = False) -> Horizontal:
+    def _make_input(self, field_id: str, label: str, value: str, password: bool = False) -> Horizontal:
         return Horizontal(
             Label(label, classes="settings-label"),
-            Input(value=value, id=id.replace(".", "_"), password=password, classes="settings-input"),
+            Input(value=value, id=field_id.replace(".", "_"), password=password, classes="settings-input"),
             classes="settings-row",
         )
 
-    def _make_context_slider(self, id: str, label: str, value: int, max_context: int) -> Horizontal:
+    def _make_context_slider(self, field_id: str, label: str, value: int, max_context: int) -> Horizontal:
         slider = Slider(
             value=value,
             min_value=4096,
             max_value=max_context,
-            id=id.replace(".", "_"),
+            id=field_id.replace(".", "_"),
         )
         return Horizontal(
             Label(label, classes="settings-label"),
@@ -1044,26 +965,41 @@ class SettingsScreen(Screen):
             classes="settings-row",
         )
 
-    def _make_switch(self, id: str, label: str, value: bool) -> Horizontal:
+    def _make_switch(self, field_id: str, label: str, value: bool) -> Horizontal:
         return Horizontal(
-            Label(label, classes="switch-label"), Switch(value=value, id=id.replace(".", "_")), classes="switch-row"
+            Label(label, classes="switch-label"),
+            Switch(value=value, id=field_id.replace(".", "_")),
+            classes="switch-row",
         )
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         if self._last_tab == "tab-yaml" and event.pane.id != "tab-yaml":
-            # Validate YAML before leaving tab
             editor = self.query_one("#config-editor", TextArea)
-            yaml = YAML()
+            yaml_parser = YAML()
             try:
-                parsed = yaml.load(editor.text)
+                parsed = yaml_parser.load(editor.text)
                 if not isinstance(parsed, dict):
                     raise ValueError("Root element must be a dictionary")
+                self._raw = parsed
                 self._last_valid_yaml = editor.text
                 self.query_one("#error-label", Label).update("")
             except Exception as yaml_syntax_error:
-                # Invalid YAML, block switch
-                self.query_one("#error-label", Label).update(f"[red]YAML Syntax Error: {yaml_syntax_error}[/red]")
+                self.query_one("#error-label", Label).update(
+                    f"[red]YAML Syntax Error: {escape(str(yaml_syntax_error))}[/red]"
+                )
                 self.query_one(TabbedContent).active = "tab-yaml"
+                return
+        elif event.pane.id == "tab-yaml" and self._last_tab != "tab-yaml":
+            try:
+                synced_yaml = self._apply_form_to_raw(self._raw)
+                editor = self.query_one("#config-editor", TextArea)
+                editor.text = synced_yaml
+                self._last_valid_yaml = synced_yaml
+                self.query_one("#error-label", Label).update("")
+            except Exception as form_error:
+                self.query_one("#error-label", Label).update(f"[red]Form Error: {escape(str(form_error))}[/red]")
+                if self._last_tab:
+                    self.query_one(TabbedContent).active = self._last_tab
                 return
 
         self._last_tab = event.pane.id
@@ -1112,6 +1048,186 @@ class SettingsScreen(Screen):
         except Exception:
             return False
 
+    def _apply_form_to_raw(self, raw: dict[str, Any]) -> str:
+        """Validate form inputs, update ``raw`` dictionary in-place, and return serialized YAML."""
+
+        def set_nested(data_dict: dict[str, Any], keys: list[str], val: Any) -> None:
+            current_dict = data_dict
+            for key in keys[:-1]:
+                if key not in current_dict or not isinstance(current_dict[key], dict):
+                    current_dict[key] = {}
+                current_dict = current_dict[key]
+            current_dict[keys[-1]] = val
+
+        def get_nullable_str(id_str: str) -> str | None:
+            val_str = self._get_val(id_str).strip()
+            return val_str if val_str else None
+
+        def parse_required_int(id_str: str, default_str: str, label_name: str) -> int:
+            val_str = self._get_val(id_str, default_str).strip() or default_str
+            try:
+                return int(val_str)
+            except ValueError as parse_err:
+                raise ValueError(f"Invalid integer for {label_name}: {val_str!r}") from parse_err
+
+        def parse_required_float(id_str: str, default_str: str, label_name: str) -> float:
+            val_str = self._get_val(id_str, default_str).strip() or default_str
+            try:
+                return float(val_str)
+            except ValueError as parse_err:
+                raise ValueError(f"Invalid number for {label_name}: {val_str!r}") from parse_err
+
+        def parse_nullable_int(id_str: str, label_name: str) -> int | None:
+            val_str = self._get_val(id_str).strip()
+            if not val_str:
+                return None
+            try:
+                return int(val_str)
+            except ValueError as parse_err:
+                raise ValueError(f"Invalid integer for {label_name}: {val_str!r}") from parse_err
+
+        def parse_nullable_float(id_str: str, label_name: str) -> float | None:
+            val_str = self._get_val(id_str).strip()
+            if not val_str:
+                return None
+            try:
+                return float(val_str)
+            except ValueError as parse_err:
+                raise ValueError(f"Invalid number for {label_name}: {val_str!r}") from parse_err
+
+        # Validate all numeric inputs upfront before mutating raw
+        max_tokens = parse_required_int("llm_max_tokens", "4096", "Max Tokens")
+        temperature = parse_required_float("llm_temperature", "0.2", "Temperature")
+        context_limit = parse_required_int("llm_context_limit", "128000", "Context Limit")
+        timeout_seconds = parse_required_float("llm_timeout", "120.0", "Timeout")
+        top_k = parse_nullable_int("llm_top_k", "Top K")
+        min_p = parse_nullable_float("llm_min_p", "Min P")
+        repetition_penalty = parse_nullable_float("llm_repetition_penalty", "Repetition Penalty")
+        presence_penalty = parse_required_float("llm_presence_penalty", "0.0", "Presence Penalty")
+        frequency_penalty = parse_required_float("llm_frequency_penalty", "0.0", "Frequency Penalty")
+        compaction_threshold = parse_required_float("llm_compaction_threshold", "0.85", "Compaction Threshold")
+        visual_threshold_chars = parse_required_int("llm_visual_threshold_chars", "1000", "Visual Threshold")
+        scrollback_limit = parse_required_int("ui_scrollback_limit", "100", "Scrollback Limit")
+        sidebar_width = parse_required_int("ui_sidebar_width", "28", "Sidebar Width")
+        stable_turns = parse_required_int("caching_tier2_file_blocks_stable_turns", "3", "File Caching Stable Turns")
+        min_turns = parse_required_int(
+            "caching_tier2_project_understanding_min_turns", "5", "Project Context Min Turns"
+        )
+        max_consecutive_failures = parse_required_int("tools_max_consecutive_failures", "3", "Max Consecutive Failures")
+
+        set_nested(raw, ["llm", "base_url"], self._get_val("llm_base_url"))
+        set_nested(raw, ["llm", "api_key"], self._get_val("llm_api_key"))
+        set_nested(raw, ["llm", "model"], self._get_val("llm_model"))
+        set_nested(raw, ["llm", "max_tokens"], max_tokens)
+        set_nested(raw, ["llm", "temperature"], temperature)
+        set_nested(raw, ["llm", "context_limit"], context_limit)
+        set_nested(raw, ["llm", "timeout"], timeout_seconds)
+
+        reasoning = self._get_val("llm_reasoning_effort")
+        set_nested(raw, ["llm", "reasoning_effort"], None if reasoning == "None" else reasoning)
+
+        thinking_start_mode = self._get_val("llm_thinking_start_mode")
+        set_nested(
+            raw,
+            ["llm", "thinking_start_mode"],
+            None if thinking_start_mode == "None" else thinking_start_mode,
+        )
+
+        set_nested(raw, ["llm", "code_writer_model"], get_nullable_str("llm_code_writer_model"))
+        set_nested(raw, ["llm", "code_reviewer_model"], get_nullable_str("llm_code_reviewer_model"))
+        set_nested(raw, ["llm", "top_k"], top_k)
+        set_nested(raw, ["llm", "min_p"], min_p)
+        set_nested(raw, ["llm", "repetition_penalty"], repetition_penalty)
+        set_nested(raw, ["llm", "presence_penalty"], presence_penalty)
+        set_nested(raw, ["llm", "frequency_penalty"], frequency_penalty)
+        set_nested(raw, ["llm", "compaction_threshold"], compaction_threshold)
+
+        stop_val = self._get_val("llm_stop").strip()
+        stop_list = [item.strip() for item in stop_val.split(",") if item.strip()] if stop_val else None
+        set_nested(raw, ["llm", "stop"], stop_list)
+
+        set_nested(raw, ["llm", "prompt_cache_key"], get_nullable_str("llm_prompt_cache_key"))
+        set_nested(raw, ["llm", "tool_mode"], self._get_val("llm_tool_mode", "auto"))
+
+        set_nested(raw, ["llm", "visual_system_prompt"], self._get_val("llm_visual_system_prompt") == "True")
+        set_nested(raw, ["llm", "visual_compaction"], self._get_val("llm_visual_compaction") == "True")
+        set_nested(raw, ["llm", "visual_tool_results"], self._get_val("llm_visual_tool_results") == "True")
+        set_nested(raw, ["llm", "visual_user_prompts"], self._get_val("llm_visual_user_prompts") == "True")
+        set_nested(raw, ["llm", "visual_threshold_chars"], visual_threshold_chars)
+
+        responses_val = self._get_val("llm_use_responses_api")
+        if responses_val == "True":
+            set_nested(raw, ["llm", "use_responses_api"], True)
+        elif responses_val == "False":
+            set_nested(raw, ["llm", "use_responses_api"], False)
+        else:
+            set_nested(raw, ["llm", "use_responses_api"], None)
+
+        set_nested(raw, ["llm", "preserve_reasoning"], self._get_val("llm_preserve_reasoning", "always"))
+        set_nested(raw, ["llm", "continuation_nudge"], self._get_val("llm_continuation_nudge", "True") == "True")
+
+        # Save UI Config Settings
+        set_nested(raw, ["ui", "theme"], self._get_val("ui_theme"))
+        set_nested(raw, ["ui", "scrollback_limit"], scrollback_limit)
+        set_nested(raw, ["ui", "sidebar", "position"], self._get_val("ui_sidebar_position", "right"))
+        set_nested(raw, ["ui", "sidebar", "width"], sidebar_width)
+
+        selected_panels = [
+            panel_id for panel_id in PanelRegistry.ids() if self.query_one(f"#panel_{panel_id}", Checkbox).value
+        ]
+        set_nested(raw, ["ui", "sidebar", "panels"], selected_panels)
+
+        # Save Colors
+        set_nested(raw, ["ui", "colors", "primary"], self._get_val("ui_colors_primary"))
+        set_nested(raw, ["ui", "colors", "secondary"], self._get_val("ui_colors_secondary"))
+        set_nested(raw, ["ui", "colors", "success"], self._get_val("ui_colors_success"))
+        set_nested(raw, ["ui", "colors", "warning"], self._get_val("ui_colors_warning"))
+        set_nested(raw, ["ui", "colors", "danger"], self._get_val("ui_colors_danger"))
+        set_nested(raw, ["ui", "colors", "surface"], self._get_val("ui_colors_surface"))
+        set_nested(raw, ["ui", "colors", "text"], self._get_val("ui_colors_text"))
+        set_nested(raw, ["ui", "colors", "neutral"], self._get_val("ui_colors_neutral"))
+
+        # Save Caching Settings
+        set_nested(raw, ["caching", "enabled"], self._get_bool("caching_enabled"))
+        set_nested(raw, ["caching", "tier1_system_prompt"], self._get_bool("caching_tier1_system_prompt"))
+        set_nested(raw, ["caching", "tier1_tool_definitions"], self._get_bool("caching_tier1_tool_definitions"))
+        set_nested(raw, ["caching", "tier2_file_blocks"], self._get_bool("caching_tier2_file_blocks"))
+        set_nested(raw, ["caching", "tier2_file_blocks_stable_turns"], stable_turns)
+        set_nested(
+            raw, ["caching", "tier2_project_understanding"], self._get_bool("caching_tier2_project_understanding")
+        )
+        set_nested(raw, ["caching", "tier2_project_understanding_min_turns"], min_turns)
+        set_nested(raw, ["caching", "tier3_on_compaction"], self._get_bool("caching_tier3_on_compaction"))
+        set_nested(raw, ["caching", "pr_enabled"], self._get_bool("caching_pr_enabled"))
+
+        # Save General & Tools Settings
+        set_nested(raw, ["memory_db"], self._get_val("memory_db"))
+        set_nested(raw, ["debug_log"], self._get_val("debug_log"))
+        set_nested(raw, ["tools", "max_consecutive_failures"], max_consecutive_failures)
+        set_nested(raw, ["tools", "parallel_tools"], self._get_bool("tools_parallel_tools"))
+
+        if self._session.config_loader.system_prompt_source != "system.md":
+            set_nested(raw, ["system_prompt"], self.query_one("#system_prompt", TextArea).text)
+
+        mcp_servers = self.query_one("#editor-mcp-servers", McpServerListEditor).get_servers_dict()
+        raw["mcp_servers"] = mcp_servers
+
+        # Save Permissions additional settings
+        self._save_permissions(raw)
+        allowed_tools_val = self._get_val("permissions_allowed_tools").strip()
+        allowed_tools_list = [item.strip() for item in allowed_tools_val.split(",") if item.strip()]
+        set_nested(raw, ["permissions", "allowed_tools"], allowed_tools_list)
+
+        allowed_cats_val = self._get_val("permissions_bash_allowed_categories").strip()
+        allowed_cats_list = [item.strip() for item in allowed_cats_val.split(",") if item.strip()]
+        set_nested(raw, ["permissions", "bash", "allowed_categories"], allowed_cats_list)
+
+        yaml_dumper = YAML()
+        yaml_dumper.preserve_quotes = True
+        buf = io.StringIO()
+        yaml_dumper.dump(raw, buf)
+        return buf.getvalue()
+
     def action_save(self) -> None:
         error_label = self.query_one("#error-label", Label)
 
@@ -1124,187 +1240,19 @@ class SettingsScreen(Screen):
                 self.dismiss()
                 return
             except Exception as save_exception:
-                from rich.markup import escape
-
                 error_label.update(f"[red]YAML Error: {escape(str(save_exception))}[/red]")
                 return
 
         try:
-            raw = self._session.config_loader._raw
-
-            def set_nested(data_dict: dict, keys: list[str], val: Any) -> None:
-                current_dict = data_dict
-                for key in keys[:-1]:
-                    if key not in current_dict:
-                        current_dict[key] = {}
-                    current_dict = current_dict[key]
-                current_dict[keys[-1]] = val
-
-            def get_nullable_str(id_str: str) -> str | None:
-                val_str = self._get_val(id_str).strip()
-                return val_str if val_str else None
-
-            def get_nullable_int(id_str: str, default_val: int | None = None) -> int | None:
-                val_str = self._get_val(id_str).strip()
-                try:
-                    return int(val_str) if val_str else default_val
-                except Exception:
-                    return default_val
-
-            def get_nullable_float(id_str: str, default_val: float | None = None) -> float | None:
-                val_str = self._get_val(id_str).strip()
-                try:
-                    return float(val_str) if val_str else default_val
-                except Exception:
-                    return default_val
-
-            set_nested(raw, ["llm", "base_url"], self._get_val("llm_base_url"))
-            set_nested(raw, ["llm", "api_key"], self._get_val("llm_api_key"))
-            set_nested(raw, ["llm", "model"], self._get_val("llm_model"))
-            set_nested(raw, ["llm", "max_tokens"], int(self._get_val("llm_max_tokens", "4096")))
-            set_nested(raw, ["llm", "temperature"], float(self._get_val("llm_temperature", "0.2")))
-            set_nested(raw, ["llm", "context_limit"], int(self._get_val("llm_context_limit", "128000")))
-            set_nested(raw, ["llm", "timeout"], float(self._get_val("llm_timeout", "120.0")))
-
-            reasoning = self._get_val("llm_reasoning_effort")
-            set_nested(raw, ["llm", "reasoning_effort"], None if reasoning == "None" else reasoning)
-
-            thinking_start_mode = self._get_val("llm_thinking_start_mode")
-            set_nested(
-                raw,
-                ["llm", "thinking_start_mode"],
-                None if thinking_start_mode == "None" else thinking_start_mode,
-            )
-
-            # Save the new LLM settings
-            set_nested(raw, ["llm", "code_writer_model"], get_nullable_str("llm_code_writer_model"))
-            set_nested(raw, ["llm", "code_reviewer_model"], get_nullable_str("llm_code_reviewer_model"))
-            set_nested(raw, ["llm", "top_k"], get_nullable_int("llm_top_k"))
-            set_nested(raw, ["llm", "min_p"], get_nullable_float("llm_min_p"))
-            set_nested(raw, ["llm", "repetition_penalty"], get_nullable_float("llm_repetition_penalty"))
-            set_nested(raw, ["llm", "presence_penalty"], float(self._get_val("llm_presence_penalty", "0.0")))
-            set_nested(raw, ["llm", "frequency_penalty"], float(self._get_val("llm_frequency_penalty", "0.0")))
-            set_nested(raw, ["llm", "compaction_threshold"], float(self._get_val("llm_compaction_threshold", "0.85")))
-
-            stop_val = self._get_val("llm_stop").strip()
-            stop_list = [item.strip() for item in stop_val.split(",") if item.strip()] if stop_val else None
-            set_nested(raw, ["llm", "stop"], stop_list)
-
-            set_nested(raw, ["llm", "prompt_cache_key"], get_nullable_str("llm_prompt_cache_key"))
-            set_nested(raw, ["llm", "tool_mode"], self._get_val("llm_tool_mode", "auto"))
-
-            set_nested(raw, ["llm", "visual_system_prompt"], self._get_val("llm_visual_system_prompt") == "True")
-            set_nested(raw, ["llm", "visual_compaction"], self._get_val("llm_visual_compaction") == "True")
-            set_nested(raw, ["llm", "visual_tool_results"], self._get_val("llm_visual_tool_results") == "True")
-            set_nested(raw, ["llm", "visual_user_prompts"], self._get_val("llm_visual_user_prompts") == "True")
-            set_nested(
-                raw,
-                ["llm", "visual_threshold_chars"],
-                int(self._get_val("llm_visual_threshold_chars", "1000")),
-            )
-
-            responses_val = self._get_val("llm_use_responses_api")
-            if responses_val == "True":
-                set_nested(raw, ["llm", "use_responses_api"], True)
-            elif responses_val == "False":
-                set_nested(raw, ["llm", "use_responses_api"], False)
-            else:
-                set_nested(raw, ["llm", "use_responses_api"], None)
-
-            set_nested(raw, ["llm", "preserve_reasoning"], self._get_val("llm_preserve_reasoning", "always"))
-            set_nested(raw, ["llm", "continuation_nudge"], self._get_val("llm_continuation_nudge", "True") == "True")
-
-            # Save UI Config Settings
-            set_nested(raw, ["ui", "theme"], self._get_val("ui_theme"))
-            set_nested(raw, ["ui", "scrollback_limit"], int(self._get_val("ui_scrollback_limit", "100")))
-            set_nested(raw, ["ui", "sidebar", "position"], self._get_val("ui_sidebar_position", "right"))
-            set_nested(raw, ["ui", "sidebar", "width"], int(self._get_val("ui_sidebar_width", "28")))
-
-            # Save Colors
-            set_nested(raw, ["ui", "colors", "primary"], self._get_val("ui_colors_primary"))
-            set_nested(raw, ["ui", "colors", "secondary"], self._get_val("ui_colors_secondary"))
-            set_nested(raw, ["ui", "colors", "success"], self._get_val("ui_colors_success"))
-            set_nested(raw, ["ui", "colors", "warning"], self._get_val("ui_colors_warning"))
-            set_nested(raw, ["ui", "colors", "danger"], self._get_val("ui_colors_danger"))
-            set_nested(raw, ["ui", "colors", "surface"], self._get_val("ui_colors_surface"))
-            set_nested(raw, ["ui", "colors", "text"], self._get_val("ui_colors_text"))
-            set_nested(raw, ["ui", "colors", "neutral"], self._get_val("ui_colors_neutral"))
-
-            # Save Caching Settings
-            set_nested(raw, ["caching", "enabled"], self._get_bool("caching_enabled"))
-            set_nested(raw, ["caching", "tier1_system_prompt"], self._get_bool("caching_tier1_system_prompt"))
-            set_nested(raw, ["caching", "tier1_tool_definitions"], self._get_bool("caching_tier1_tool_definitions"))
-            set_nested(raw, ["caching", "tier2_file_blocks"], self._get_bool("caching_tier2_file_blocks"))
-            set_nested(
-                raw,
-                ["caching", "tier2_file_blocks_stable_turns"],
-                int(self._get_val("caching_tier2_file_blocks_stable_turns", "3")),
-            )
-            set_nested(
-                raw, ["caching", "tier2_project_understanding"], self._get_bool("caching_tier2_project_understanding")
-            )
-            set_nested(
-                raw,
-                ["caching", "tier2_project_understanding_min_turns"],
-                int(self._get_val("caching_tier2_project_understanding_min_turns", "5")),
-            )
-            set_nested(raw, ["caching", "tier3_on_compaction"], self._get_bool("caching_tier3_on_compaction"))
-            set_nested(raw, ["caching", "pr_enabled"], self._get_bool("caching_pr_enabled"))
-
-            # Save General & Tools Settings
-            set_nested(raw, ["memory_db"], self._get_val("memory_db"))
-            set_nested(raw, ["debug_log"], self._get_val("debug_log"))
-
-            paths_val = self._get_val("tools_extra_paths").strip()
-            paths_list = [item.strip() for item in paths_val.split(",") if item.strip()]
-            set_nested(raw, ["tools", "extra_paths"], paths_list)
-            set_nested(
-                raw, ["tools", "max_consecutive_failures"], int(self._get_val("tools_max_consecutive_failures", "3"))
-            )
-            set_nested(raw, ["tools", "parallel_tools"], self._get_bool("tools_parallel_tools"))
-
-            set_nested(raw, ["system_prompt"], self.query_one("#system_prompt", TextArea).text)
-
-            mcp_servers = self.query_one("#editor-mcp-servers", McpServerListEditor).get_servers_dict()
-            raw["mcp_servers"] = mcp_servers
-
-            # Save Permissions additional settings
-            self._save_permissions(raw)
-            allowed_tools_val = self._get_val("permissions_allowed_tools").strip()
-            allowed_tools_list = [item.strip() for item in allowed_tools_val.split(",") if item.strip()]
-            set_nested(raw, ["permissions", "allowed_tools"], allowed_tools_list)
-
-            allowed_cats_val = self._get_val("permissions_bash_allowed_categories").strip()
-            allowed_cats_list = [item.strip() for item in allowed_cats_val.split(",") if item.strip()]
-            set_nested(raw, ["permissions", "bash", "allowed_categories"], allowed_cats_list)
-
-            pre_hooks = self.query_one("#editor-pre-hooks", HookListEditor).get_list()
-            post_hooks = self.query_one("#editor-post-hooks", HookListEditor).get_list()
-            if "hooks" not in raw:
-                raw["hooks"] = {}
-            raw["hooks"]["pre_tool_use"] = pre_hooks
-            raw["hooks"]["post_tool_use"] = post_hooks
-
-            yaml = YAML()
-            yaml.preserve_quotes = True
-            buf = io.StringIO()
-            yaml.dump(raw, buf)
-            base_yaml = buf.getvalue()
-
-            base_yaml = self._rewrite_panels_yaml(base_yaml)
-
-            self._session.config_loader.save(base_yaml)
+            serialized_yaml = self._apply_form_to_raw(self._raw)
+            self._session.config_loader.save(serialized_yaml)
             self._session.reload_config()
             error_label.update("")
             self.dismiss()
         except Exception as save_exception:
-            from rich.markup import escape
-
             error_label.update(f"[red]Error: {escape(str(save_exception))}[/red]")
 
     def _save_permissions(self, raw: dict) -> None:
-        from dendrophis.tools.bash_sandbox import CommandCategory
-
         registry = self._session._tool_registry
         tool_names = []
         if registry:
@@ -1346,39 +1294,6 @@ class SettingsScreen(Screen):
             permissions_dict["bash"] = {}
         permissions_dict["bash"]["denied_categories"] = denied_cats
         permissions_dict["bash"]["auto_approve_categories"] = auto_cats
-
-    def _rewrite_panels_yaml(self, text_content: str) -> str:
-        lines = text_content.splitlines()
-        out_lines = []
-        in_panels = False
-        panels_indent = ""
-
-        active_set = set()
-        for panel_id in PanelRegistry.ids():
-            if self.query_one(f"#panel_{panel_id}", Checkbox).value:
-                active_set.add(panel_id)
-
-        for line in lines:
-            if re.match(r"^(\s*)panels:\s*$", line):
-                in_panels = True
-                panels_indent = re.match(r"^(\s*)", line).group(1)
-                out_lines.append(line)
-
-                for panel_id in PanelRegistry.ids():
-                    if panel_id in active_set:
-                        out_lines.append(f"{panels_indent}- {panel_id}")
-                    else:
-                        out_lines.append(f"{panels_indent}# - {panel_id}")
-                continue
-
-            if in_panels:
-                if re.match(r"^\s*(#\s*)?-\s*\w+\s*$", line):
-                    continue
-                in_panels = False
-
-            out_lines.append(line)
-
-        return "\n".join(out_lines)
 
     def action_dismiss_modal(self) -> None:
         self.dismiss()

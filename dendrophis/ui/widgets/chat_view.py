@@ -43,35 +43,47 @@ _ALL_CLOSE_TAGS = [close_tag for _, close_tag, _ in _TAG_CONFIG]
 _ALL_KNOWN_TAGS = _ALL_OPEN_TAGS + _ALL_CLOSE_TAGS
 
 
-def _clean_latex_shorthand(text: str) -> str:
-    """Replace common LaTeX symbols and non-standard dashes with plain text equivalents."""
-    # Pattern to match optional dollar signs and whitespace around common symbols
-    replacements = {
-        r"\$?\s*\\rightarrow\s*\$?": "→",
-        r"\$?\s*\\to\s*\$?": "→",
-        r"\$?\s*\\Rightarrow\s*\$?": "⇒",
-        r"\$?\s*\\leftarrow\s*\$?": "←",
-        r"\$?\s*\\Leftarrow\s*\$?": "⇐",
-        r"\$?\s*\\leftrightarrow\s*\$?": "↔",
-        r"\$?\s*\\Leftrightarrow\s*\$?": "⇔",
-        r"\$?\s*\\times\s*\$?": "\u00d7",
-        r"\$?\s*\\dots\s*\$?": "...",
-        r"\$?\s*\\quad\s*\$?": "  ",
-        r"\$?\s*\\qquad\s*\$?": "    ",
-        r"\\text\{([^}]*)\}": r"\1",
-        r"\\xrightarrow(?:\[([^\]]*)\])?\{([^}]*)\}": lambda match: (
+_CODE_SPAN_RE = re.compile(r"(```[\s\S]*?```|`[^`\n]+`)")
+_LATEX_SHORTHAND_REPLACEMENTS: tuple[tuple[str, str | Callable[[re.Match[str]], str]], ...] = (
+    (r"\$?\s*\\rightarrow\s*\$?", "→"),
+    (r"\$?\s*\\to\s*\$?", "→"),
+    (r"\$?\s*\\Rightarrow\s*\$?", "⇒"),
+    (r"\$?\s*\\leftarrow\s*\$?", "←"),
+    (r"\$?\s*\\Leftarrow\s*\$?", "⇐"),
+    (r"\$?\s*\\leftrightarrow\s*\$?", "↔"),
+    (r"\$?\s*\\Leftrightarrow\s*\$?", "⇔"),
+    (r"\$?\s*\\times\s*\$?", "\u00d7"),
+    (r"\$?\s*\\dots\s*\$?", "..."),
+    (r"\$?\s*\\quad\s*\$?", "  "),
+    (r"\$?\s*\\qquad\s*\$?", "    "),
+    (r"\\text\{([^}]*)\}", r"\1"),
+    (
+        r"\\xrightarrow(?:\[([^\]]*)\])?\{([^}]*)\}",
+        lambda match: (
             f" → ({match.group(2)} / {match.group(1)}) "
             if match.group(1)
             else (f" → ({match.group(2)}) " if match.group(2) else " → ")
         ),
-        r"\$\$": "",
-        "\u2014": "-",
-        "\u2013": "-",
-    }
-    cleaned = text
-    for pattern, replacement in replacements.items():
-        cleaned = re.sub(pattern, replacement, cleaned)
-    return cleaned
+    ),
+    (r"\$\$", ""),
+    ("\u2014", "-"),
+    ("\u2013", "-"),
+)
+
+
+def _clean_latex_shorthand(text: str) -> str:
+    """Replace common LaTeX symbols and non-standard dashes outside code blocks/spans."""
+    if not text:
+        return text
+    segments = _CODE_SPAN_RE.split(text)
+    for segment_index in range(0, len(segments), 2):
+        prose_segment = segments[segment_index]
+        if not prose_segment:
+            continue
+        for pattern, replacement in _LATEX_SHORTHAND_REPLACEMENTS:
+            prose_segment = re.sub(pattern, replacement, prose_segment)
+        segments[segment_index] = prose_segment
+    return "".join(segments)
 
 
 def _format_tool_args(tool_name: str, arguments: str, result_content: str = "") -> str:
@@ -442,6 +454,7 @@ class ThoughtBubble(VerticalScroll):
         super().__init__()
         self._parts: list[str] = []
         self._collapsed = False
+        self._flush_pending = False
 
     def compose(self) -> ComposeResult:
         yield Static("🧠 [bold]Thought[/bold]", id="thought-header", markup=True)
@@ -449,18 +462,33 @@ class ThoughtBubble(VerticalScroll):
 
     def on_mount(self) -> None:
         if self._parts:
-            joined = "".join(self._parts)
+            self._flush_thought()
+        self._update_display_state()
+
+    def _flush_thought(self) -> None:
+        self._flush_pending = False
+        if not self.is_mounted or not self._parts:
+            return
+        joined = "".join(self._parts)
+        if not joined.strip():
+            return
+        self.styles.display = "block"
+        if not self._collapsed:
             self.query_one("#thought-header", Static).update("🧠 [bold]Thinking...[/bold]")
             body = self.query_one("#thought-text", Static)
             body.styles.display = "block"
             body.update(joined)
-            self.styles.display = "block"
-        self._update_display_state()
+            if self.virtual_size.height > 6:
+                self.styles.height = 6
+            else:
+                self.styles.height = "auto"
+            self.scroll_end(animate=False)
+        else:
+            self.query_one("#thought-text", Static).update(joined)
 
     def append_text(self, text: str) -> None:
         self._parts.append(text)
-        joined = "".join(self._parts)
-        if not joined.strip():
+        if not text.strip() and len(self._parts) == 1:
             return
 
         self.styles.display = "block"
@@ -469,22 +497,13 @@ class ThoughtBubble(VerticalScroll):
         if not self.is_mounted:
             return
 
-        self.query_one("#thought-header", Static).update("🧠 [bold]Thinking...[/bold]")
-        body = self.query_one("#thought-text", Static)
-        body.styles.display = "block"
-        body.update(joined)
-
-        # Force a height once we reach the limit to ensure the scrollbar activates
-        # in the VerticalScroll container.
-        if self.virtual_size.height > 6:
-            self.styles.height = 6
-        else:
-            self.styles.height = "auto"
-
-        self.scroll_end(animate=False)
+        if not self._flush_pending:
+            self._flush_pending = True
+            self.set_timer(0.05, self._flush_thought)
 
     def collapse(self) -> None:
         """Collapse the thought bubble after thinking finishes."""
+        self._flush_thought()
         self._collapsed = True
         self._update_display_state()
 
@@ -642,7 +661,7 @@ class AssistantMessage(Vertical):
         if self._model_id:
             # Shorten common model names
             model_short = self._model_id.split("/")[-1]
-            label_text += f" [dim]({model_short})[/dim]"
+            label_text += f" [dim]({escape(model_short)})[/dim]"
         yield AssistantLabel(label_text)
         if self._loading:
             yield self._loading
@@ -660,7 +679,7 @@ class AssistantMessage(Vertical):
         """Render accumulated text for the current segment to markdown."""
         current_text = _clean_latex_shorthand("".join(self._clean_parts))
         if current_text:
-            self.run_worker(self._markdown.update(current_text))
+            self.run_worker(self._markdown.update(current_text), group="md_render", exclusive=True)
 
     def _schedule_render(self) -> None:
         """Schedule a markdown render, throttled to every 50 ms."""
@@ -922,7 +941,11 @@ class AssistantMessage(Vertical):
         """Flush pending text into the active markdown and reset the part buffer."""
         current_text = "".join(self._clean_parts).strip()
         if current_text:
-            self.run_worker(self._markdown.update(_clean_latex_shorthand(current_text)))
+            self.run_worker(
+                self._markdown.update(_clean_latex_shorthand(current_text)),
+                group="md_render",
+                exclusive=True,
+            )
         self._clean_parts = []
 
     def add_tool_placeholder(self, index: int, tool_name: str, tool_call_id: str | None = None) -> None:
@@ -1026,10 +1049,15 @@ class AssistantMessage(Vertical):
                     if isinstance(child_widget, MarkdownFence) and child_widget.code:
                         parent_widget = child_widget.parent
                         if parent_widget is not None:
+                            sibling_widgets = list(parent_widget.children)
+                            if child_widget in sibling_widgets:
+                                fence_index = sibling_widgets.index(child_widget)
+                                if fence_index > 0 and isinstance(sibling_widgets[fence_index - 1], CopyCodeButton):
+                                    continue
                             with suppress(Exception):
                                 await parent_widget.mount(CopyCodeButton(child_widget.code), before=child_widget)
 
-        self.run_worker(_update_and_inject())
+        self.run_worker(_update_and_inject(), group="md_finalize", exclusive=True)
 
     # ── Finalise ──────────────────────────────────────────────────────────────
 
@@ -1043,10 +1071,9 @@ class AssistantMessage(Vertical):
         self.remove_loading()
 
         was_thinking = self._in_think_tag
-        # Explicitly end thinking state to prevent cross-session contamination
+        # Explicitly end thinking state without injecting a literal closing tag into display
         if self._in_think_tag:
             self._in_think_tag = False
-            self._route_reasoning("</think>")  # Close any open think tag
 
         # Flush any buffered partial tag text before finalizing
         if self._pending_buf:
@@ -1328,6 +1355,7 @@ class ChatView(VerticalScroll):
 
     def start_assistant_message(self, model_id: str = "", loading: bool = True) -> None:
         self.remove_retry_status()
+        self._evict_if_needed()
         bubble = AssistantMessage(model_id=model_id, loading=loading)
         self._active_bubble = bubble
         self.mount(bubble)
@@ -1404,6 +1432,7 @@ class ChatView(VerticalScroll):
             self._throttled_scroll_end()
             return
         # Fallback: no active bubble — mount as a standalone sibling
+        self._evict_if_needed()
         display_args = _format_tool_args(tool_name, arguments)
         label = f"Calling tool: {tool_name}{display_args}"
         if description:

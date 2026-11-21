@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
+from rich.markup import escape
 from rich.syntax import Syntax
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -9,6 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
 from dendrophis.events import EditApprovalEvent, EditProposalEvent, EventBus
+from dendrophis.ui.screens.write_confirmation import truncate_preview
 
 
 class EditConfirmationScreen(ModalScreen[bool]):
@@ -59,8 +63,6 @@ class EditConfirmationScreen(ModalScreen[bool]):
     }
     """
 
-    from typing import ClassVar
-
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("escape", "dismiss_reject", "Reject"),
     ]
@@ -73,12 +75,13 @@ class EditConfirmationScreen(ModalScreen[bool]):
         self.event_bus = event_bus
 
     def compose(self) -> ComposeResult:
+        preview_diff = truncate_preview(self.diff_text)
         with Vertical(id="dialog"):
             yield Label("[bold]Edit Approval Required[/bold]")
-            yield Label(f"File: {self.file_path}", id="file-info")
+            yield Label(f"File: {escape(self.file_path)}", id="file-info")
 
             with Vertical(id="diff-container"):
-                yield Static(Syntax(self.diff_text, lexer="diff", theme="monokai", word_wrap=True))
+                yield Static(Syntax(preview_diff, lexer="diff", theme="monokai", word_wrap=True))
 
             with Horizontal(id="buttons"):
                 yield Button("Approve (Enter)", variant="primary", id="approve")

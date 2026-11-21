@@ -52,6 +52,19 @@
   const drawerBodyEl = document.getElementById('drawer-body');
   const drawerCloseBtn = document.getElementById('drawer-close-btn');
 
+  let hasConnectedBefore = false;
+
+  function resetStreamBeforeSnapshot() {
+    if (!hasConnectedBefore) {
+      hasConnectedBefore = true;
+      return;
+    }
+    if (thoughtStreamEl) {
+      thoughtStreamEl.innerHTML = '';
+    }
+    streamEntriesById.clear();
+  }
+
   // Initialize WebSocket Connection with automatic SSE (/events) fallback
   function connectSSEFallback() {
     if (sseSource) {
@@ -62,6 +75,7 @@
     sseSource = new EventSource('/events');
 
     sseSource.onopen = () => {
+      resetStreamBeforeSnapshot();
       updateStatus('CONNECTED', true);
     };
 
@@ -94,6 +108,7 @@
 
     socket.onopen = () => {
       openedOnce = true;
+      resetStreamBeforeSnapshot();
       updateStatus('CONNECTED', true);
     };
 
@@ -657,6 +672,7 @@
   }
 
   function renderD3MemoryNebula() {
+    if (typeof d3 === 'undefined') return;
     const svg = d3.select('#memory-nebula');
     const tooltipEl = document.getElementById('memory-tooltip');
     if (svg.empty()) return;

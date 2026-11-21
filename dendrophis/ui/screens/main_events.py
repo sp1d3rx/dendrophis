@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import traceback
 import uuid
@@ -173,7 +174,15 @@ class MainScreenEventHandler:
         whatever screen is actually on top.
         """
         screen = self.app.screen
-        if isinstance(screen, ToolConfirmationScreen) and screen.request_id == event.request_id:
+        confirmation_screen_types = (
+            ToolConfirmationScreen,
+            EditConfirmationScreen,
+            WriteConfirmationScreen,
+            AppendConfirmationScreen,
+            PythonExecConfirmationScreen,
+            MultipleChoiceScreen,
+        )
+        if isinstance(screen, confirmation_screen_types) and screen.request_id == event.request_id:
             self.app.pop_screen()
 
     @listen
@@ -306,12 +315,8 @@ class MainScreenEventHandler:
 
         # Return focus to input bar after switching models
         def focus_input() -> None:
-            try:
-                from dendrophis.ui.widgets.input_bar import InputBar
-
+            with contextlib.suppress(Exception):
                 self.query_one(InputBar).focus()
-            except Exception:
-                pass
 
         self.call_later(focus_input)
 

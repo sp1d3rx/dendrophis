@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header
+from textual.worker import WorkerState
 
 from dendrophis.events import ModelSwitchRequest, WaitingForInputEvent
 from dendrophis.ui.screens.main_autocomplete import MainScreenAutocomplete
@@ -142,8 +143,6 @@ class MainScreen(MainScreenEventHandler, MainScreenCommands, MainScreenAutocompl
         self._process_input(event)
 
     def on_worker_state_changed(self, event: Any) -> None:
-        from textual.worker import WorkerState
-
         if event.state == WorkerState.ERROR and event.worker.error:
             chat_view = self.query_one(ChatView)
             chat_view.add_error(f"Worker error: {event.worker.error}")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
+
 from dendrophis.events import ConfigReloadedEvent, EventBus, listen
 from dendrophis.ui.widgets.panels.base import TextPanel
 
@@ -58,8 +60,9 @@ class McpStatusPanel(TextPanel):
 
         lines = []
         for name in sorted(enabled_servers.keys()):
+            escaped_name = escape(name)
             if name in manager._sessions:
-                lines.append(f"[#a6e3a1]●[/] {name}")
+                lines.append(f"[#a6e3a1]●[/] {escaped_name}")
             else:
-                lines.append(f"[#f38ba8]○[/] {name}")
+                lines.append(f"[#f38ba8]○[/] {escaped_name}")
         return "\n".join(lines)

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
+from rich.markup import escape
 from rich.table import Table
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -20,8 +21,6 @@ logger = logging.getLogger(__name__)
 
 class ModelSwitcherScreen(ModalScreen[tuple[str, bool]]):
     """Modal for switching the active LLM model using virtualized OptionList."""
-
-    from typing import ClassVar
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("escape", "dismiss_modal", "Cancel"),
@@ -97,7 +96,7 @@ class ModelSwitcherScreen(ModalScreen[tuple[str, bool]]):
         status = self.query_one("#switcher-status", Label)
 
         # Initial filter list from whatever models we have
-        self._all_models = [m for m in self._session.models if m.is_text_generation]
+        self._all_models = [model_info for model_info in self._session.models if model_info.is_text_generation]
         if not self._all_models:
             self.run_worker(self._load_models())
         else:
@@ -152,7 +151,7 @@ class ModelSwitcherScreen(ModalScreen[tuple[str, bool]]):
                 # Tool support indicator
                 tool_str = "[green]✓ tools[/]" if model.supports_tools else "[red]✗ tools[/]"
 
-                table.add_row(model.id, f"{tool_str} [dim]{ctx_str} ctx{price_str}[/dim]")
+                table.add_row(escape(model.id), f"{tool_str} [dim]{ctx_str} ctx{price_str}[/dim]")
                 option_list.add_option(Option(table, id=model.id))
 
     def on_input_changed(self, event: Input.Changed) -> None:

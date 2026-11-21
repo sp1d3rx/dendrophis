@@ -29,6 +29,7 @@ class ContextPanel(TextPanel):
         context_mgr = self._session.context
         self._token_count = context_mgr.token_count
         self._token_pct = context_mgr.token_pct
+        super().on_mount()
 
     def on_unmount(self) -> None:
         self._events.unsubscribe_all()

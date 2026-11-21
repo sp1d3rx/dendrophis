@@ -8,6 +8,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -29,7 +30,6 @@ def _is_allowed_origin(origin: str | None, allowed_origins: set[str] | None = No
         return True
     if allowed_origins and origin in allowed_origins:
         return True
-    from urllib.parse import urlparse
 
     parsed_origin = urlparse(origin)
     # Allow connections originated from localhost or loopback interfaces
@@ -71,6 +71,8 @@ def create_app(bridge: EventBridge, allowed_origins: list[str] | None = None) ->
                         break
                     try:
                         next_message = await asyncio.wait_for(sse_queue.get(), timeout=15.0)
+                        if next_message is None:
+                            break
                         yield f"data: {next_message}\n\n"
                     except TimeoutError:
                         yield ": keepalive\n\n"
@@ -112,7 +114,7 @@ def create_app(bridge: EventBridge, allowed_origins: list[str] | None = None) ->
         except WebSocketDisconnect:
             bridge.unregister_client(websocket)
         except Exception as err:
-            logger.debug(f"WebSocket client disconnected with error: {err}")
+            logger.debug("WebSocket client disconnected with error: %s", err)
             bridge.unregister_client(websocket)
 
     return app
@@ -146,7 +148,7 @@ class WebObservabilityServer:
             access_log=False,
         )
         self._server = uvicorn.Server(config)
-        logger.info(f"🌐 Dendrophis Web Observability interface running at http://{self.host}:{self.port}")
+        logger.info("🌐 Dendrophis Web Observability interface running at http://%s:%s", self.host, self.port)
         await self._server.serve()
 
     def start_background(self) -> asyncio.Task:

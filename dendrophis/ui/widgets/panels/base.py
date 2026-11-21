@@ -46,10 +46,10 @@ class Panel(Static, ABC, metaclass=PanelMetaclass):
             name = name[:-5]
         # Convert CamelCase to snake_case
         parts = []
-        for i, c in enumerate(name):
-            if i > 0 and name[i - 1].islower() and c.isupper():
+        for char_index, character in enumerate(name):
+            if char_index > 0 and name[char_index - 1].islower() and character.isupper():
                 parts.append("_")
-            parts.append(c.lower())
+            parts.append(character.lower())
         cls.panel_id = "".join(parts)
         cls.panel_name = cls.panel_id
 

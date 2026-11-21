@@ -6,11 +6,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
-from dendrophis.events.bus import EventBus
+from dendrophis.events.bus import EventBus, Subscription
 from dendrophis.events.types import (
     CompactionCompletedEvent,
     CompactionFailedEvent,
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 # never fires and the client is never retired -> one stuck send task per broadcast
 # (unbounded). After this many seconds the send is abandoned and the client dropped.
 _SEND_TIMEOUT_S = 10.0
+_MAX_TRACKED_FILES = 500
 
 _FILE_TOOL_ACTIONS: dict[str, str] = {
     "read": "accessed",
@@ -121,8 +123,10 @@ class EventBridge:
         context_limit: int = 131072,
     ) -> None:
         self.event_bus = event_bus
+        self._state_lock = threading.RLock()
+        self._subscriptions: list[Subscription] = []
         self._clients: set[Any] = set()
-        self._sse_queues: set[asyncio.Queue[str]] = set()
+        self._sse_queues: set[asyncio.Queue[str | None]] = set()
         self._history: deque[dict[str, Any]] = deque(maxlen=history_size)
         self._loop: asyncio.AbstractEventLoop | None = None
         # Keep strong refs to in-flight send tasks so they aren't GC'd mid-send.
@@ -171,116 +175,122 @@ class EventBridge:
 
     def attach_event_bus(self, event_bus: EventBus) -> None:
         """Attach to an EventBus instance and register event handlers."""
+        self.detach_event_bus()
         self.event_bus = event_bus
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = getattr(event_bus, "_loop", None)
 
-        # Stream & turn lifecycle
-        event_bus.subscribe(StreamingStartedEvent, self._handle_stream_start)
-        event_bus.subscribe(StreamingFinishedEvent, self._handle_stream_finish)
-        event_bus.subscribe(ReasoningDeltaEvent, self._handle_reasoning)
-        event_bus.subscribe(TextDeltaEvent, self._handle_text_delta)
-        event_bus.subscribe(ErrorEvent, self._handle_error)
-        event_bus.subscribe(RetryEvent, self._handle_retry)
+        handlers: list[tuple[type[Any], Any]] = [
+            # Stream & turn lifecycle
+            (StreamingStartedEvent, self._handle_stream_start),
+            (StreamingFinishedEvent, self._handle_stream_finish),
+            (ReasoningDeltaEvent, self._handle_reasoning),
+            (TextDeltaEvent, self._handle_text_delta),
+            (ErrorEvent, self._handle_error),
+            (RetryEvent, self._handle_retry),
+            # Tool lifecycle
+            (ToolCallStartEvent, self._handle_tool_start),
+            (ToolExecutionStartedEvent, self._handle_tool_exec_start),
+            (ToolExecutionFinishedEvent, self._handle_tool_exec_finish),
+            (ToolResultEvent, self._handle_tool_result),
+            # Subagent lifecycle
+            (SubagentTaskStartedEvent, self._handle_subagent_started),
+            (SubagentProgressEvent, self._handle_subagent_progress),
+            (SubagentTaskFinishedEvent, self._handle_subagent_finished),
+            # Memory & primer events
+            (MemorySavedEvent, self._handle_memory_saved),
+            (MemoryAssociationEvent, self._handle_memory_association),
+            (MemorySearchResponse, self._handle_memory_search),
+            (MemoryStatsUpdatedEvent, self._handle_memory_stats),
+            (PrimerLoadedEvent, self._handle_primer_loaded),
+            # Filesystem events
+            (TrackFileRequest, self._handle_track_file),
+            (UntrackFileRequest, self._handle_untrack_file),
+            (WriteProposalEvent, self._handle_file_write_proposal),
+            (EditProposalEvent, self._handle_file_edit_proposal),
+            (FileCreatedEvent, self._handle_file_created),
+            (FileModifiedEvent, self._handle_file_modified),
+            # Session, stats, context & compaction events
+            (ModelSwitchedEvent, self._handle_model_switched),
+            (MessageSentEvent, self._handle_message_sent),
+            (StatsUpdatedEvent, self._handle_stats_updated),
+            (UsageEvent, self._handle_usage_updated),
+            (ContextUpdatedEvent, self._handle_context_updated),
+            (CompactionStartedEvent, self._handle_compaction_started),
+            (CompactionCompletedEvent, self._handle_compaction_completed),
+            (CompactionFailedEvent, self._handle_compaction_failed),
+            (TodoUpdatedEvent, self._handle_todo_updated),
+            (TodoChangedEvent, self._handle_todo_updated),
+        ]
+        self._subscriptions = [event_bus.subscribe(event_cls, handler_fn) for event_cls, handler_fn in handlers]
 
-        # Tool lifecycle
-        event_bus.subscribe(ToolCallStartEvent, self._handle_tool_start)
-        event_bus.subscribe(ToolExecutionStartedEvent, self._handle_tool_exec_start)
-        event_bus.subscribe(ToolExecutionFinishedEvent, self._handle_tool_exec_finish)
-        event_bus.subscribe(ToolResultEvent, self._handle_tool_result)
-
-        # Subagent lifecycle
-        event_bus.subscribe(SubagentTaskStartedEvent, self._handle_subagent_started)
-        event_bus.subscribe(SubagentProgressEvent, self._handle_subagent_progress)
-        event_bus.subscribe(SubagentTaskFinishedEvent, self._handle_subagent_finished)
-
-        # Memory & primer events
-        event_bus.subscribe(MemorySavedEvent, self._handle_memory_saved)
-        event_bus.subscribe(MemoryAssociationEvent, self._handle_memory_association)
-        event_bus.subscribe(MemorySearchResponse, self._handle_memory_search)
-        event_bus.subscribe(MemoryStatsUpdatedEvent, self._handle_memory_stats)
-        event_bus.subscribe(PrimerLoadedEvent, self._handle_primer_loaded)
-
-        # Filesystem events
-        event_bus.subscribe(TrackFileRequest, self._handle_track_file)
-        event_bus.subscribe(UntrackFileRequest, self._handle_untrack_file)
-        event_bus.subscribe(WriteProposalEvent, self._handle_file_write_proposal)
-        event_bus.subscribe(EditProposalEvent, self._handle_file_edit_proposal)
-        event_bus.subscribe(FileCreatedEvent, self._handle_file_created)
-        event_bus.subscribe(FileModifiedEvent, self._handle_file_modified)
-
-        # Session, stats, context & compaction events
-        event_bus.subscribe(ModelSwitchedEvent, self._handle_model_switched)
-        event_bus.subscribe(MessageSentEvent, self._handle_message_sent)
-        event_bus.subscribe(StatsUpdatedEvent, self._handle_stats_updated)
-        event_bus.subscribe(UsageEvent, self._handle_usage_updated)
-        event_bus.subscribe(ContextUpdatedEvent, self._handle_context_updated)
-        event_bus.subscribe(CompactionStartedEvent, self._handle_compaction_started)
-        event_bus.subscribe(CompactionCompletedEvent, self._handle_compaction_completed)
-        event_bus.subscribe(CompactionFailedEvent, self._handle_compaction_failed)
-        event_bus.subscribe(TodoUpdatedEvent, self._handle_todo_updated)
-        event_bus.subscribe(TodoChangedEvent, self._handle_todo_updated)
+    def detach_event_bus(self) -> None:
+        """Unsubscribe all registered EventBus handlers."""
+        for subscription in self._subscriptions:
+            subscription.unsubscribe()
+        self._subscriptions.clear()
 
     def get_snapshot(self) -> list[dict[str, Any]]:
         """Return initial graph, file, stats, timeline, and memory states plus recent event history."""
         now_iso = datetime.now(UTC).isoformat()
-        initial_states = [
-            {
-                "type": "SUBAGENT_STATE",
-                "payload": {
-                    "agents": list(self._subagents.values()),
-                    "action": "snapshot",
+        with self._state_lock:
+            initial_states = [
+                {
+                    "type": "SUBAGENT_STATE",
+                    "payload": {
+                        "agents": [dict(agent_info) for agent_info in self._subagents.values()],
+                        "action": "snapshot",
+                    },
+                    "timestamp": now_iso,
                 },
-                "timestamp": now_iso,
-            },
-            {
-                "type": "FILESYSTEM_CHANGE",
-                "payload": {
-                    "files": self._tracked_files,
-                    "details": self._file_details,
-                    "action": "snapshot",
+                {
+                    "type": "FILESYSTEM_CHANGE",
+                    "payload": {
+                        "files": dict(self._tracked_files),
+                        "details": dict(self._file_details),
+                        "action": "snapshot",
+                    },
+                    "timestamp": now_iso,
                 },
-                "timestamp": now_iso,
-            },
-            {
-                "type": "SESSION_STATS",
-                "payload": dict(self._session_stats),
-                "timestamp": now_iso,
-            },
-            {
-                "type": "TOOL_TIMELINE",
-                "payload": {
-                    "executions": list(self._tool_executions),
-                    "action": "snapshot",
+                {
+                    "type": "SESSION_STATS",
+                    "payload": dict(self._session_stats),
+                    "timestamp": now_iso,
                 },
-                "timestamp": now_iso,
-            },
-            {
-                "type": "MEMORY_RETRIEVAL",
-                "payload": {
-                    "id": "mem-core-sys",
-                    "content": "System Prompt & Core Directives",
-                    "relevance": 1.0,
-                    "action": "primer",
-                    "tags": ["system", "core"],
+                {
+                    "type": "TOOL_TIMELINE",
+                    "payload": {
+                        "executions": [dict(execution_item) for execution_item in self._tool_executions],
+                        "action": "snapshot",
+                    },
+                    "timestamp": now_iso,
                 },
-                "timestamp": now_iso,
-            },
-            {
-                "type": "MEMORY_RETRIEVAL",
-                "payload": {
-                    "id": "mem-session-state",
-                    "content": "Active Session Context",
-                    "relevance": 0.85,
-                    "action": "retrieved",
-                    "tags": ["session", "context"],
+                {
+                    "type": "MEMORY_RETRIEVAL",
+                    "payload": {
+                        "id": "mem-core-sys",
+                        "content": "System Prompt & Core Directives",
+                        "relevance": 1.0,
+                        "action": "primer",
+                        "tags": ["system", "core"],
+                    },
+                    "timestamp": now_iso,
                 },
-                "timestamp": now_iso,
-            },
-        ]
-        return initial_states + list(self._history)
+                {
+                    "type": "MEMORY_RETRIEVAL",
+                    "payload": {
+                        "id": "mem-session-state",
+                        "content": "Active Session Context",
+                        "relevance": 0.85,
+                        "action": "retrieved",
+                        "tags": ["session", "context"],
+                    },
+                    "timestamp": now_iso,
+                },
+            ]
+            return initial_states + list(self._history)
 
     def register_client(self, websocket: Any) -> list[dict[str, Any]]:
         """Register a connected WebSocket client and return recent event history."""
@@ -293,15 +303,15 @@ class EventBridge:
         """Unregister a disconnected WebSocket client."""
         self._clients.discard(websocket)
 
-    def register_sse_client(self) -> tuple[asyncio.Queue[str], list[dict[str, Any]]]:
+    def register_sse_client(self) -> tuple[asyncio.Queue[str | None], list[dict[str, Any]]]:
         """Register a Server-Sent Events client queue and return initial snapshot."""
         with contextlib.suppress(RuntimeError):
             self._loop = asyncio.get_running_loop()
-        sse_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
+        sse_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=256)
         self._sse_queues.add(sse_queue)
         return sse_queue, self.get_snapshot()
 
-    def unregister_sse_client(self, sse_queue: asyncio.Queue[str]) -> None:
+    def unregister_sse_client(self, sse_queue: asyncio.Queue[str | None]) -> None:
         """Unregister a disconnected Server-Sent Events client queue."""
         self._sse_queues.discard(sse_queue)
 
@@ -313,22 +323,23 @@ class EventBridge:
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
-        # Coalesce streaming THOUGHT_LOG deltas with the same stream_id in history
-        stream_identifier = payload.get("stream_id") if event_type == "THOUGHT_LOG" else None
-        updated_existing = False
-        if stream_identifier and self._history:
-            for history_entry in reversed(self._history):
-                if (
-                    history_entry.get("type") == "THOUGHT_LOG"
-                    and history_entry.get("payload", {}).get("stream_id") == stream_identifier
-                ):
-                    history_entry["payload"] = payload
-                    history_entry["timestamp"] = event_data["timestamp"]
-                    updated_existing = True
-                    break
+        with self._state_lock:
+            # Coalesce streaming THOUGHT_LOG deltas with the same stream_id in history
+            stream_identifier = payload.get("stream_id") if event_type == "THOUGHT_LOG" else None
+            updated_existing = False
+            if stream_identifier and self._history:
+                for history_entry in reversed(self._history):
+                    if (
+                        history_entry.get("type") == "THOUGHT_LOG"
+                        and history_entry.get("payload", {}).get("stream_id") == stream_identifier
+                    ):
+                        history_entry["payload"] = payload
+                        history_entry["timestamp"] = event_data["timestamp"]
+                        updated_existing = True
+                        break
 
-        if not updated_existing:
-            self._history.append(event_data)
+            if not updated_existing:
+                self._history.append(event_data)
 
         if not self._clients and not self._sse_queues:
             return
@@ -358,6 +369,10 @@ class EventBridge:
                 sse_queue.put_nowait(message)
             except asyncio.QueueFull:
                 self._sse_queues.discard(sse_queue)
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    sse_queue.get_nowait()
+                with contextlib.suppress(asyncio.QueueFull):
+                    sse_queue.put_nowait(None)
 
         for client in list(self._clients):
             try:
@@ -399,25 +414,32 @@ class EventBridge:
         """Record file activity in tracked files and detailed metadata."""
         if not file_path:
             return
-        self._tracked_files[file_path] = action
-        existing_detail = self._file_details.get(file_path, {})
-        touch_count = int(existing_detail.get("touch_count", 0)) + 1
-        updated_diff = diff_text or existing_detail.get("diff", "")
-        self._file_details[file_path] = {
-            "path": file_path,
-            "action": action,
-            "touch_count": touch_count,
-            "tool_name": tool_name or existing_detail.get("tool_name", ""),
-            "diff": updated_diff[:8000] if updated_diff else "",
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
+        with self._state_lock:
+            if file_path not in self._tracked_files and len(self._tracked_files) >= _MAX_TRACKED_FILES:
+                oldest_file = next(iter(self._tracked_files))
+                self._tracked_files.pop(oldest_file, None)
+                self._file_details.pop(oldest_file, None)
+            self._tracked_files[file_path] = action
+            existing_detail = self._file_details.get(file_path, {})
+            touch_count = int(existing_detail.get("touch_count", 0)) + 1
+            updated_diff = diff_text or existing_detail.get("diff", "")
+            self._file_details[file_path] = {
+                "path": file_path,
+                "action": action,
+                "touch_count": touch_count,
+                "tool_name": tool_name or existing_detail.get("tool_name", ""),
+                "diff": updated_diff[:8000] if updated_diff else "",
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            files_snapshot = dict(self._tracked_files)
+            details_snapshot = dict(self._file_details)
         self.broadcast(
             "FILESYSTEM_CHANGE",
             {
                 "path": file_path,
                 "action": action,
-                "files": self._tracked_files,
-                "details": self._file_details,
+                "files": files_snapshot,
+                "details": details_snapshot,
             },
         )
 
@@ -516,11 +538,12 @@ class EventBridge:
     def _handle_tool_start(self, event: ToolCallStartEvent) -> None:
         self._reset_stream_buffers()
         agent_id = f"subagent-{event.name}"
+        short_call_id = (event.id or "unknown")[:8]
         self._active_tool_id = event.id
         self.broadcast(
             "THOUGHT_LOG",
             {
-                "text": f"🛠️ Tool call [{event.name}] ({event.id[:8]})",
+                "text": f"🛠️ Tool call [{event.name}] ({short_call_id})",
                 "level": "tool",
                 "tool_name": event.name,
                 "tool_call_id": event.id,
@@ -717,10 +740,11 @@ class EventBridge:
 
         # Memory tracking if memory tool
         if "memory" in event.name or event.name in ("save_memory", "search_memory", "recall_memory", "remember"):
+            short_tool_id = (event.tool_call_id or "unknown")[:8]
             self.broadcast(
                 "MEMORY_RETRIEVAL",
                 {
-                    "id": f"mem-tool-{event.tool_call_id[:8]}",
+                    "id": f"mem-tool-{short_tool_id}",
                     "content": (event.content or event.arguments or "Memory Query Results")[:160],
                     "relevance": 0.88,
                     "action": "retrieved",
@@ -930,15 +954,18 @@ class EventBridge:
         self._record_file_activity(event.path, "tracked")
 
     def _handle_untrack_file(self, event: UntrackFileRequest) -> None:
-        self._tracked_files.pop(event.path, None)
-        self._file_details.pop(event.path, None)
+        with self._state_lock:
+            self._tracked_files.pop(event.path, None)
+            self._file_details.pop(event.path, None)
+            files_snapshot = dict(self._tracked_files)
+            details_snapshot = dict(self._file_details)
         self.broadcast(
             "FILESYSTEM_CHANGE",
             {
                 "path": event.path,
                 "action": "untracked",
-                "files": self._tracked_files,
-                "details": self._file_details,
+                "files": files_snapshot,
+                "details": details_snapshot,
             },
         )
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import ClassVar
 
+from rich.markup import escape
 from rich.syntax import Syntax
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -11,38 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
 from dendrophis.events import AppendApprovalEvent, AppendProposalEvent, EventBus
-
-_EXT_TO_LEXER: dict[str, str] = {
-    ".py": "python",
-    ".js": "javascript",
-    ".ts": "typescript",
-    ".tsx": "tsx",
-    ".jsx": "jsx",
-    ".json": "json",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".toml": "toml",
-    ".md": "markdown",
-    ".sh": "bash",
-    ".bash": "bash",
-    ".zsh": "bash",
-    ".html": "html",
-    ".css": "css",
-    ".rs": "rust",
-    ".go": "go",
-    ".rb": "ruby",
-    ".java": "java",
-    ".c": "c",
-    ".cpp": "cpp",
-    ".h": "c",
-    ".sql": "sql",
-    ".xml": "xml",
-}
-
-
-def _lexer_for(file_path: str) -> str:
-    ext = Path(file_path).suffix.lower()
-    return _EXT_TO_LEXER.get(ext, "text")
+from dendrophis.ui.screens.write_confirmation import _lexer_for, truncate_preview
 
 
 class AppendConfirmationScreen(ModalScreen[bool]):
@@ -93,8 +63,6 @@ class AppendConfirmationScreen(ModalScreen[bool]):
     }
     """
 
-    from typing import ClassVar
-
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("escape", "dismiss_reject", "Reject"),
     ]
@@ -108,12 +76,13 @@ class AppendConfirmationScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         lexer = _lexer_for(self.file_path)
+        preview_content = truncate_preview(self.content)
         with Vertical(id="dialog"):
             yield Label("[bold]Append Approval Required[/bold]")
-            yield Label(f"Append to: {self.file_path}", id="file-info")
+            yield Label(f"Append to: {escape(self.file_path)}", id="file-info")
 
             with Vertical(id="content-container"):
-                yield Static(Syntax(self.content, lexer=lexer, theme="monokai", word_wrap=False, line_numbers=True))
+                yield Static(Syntax(preview_content, lexer=lexer, theme="monokai", word_wrap=False, line_numbers=True))
 
             with Horizontal(id="buttons"):
                 yield Button("Approve (Enter)", variant="primary", id="approve")

@@ -9,6 +9,7 @@ from textual.widgets import Sparkline, Static
 
 from dendrophis.events import (
     EventBus,
+    SessionResetEvent,
     SessionResetRequest,
     StatsUpdatedEvent,
     StreamingFinishedEvent,
@@ -94,8 +95,9 @@ class SpeedPanel(EventPanel):
         self._finalize_turn_average()
         self.update_display()
 
-    @listen
-    def _on_session_reset(self, event: SessionResetRequest) -> None:
+    @listen(SessionResetEvent)
+    @listen(SessionResetRequest)
+    def _on_session_reset(self, event: SessionResetEvent | SessionResetRequest) -> None:
         """Reset the session-average TPS on a fresh session."""
         self._avg_tokens_per_sec = 0.0
         self._session_turn_count = 0

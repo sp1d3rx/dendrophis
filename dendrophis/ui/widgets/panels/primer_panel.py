@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
+
 from dendrophis.events import (
     ContextUpdatedEvent,
     EventBus,
@@ -21,8 +23,6 @@ if TYPE_CHECKING:
 class PrimerPanel(TextPanel):
     """Panel showing project primer status and understanding phase detection."""
 
-    REFRESH_INTERVAL = 5.0  # Re-check every 5s (faster so understanding status feels responsive)
-
     def __init__(self, session: Session, event_bus: EventBus) -> None:
         super().__init__()
         self._session = session
@@ -38,10 +38,9 @@ class PrimerPanel(TextPanel):
         self._understanding_current_turn: int = 0
 
     def on_mount(self) -> None:
-        super().on_mount()
         self._events = self._event_bus.bind(self)
-        # Initialize from current session state
         self._update_from_session()
+        super().on_mount()
 
     def on_unmount(self) -> None:
         self._events.unsubscribe_all()
@@ -113,4 +112,7 @@ class PrimerPanel(TextPanel):
         if not self._primer_loaded:
             return f"{understanding_line}\n[dim]No primer[/dim]"
 
-        return f"{understanding_line}\n[#94e2d5]{self._primer_file_count} files[/]\n[dim]{self._primer_project_name}[/]"
+        return (
+            f"{understanding_line}\n[#94e2d5]{self._primer_file_count} files[/]\n"
+            f"[dim]{escape(self._primer_project_name)}[/]"
+        )

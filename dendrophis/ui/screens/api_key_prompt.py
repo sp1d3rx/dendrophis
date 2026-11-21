@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import ModalScreen
@@ -39,7 +40,7 @@ class ApiKeyPromptScreen(ModalScreen[str]):
         with Vertical():
             yield Label("[bold]No API key configured.[/bold]")
             yield Label(
-                f"Provider: [accent]{self._session.config.llm.base_url}[/accent]\n"
+                f"Provider: [accent]{escape(self._session.config.llm.base_url)}[/accent]\n"
                 "Enter your API key below, or set [italic]DENDROPHIS_API_KEY[/italic] env var."
             )
             yield Input(placeholder="sk-...", password=True, id="key-input")

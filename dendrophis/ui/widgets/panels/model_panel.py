@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from textual.message import Message
 
 from dendrophis.events import EventBus, ModelSwitchedEvent, listen
@@ -27,6 +28,7 @@ class ModelPanel(TextPanel):
 
     def on_mount(self) -> None:
         self._events = self._event_bus.bind(self)
+        super().on_mount()
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""
@@ -45,7 +47,7 @@ class ModelPanel(TextPanel):
         if len(model) > 20:
             model = model[:17] + "..."
 
-        return f"[#cba6f7]{model}[/]\n[dim]Click to switch[/dim]"
+        return f"[#cba6f7]{escape(model)}[/]\n[dim]Click to switch[/dim]"
 
     def on_click(self) -> None:
         """Emit switched message on click."""

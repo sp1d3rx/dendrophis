@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+from typing import ClassVar
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import ModalScreen
@@ -49,8 +51,6 @@ class MultipleChoiceScreen(ModalScreen[str | None]):
     }
     """
 
-    from typing import ClassVar
-
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("escape", "dismiss_cancel", "Cancel"),
     ]
@@ -64,10 +64,10 @@ class MultipleChoiceScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label(self.question, id="question-title")
+            yield Label(escape(self.question), id="question-title")
 
             for index, option in enumerate(self.options):
-                yield Button(option, id=f"option_{index}", classes="option-button")
+                yield Button(escape(option), id=f"option_{index}", classes="option-button")
 
             yield Button("Cancel (Esc)", id="cancel-button", variant="error")
 
@@ -82,7 +82,6 @@ class MultipleChoiceScreen(ModalScreen[str | None]):
             self.action_dismiss_cancel()
             return
 
-        # Extract index from button ID "option_X"
         button_id = event.button.id
         if button_id and button_id.startswith("option_"):
             try:

@@ -68,8 +68,9 @@ class StatusPanel(TextPanel):
 
     @listen
     def _on_text_delta(self, event: TextDeltaEvent) -> None:
-        self._streaming = True
-        self.update_value()
+        if not self._streaming:
+            self._streaming = True
+            self.update_value()
 
     @listen
     def _on_streaming_finished(self, event: StreamingFinishedEvent) -> None:

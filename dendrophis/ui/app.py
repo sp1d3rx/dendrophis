@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+from typing import ClassVar
 
 from textual.app import App
 
 from dendrophis.config.loader import ConfigLoader
 from dendrophis.events import (
     AuthFailedEvent,
+    ConfigReloadedEvent,
     EventBus,
     ModelSwitchedEvent,
     listen,
@@ -28,8 +30,6 @@ class DendrophisApp(App):
     CSS_PATH = Path(__file__).parent / "styles" / "dendrophis.tcss"
     TITLE = "Dendrophis"
     SUB_TITLE = "Python coding agent"
-
-    from typing import ClassVar
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("ctrl+q", "quit", "Quit"),
@@ -88,7 +88,7 @@ class DendrophisApp(App):
 
     async def on_mount(self) -> None:
         # Set event loop for async handlers
-        self._event_bus.set_event_loop(asyncio.get_event_loop())
+        self._event_bus.set_event_loop(asyncio.get_running_loop())
 
         # Apply custom colors from config
         self._apply_colors()
@@ -164,6 +164,12 @@ class DendrophisApp(App):
         self.call_later(self._check_and_prompt_calibration, event.model_id)
 
     @listen
+    def _on_config_reloaded(self, event: ConfigReloadedEvent) -> None:
+        """Re-apply theme colors and title when configuration is saved."""
+        self._apply_colors()
+        self._update_title()
+
+    @listen
     def _on_auth_failed(self, event: AuthFailedEvent) -> None:
         from dendrophis.ui.screens.api_key_prompt import ApiKeyPromptScreen
 
@@ -189,6 +195,9 @@ class DendrophisApp(App):
     async def on_unmount(self) -> None:
         # Stop the web observability server so its uvicorn task doesn't keep the
         # event loop alive and hang the process on exit.
+        if self._web_bridge is not None:
+            with contextlib.suppress(Exception):
+                self._web_bridge.detach_event_bus()
         if self._web_server is not None:
             with contextlib.suppress(Exception):
                 await self._web_server.stop()

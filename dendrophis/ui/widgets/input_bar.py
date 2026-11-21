@@ -5,11 +5,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from textual.events import Key
 from textual.message import Message
 from textual.widgets import OptionList, TextArea
 
 _AT_PATTERN = re.compile(r"@(\S+)")
-_SLASH_PATTERN = re.compile(r"^/(\w*)$")  # /command at start of line
+_SLASH_PATTERN = re.compile(r"^/([\w-]*)$")  # /command at start of line
 
 
 def _resolve_file_refs(text: str) -> tuple[str, list[Path]]:
@@ -112,8 +113,6 @@ class InputBar(TextArea):
             self.file_paths = file_paths
 
     async def _on_key(self, event: object) -> None:
-        from textual.events import Key
-
         if not isinstance(event, Key):
             return
 

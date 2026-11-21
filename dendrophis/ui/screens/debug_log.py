@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import ClassVar
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -60,8 +63,6 @@ class DebugLogScreen(ModalScreen):
     }
     """
 
-    from typing import ClassVar
-
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("ctrl+d", "close", "Close"),
         ("escape", "close", "Close"),
@@ -96,8 +97,6 @@ class DebugLogScreen(ModalScreen):
     def write(self, message: str) -> None:
         """Write a message to the debug log."""
         if self._log:
-            from datetime import datetime
-
             timestamp = datetime.now().strftime(r"%H:%M:%S.%f")[:-3]
             # Ensure message ends with newline for Log widget
             if not message.endswith("\n"):

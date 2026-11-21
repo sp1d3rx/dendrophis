@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, Static
 
+from dendrophis.memory.project import _project_id, detect_project_root, load_primer
 from dendrophis.ui.widgets.input_bar import FileAutocomplete
 
 if TYPE_CHECKING:
@@ -115,8 +118,6 @@ class PrimerScreen(Screen):
         self.query_one("#add-input", Input).focus()
 
     def _refresh_list(self) -> None:
-        from dendrophis.memory.project import _project_id, detect_project_root, load_primer
-
         root = detect_project_root()
         scroll = self.query_one("#file-scroll", VerticalScroll)
         scroll.remove_children()
@@ -180,7 +181,7 @@ class PrimerScreen(Screen):
             inp.value = ""
             self._refresh_list()
         else:
-            status.update(f"[red]Could not add '{path}' — file may not exist.[/red]")
+            status.update(f"[red]Could not add '{escape(path)}' — file may not exist.[/red]")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "add-input":
@@ -230,27 +231,31 @@ class PrimerScreen(Screen):
         autocomplete_dropdown.set_suggestions([])
 
     def _update_autocomplete(self, prefix: str) -> None:
-        import glob
-        from pathlib import Path
-
-        cleaned_prefix = prefix.strip()
+        cleaned_prefix = prefix.strip().lstrip("./")
         if not cleaned_prefix:
             self._close_autocomplete()
             return
 
-        # Search recursively for matches starting with prefix
-        matches = []
-        pattern = f"{cleaned_prefix}*"
+        excluded_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache"}
+        lower_prefix = cleaned_prefix.lower()
+        matches: list[str] = []
         try:
-            for file_path in glob.glob(pattern, recursive=True):
-                if Path(file_path).is_file():
-                    # Check gitignore/standard excludes
-                    if any(part in file_path.split("/") for part in (".git", ".venv", "node_modules", "__pycache__")):
-                        continue
-                    matches.append(file_path)
-                    if len(matches) >= 10:
-                        break
-        except Exception:
+            for root_dir, dir_names, file_names in os.walk("."):
+                dir_names[:] = [
+                    directory_name
+                    for directory_name in dir_names
+                    if directory_name not in excluded_dirs and not directory_name.startswith(".git")
+                ]
+                rel_root = "" if root_dir == "." else root_dir.removeprefix("./").removeprefix(".\\")
+                for file_name in file_names:
+                    rel_path = f"{rel_root}/{file_name}" if rel_root else file_name
+                    if rel_path.lower().startswith(lower_prefix):
+                        matches.append(rel_path)
+                        if len(matches) >= 10:
+                            break
+                if len(matches) >= 10:
+                    break
+        except OSError:
             pass
 
         autocomplete_dropdown = self.query_one(FileAutocomplete)

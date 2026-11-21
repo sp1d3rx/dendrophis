@@ -18,6 +18,7 @@ import contextlib
 import gc
 import time
 import tracemalloc
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,7 @@ try:
     _PYDISPATCHER_AVAILABLE = True
 except ImportError:
     pass
+
 
 # ---------------------------------------------------------------------------
 # Test Event Types
@@ -84,6 +86,18 @@ class BenchmarkResult:
         )
 
 
+def _make_distinct_sync_handlers(count: int) -> list[Callable[[BenchmarkEvent], None]]:
+    """Create ``count`` distinct handler functions so deduplicating buses retain all of them."""
+    handlers_list: list[Callable[[BenchmarkEvent], None]] = []
+    for _ in range(count):
+
+        def _handler(_event: BenchmarkEvent) -> None:
+            return None
+
+        handlers_list.append(_handler)
+    return handlers_list
+
+
 # ---------------------------------------------------------------------------
 # Benchmark Functions
 # ---------------------------------------------------------------------------
@@ -91,41 +105,32 @@ class BenchmarkResult:
 
 def benchmark_publish_performance(subscriber_counts: list[int]) -> list[BenchmarkResult]:
     """Benchmark publish performance with varying subscriber counts."""
-    results = []
+    results: list[BenchmarkResult] = []
 
     for count in subscriber_counts:
         bus = EventBus()
+        handlers_list = _make_distinct_sync_handlers(count)
 
-        # Create sync handlers
-        handlers_called = 0
+        for handler_fn in handlers_list:
+            bus.subscribe(BenchmarkEvent, handler_fn)
 
-        def handler(event: BenchmarkEvent) -> None:
-            nonlocal handlers_called
-            handlers_called += 1
-
-        # Subscribe handlers
-        for _ in range(count):
-            bus.subscribe(BenchmarkEvent, handler)
-
-        # Warmup
         for _ in range(100):
             bus.publish(BenchmarkEvent(id=0))
 
-        # Benchmark
         gc.collect()
         gc.disable()
 
         iterations = 100000 if count <= 100 else 10000
 
         start = time.perf_counter()
-        for i in range(iterations):
-            bus.publish(BenchmarkEvent(id=i))
+        for event_index in range(iterations):
+            bus.publish(BenchmarkEvent(id=event_index))
         end = time.perf_counter()
 
         gc.enable()
 
         total_time = end - start
-        avg_time = (total_time / iterations) * 1_000_000  # μs
+        avg_time = (total_time / iterations) * 1_000_000
         ops_per_sec = iterations / total_time
 
         results.append(
@@ -145,21 +150,18 @@ def benchmark_publish_performance(subscriber_counts: list[int]) -> list[Benchmar
 
 def benchmark_subscribe_performance(subscriber_counts: list[int]) -> list[BenchmarkResult]:
     """Benchmark subscribe/unsubscribe performance."""
-    results = []
+    results: list[BenchmarkResult] = []
 
     for count in subscriber_counts:
         bus = EventBus()
+        handlers_list = _make_distinct_sync_handlers(count)
 
-        def handler(event: BenchmarkEvent) -> None:
-            pass
-
-        # Benchmark subscribe
         gc.collect()
         gc.disable()
 
         start = time.perf_counter()
-        for _ in range(count):
-            bus.subscribe(BenchmarkEvent, handler)
+        for handler_fn in handlers_list:
+            bus.subscribe(BenchmarkEvent, handler_fn)
         end = time.perf_counter()
 
         gc.enable()
@@ -178,13 +180,12 @@ def benchmark_subscribe_performance(subscriber_counts: list[int]) -> list[Benchm
             )
         )
 
-        # Benchmark unsubscribe
         gc.collect()
         gc.disable()
 
         start = time.perf_counter()
-        for _ in range(count):
-            bus.unsubscribe(BenchmarkEvent, handler)
+        for handler_fn in handlers_list:
+            bus.unsubscribe(BenchmarkEvent, handler_fn)
         end = time.perf_counter()
 
         gc.enable()
@@ -212,29 +213,26 @@ async def benchmark_async_handlers(bus: EventBus, handler_count: int, event_coun
     """Benchmark async handler performance."""
     handlers_completed = 0
 
-    async def async_handler(event: BenchmarkEvent) -> None:
-        nonlocal handlers_completed
-        handlers_completed += 1
-
-    # Subscribe async handlers
     for _ in range(handler_count):
+
+        async def async_handler(_event: BenchmarkEvent) -> None:
+            nonlocal handlers_completed
+            handlers_completed += 1
+
         bus.subscribe(BenchmarkEvent, async_handler)
 
-    bus.set_event_loop(asyncio.get_event_loop())
+    bus.set_event_loop(asyncio.get_running_loop())
 
-    # Warmup
     for _ in range(10):
         bus.publish(BenchmarkEvent(id=0))
     await asyncio.sleep(0.01)
 
-    # Benchmark
     handlers_completed = 0
     start = time.perf_counter()
 
-    for i in range(event_count):
-        bus.publish(BenchmarkEvent(id=i))
+    for event_index in range(event_count):
+        bus.publish(BenchmarkEvent(id=event_index))
 
-    # Wait for all handlers to complete
     await asyncio.sleep(0.1)
 
     end = time.perf_counter()
@@ -256,22 +254,17 @@ async def benchmark_async_handlers(bus: EventBus, handler_count: int, event_coun
 
 def benchmark_memory_usage(subscriber_counts: list[int]) -> list[BenchmarkResult]:
     """Benchmark memory usage with varying subscriber counts."""
-    results = []
+    results: list[BenchmarkResult] = []
 
     for count in subscriber_counts:
         tracemalloc.start()
         bus = EventBus()
 
-        def handler(event: BenchmarkEvent) -> None:
-            pass
+        for handler_fn in _make_distinct_sync_handlers(count):
+            bus.subscribe(BenchmarkEvent, handler_fn)
 
-        # Create subscribers
-        for _ in range(count):
-            bus.subscribe(BenchmarkEvent, handler)
-
-        # Publish some events
-        for i in range(1000):
-            bus.publish(BenchmarkEvent(id=i))
+        for event_index in range(1000):
+            bus.publish(BenchmarkEvent(id=event_index))
 
         current, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -298,12 +291,10 @@ def benchmark_multiple_event_types(type_count: int, handlers_per_type: int, even
     """Benchmark with multiple event types."""
     bus = EventBus()
 
-    # Create dynamic event types
-    event_types = []
-    for i in range(type_count):
-        # Create a unique event type
+    event_types: list[type[Any]] = []
+    for type_index in range(type_count):
         event_type = type(
-            f"DynamicEvent{i}",
+            f"DynamicEvent{type_index}",
             (),
             {
                 "__slots__": (),
@@ -314,23 +305,20 @@ def benchmark_multiple_event_types(type_count: int, handlers_per_type: int, even
 
     handlers_called = [0] * type_count
 
-    def make_handler(idx: int):
-        def handler(event: Any) -> None:
-            handlers_called[idx] += 1
+    def make_handler(target_index: int) -> Callable[[Any], None]:
+        def handler(_event: Any) -> None:
+            handlers_called[target_index] += 1
 
         return handler
 
-    # Subscribe handlers to each event type
-    for i, evt_type in enumerate(event_types):
+    for type_index, evt_type in enumerate(event_types):
         for _ in range(handlers_per_type):
-            bus.subscribe(evt_type, make_handler(i))
+            bus.subscribe(evt_type, make_handler(type_index))
 
-    # Warmup
-    for _, evt_type in enumerate(event_types):
+    for evt_type in event_types:
         for _ in range(10):
             bus.publish(evt_type())
 
-    # Benchmark
     gc.collect()
     gc.disable()
 
@@ -361,43 +349,39 @@ def benchmark_multiple_event_types(type_count: int, handlers_per_type: int, even
 def benchmark_realistic_streaming() -> BenchmarkResult:
     """Benchmark realistic streaming pattern: many TextDelta + Done events."""
     bus = EventBus()
-    bus.set_event_loop(asyncio.new_event_loop())
+    temp_loop = asyncio.new_event_loop()
+    bus.set_event_loop(temp_loop)
 
     text_delta_count = 0
     done_count = 0
 
-    def text_handler(event: TextDeltaEvent) -> None:
-        nonlocal text_delta_count
-        text_delta_count += 1
-
-    def done_handler(event: DoneEvent) -> None:
-        nonlocal done_count
-        done_count += 1
-
-    # Subscribe like a typical UI would
-    # 5 panels subscribing to TextDelta
     for _ in range(5):
+
+        def text_handler(_event: TextDeltaEvent) -> None:
+            nonlocal text_delta_count
+            text_delta_count += 1
+
         bus.subscribe(TextDeltaEvent, text_handler)
 
-    # 3 panels subscribing to Done
     for _ in range(3):
+
+        def done_handler(_event: DoneEvent) -> None:
+            nonlocal done_count
+            done_count += 1
+
         bus.subscribe(DoneEvent, done_handler)
 
-    # Warmup
     for _ in range(100):
         bus.publish(TextDeltaEvent(delta="test"))
 
-    # Benchmark: Simulate 1000 tokens streamed (100 events) + 1 done
     gc.collect()
     gc.disable()
 
     start = time.perf_counter()
 
-    # Simulate streaming 100 TextDelta events
-    for i in range(100):
-        bus.publish(TextDeltaEvent(delta=f"token{i}"))
+    for token_index in range(100):
+        bus.publish(TextDeltaEvent(delta=f"token{token_index}"))
 
-    # Final Done event
     bus.publish(DoneEvent(finish_reason="stop"))
 
     end = time.perf_counter()
@@ -409,6 +393,7 @@ def benchmark_realistic_streaming() -> BenchmarkResult:
     ops_per_sec = total_events / total_time
 
     bus.shutdown(wait=False)
+    temp_loop.close()
 
     return BenchmarkResult(
         name="realistic streaming (101 events)",
@@ -428,17 +413,9 @@ def stress_test(duration_seconds: float = 5.0, handlers: int = 50) -> BenchmarkR
     """Stress test: publish as many events as possible in a time period."""
     bus = EventBus()
 
-    call_count = 0
+    for handler_fn in _make_distinct_sync_handlers(handlers):
+        bus.subscribe(BenchmarkEvent, handler_fn)
 
-    def handler(event: BenchmarkEvent) -> None:
-        nonlocal call_count
-        call_count += 1
-
-    # Subscribe handlers
-    for _ in range(handlers):
-        bus.subscribe(BenchmarkEvent, handler)
-
-    # Warmup
     for _ in range(1000):
         bus.publish(BenchmarkEvent(id=0))
 
@@ -483,37 +460,33 @@ def _pydispatcher_publish_benchmark(subscriber_counts: list[int]) -> list[Benchm
 
     import pydispatch.dispatcher as dispatcher
 
-    results = []
+    results: list[BenchmarkResult] = []
     for count in subscriber_counts:
         signal = "benchmark_signal"
-        sender = object()  # Unique sender for each test
+        sender = object()
 
-        # Create unique handlers - pydispatcher deduplicates same handler
-        handlers = []
+        handlers_list = []
         for _ in range(count):
 
-            def make_handler():
-                return lambda sender, **kw: None
+            def make_handler() -> Callable[..., None]:
+                return lambda sender, **kwargs: None
 
-            handlers.append(make_handler())
+            handlers_list.append(make_handler())
 
-        # Subscribe handlers
-        for h in handlers:
-            dispatcher.connect(h, signal=signal, sender=sender)
+        for handler_fn in handlers_list:
+            dispatcher.connect(handler_fn, signal=signal, sender=sender)
 
-        # Warmup
         for _ in range(100):
             dispatcher.send(signal=signal, sender=sender, id=0)
 
-        # Benchmark
         gc.collect()
         gc.disable()
 
         iterations = 100000 if count <= 100 else 10000
 
         start = time.perf_counter()
-        for i in range(iterations):
-            dispatcher.send(signal=signal, sender=sender, id=i)
+        for event_index in range(iterations):
+            dispatcher.send(signal=signal, sender=sender, id=event_index)
         end = time.perf_counter()
 
         gc.enable()
@@ -532,7 +505,6 @@ def _pydispatcher_publish_benchmark(subscriber_counts: list[int]) -> list[Benchm
             )
         )
 
-        # Cleanup all handlers for this signal/sender
         with contextlib.suppress(Exception):
             dispatcher.disconnect(pydispatch.dispatcher.Any, signal=signal, sender=sender)
 
@@ -546,24 +518,22 @@ def _pydispatcher_subscribe_benchmark(subscriber_counts: list[int]) -> list[Benc
 
     import pydispatch.dispatcher as dispatcher
 
-    results = []
+    results: list[BenchmarkResult] = []
     for count in subscriber_counts:
         signal = "benchmark_signal"
-        sender = object()  # Unique sender for each test
+        sender = object()
 
-        # Create unique handlers for each connection
-        def make_handler():
-            return lambda sender, **kw: None
+        def make_handler() -> Callable[..., None]:
+            return lambda sender, **kwargs: None
 
-        handlers = [make_handler() for _ in range(count)]
+        handlers_list = [make_handler() for _ in range(count)]
 
-        # Benchmark subscribe
         gc.collect()
         gc.disable()
 
         start = time.perf_counter()
-        for h in handlers:
-            dispatcher.connect(h, signal=signal, sender=sender)
+        for handler_fn in handlers_list:
+            dispatcher.connect(handler_fn, signal=signal, sender=sender)
         end = time.perf_counter()
 
         gc.enable()
@@ -582,12 +552,10 @@ def _pydispatcher_subscribe_benchmark(subscriber_counts: list[int]) -> list[Benc
             )
         )
 
-        # Benchmark unsubscribe - disconnect all at once using Any
         gc.collect()
         gc.disable()
 
         start = time.perf_counter()
-        # pydispatcher: disconnect all handlers for this signal from this sender
         dispatcher.disconnect(pydispatch.dispatcher.Any, signal=signal, sender=sender)
         end = time.perf_counter()
 
@@ -626,15 +594,13 @@ def _pydispatcher_stress_test(duration_seconds: float = 2.0, handlers: int = 50)
     signal = "stress_signal"
     sender = object()
 
-    # Create unique handlers
-    def make_handler():
+    def make_handler() -> Callable[..., None]:
         return lambda sender, **kwargs: None
 
-    hlist = [make_handler() for _ in range(handlers)]
-    for h in hlist:
-        dispatcher.connect(h, signal=signal, sender=sender)
+    handlers_list = [make_handler() for _ in range(handlers)]
+    for handler_fn in handlers_list:
+        dispatcher.connect(handler_fn, signal=signal, sender=sender)
 
-    # Warmup
     for _ in range(1000):
         dispatcher.send(signal=signal, sender=sender, id=0)
 
@@ -656,10 +622,9 @@ def _pydispatcher_stress_test(duration_seconds: float = 2.0, handlers: int = 50)
     avg_time = (total_time / published) * 1_000_000 if published > 0 else 0
     ops_per_sec = published / total_time if total_time > 0 else 0
 
-    # Cleanup
-    for h in hlist:
+    for handler_fn in handlers_list:
         with contextlib.suppress(Exception):
-            dispatcher.disconnect(h, signal=signal, sender=sender)
+            dispatcher.disconnect(handler_fn, signal=signal, sender=sender)
 
     return BenchmarkResult(
         name=f"pydispatch stress ({handlers} handlers, {duration_seconds}s)",
@@ -707,7 +672,6 @@ def run_pydispatcher_comparison() -> None:
     print("\n[COMPARISON: DENDROPHIS vs PYDISPATCHER]")
     print("=" * 100)
 
-    # Publish comparison
     print("\n--- Publish Performance ---")
     sub_counts = [1, 10, 50, 100, 200]
 
@@ -717,57 +681,53 @@ def run_pydispatcher_comparison() -> None:
     print(f"{'':<40} {'Dendrophis':>20} {'pydispatch':>20}")
     print(f"{'Subscribers':<40} {'ops/s':>20} {'ops/s':>20}")
     print("-" * 82)
-    for i, count in enumerate(sub_counts):
-        d_ops = dendro_results[i].ops_per_second
-        p_ops = pydisp_results[i].ops_per_second if i < len(pydisp_results) else 0
-        d_ops / p_ops if p_ops > 0 else 0
-        winner = "✓" if d_ops >= p_ops else "✗"
-        print(f"{count} subscribers{'':<28} {d_ops:>20,.0f} {p_ops:>20,.0f} {winner}")
+    for result_index, count in enumerate(sub_counts):
+        dendro_ops = dendro_results[result_index].ops_per_second
+        pydisp_ops = pydisp_results[result_index].ops_per_second if result_index < len(pydisp_results) else 0
+        winner = "✓" if dendro_ops >= pydisp_ops else "✗"
+        print(f"{count} subscribers{'':<28} {dendro_ops:>20,.0f} {pydisp_ops:>20,.0f} {winner}")
 
-    # Subscribe comparison
     print("\n--- Subscribe Performance ---")
     sub_counts = [10, 100, 1000]
 
-    dendro_sub = [r for r in benchmark_subscribe_performance(sub_counts) if "subscribe" in r.name]
-    pydisp_sub = [r for r in _pydispatcher_subscribe_benchmark(sub_counts) if "subscribe" in r.name]
+    all_dendro_sub = benchmark_subscribe_performance(sub_counts)
+    all_pydisp_sub = _pydispatcher_subscribe_benchmark(sub_counts)
+    dendro_sub = [result_item for result_item in all_dendro_sub if result_item.name.startswith("subscribe")]
+    pydisp_sub = [result_item for result_item in all_pydisp_sub if result_item.name.startswith("pydispatch subscribe")]
 
     print(f"{'':<40} {'Dendrophis':>20} {'pydispatch':>20}")
     print(f"{'Handlers':<40} {'ops/s':>20} {'ops/s':>20}")
     print("-" * 82)
-    for i, count in enumerate(sub_counts):
-        d_ops = dendro_sub[i].ops_per_second
-        p_ops = pydisp_sub[i].ops_per_second if i < len(pydisp_sub) else 0
-        d_ops / p_ops if p_ops > 0 else 0
-        winner = "✓" if d_ops >= p_ops else "✗"
-        print(f"{count} handlers{'':<32} {d_ops:>20,.0f} {p_ops:>20,.0f} {winner}")
+    for result_index, count in enumerate(sub_counts):
+        dendro_ops = dendro_sub[result_index].ops_per_second
+        pydisp_ops = pydisp_sub[result_index].ops_per_second if result_index < len(pydisp_sub) else 0
+        winner = "✓" if dendro_ops >= pydisp_ops else "✗"
+        print(f"{count} handlers{'':<32} {dendro_ops:>20,.0f} {pydisp_ops:>20,.0f} {winner}")
 
-    # Unsubscribe comparison
     print("\n--- Unsubscribe Performance ---")
-    dendro_unsub = [r for r in benchmark_subscribe_performance(sub_counts) if "unsubscribe" in r.name]
-    pydisp_unsub = [r for r in _pydispatcher_subscribe_benchmark(sub_counts) if "unsubscribe" in r.name]
+    dendro_unsub = [result_item for result_item in all_dendro_sub if result_item.name.startswith("unsubscribe")]
+    pydisp_unsub = [
+        result_item for result_item in all_pydisp_sub if result_item.name.startswith("pydispatch unsubscribe")
+    ]
 
     print(f"{'':<40} {'Dendrophis':>20} {'pydispatch':>20}")
     print(f"{'Handlers':<40} {'ops/s':>20} {'ops/s':>20}")
     print("-" * 82)
-    for i, count in enumerate(sub_counts):
-        d_ops = dendro_unsub[i].ops_per_second
-        p_ops = pydisp_unsub[i].ops_per_second if i < len(pydisp_unsub) else 0
-        d_ops / p_ops if p_ops > 0 else 0
-        winner = "✓" if d_ops >= p_ops else "✗"
-        print(f"{count} handlers{'':<32} {d_ops:>20,.0f} {p_ops:>20,.0f} {winner}")
+    for result_index, count in enumerate(sub_counts):
+        dendro_ops = dendro_unsub[result_index].ops_per_second
+        pydisp_ops = pydisp_unsub[result_index].ops_per_second if result_index < len(pydisp_unsub) else 0
+        winner = "✓" if dendro_ops >= pydisp_ops else "✗"
+        print(f"{count} handlers{'':<32} {dendro_ops:>20,.0f} {pydisp_ops:>20,.0f} {winner}")
 
-    # Stress test comparison
     print("\n--- Stress Test (2s, 50 handlers) ---")
     dendro_stress = stress_test(duration_seconds=2.0, handlers=50)
     pydisp_stress = _pydispatcher_stress_test(duration_seconds=2.0, handlers=50)
     print(f"{'':<40} {'Dendrophis':>20} {'pydispatch':>20}")
     print(f"{'ops/s':<40} {'ops/s':>20} {'ops/s':>20}")
     print("-" * 82)
-    dendro_stress.ops_per_second / pydisp_stress.ops_per_second if pydisp_stress.ops_per_second > 0 else 0
     winner = "✓" if dendro_stress.ops_per_second >= pydisp_stress.ops_per_second else "✗"
     print(f"{'':<40} {dendro_stress.ops_per_second:>20,.0f} {pydisp_stress.ops_per_second:>20,.0f} {winner}")
 
-    # Summary
     print("\n--- Summary ---")
     print("✓ = Dendrophis faster, ✗ = pydispatch faster")
 
@@ -777,30 +737,24 @@ def run_pydispatcher_comparison() -> None:
 def run_all_benchmarks() -> None:
     print_header()
 
-    # Publish performance
     print("\n[PUBLISH PERFORMANCE]")
     results = benchmark_publish_performance([0, 1, 10, 50, 100, 200])
     print_results(results, "Publish Benchmark")
 
-    # Subscribe performance
     print("\n[SUBSCRIBE/UNSUBSCRIBE PERFORMANCE]")
     results = benchmark_subscribe_performance([10, 100, 1000])
     print_results(results, "Subscribe Benchmark")
 
-    # Multiple event types
     print("\n[MULTIPLE EVENT TYPES]")
     results = [benchmark_multiple_event_types(5, 10, 100)]
     print_results(results, "Multiple Types")
 
-    # Realistic streaming
     print("\n[REALISTIC STREAMING]")
     results = [benchmark_realistic_streaming()]
     print_results(results, "Streaming Simulation")
 
-    # Memory
     run_memory_tests()
 
-    # Stress test
     print("\n[STRESS TEST]")
     results = [stress_test(duration_seconds=2.0, handlers=50)]
     print_results(results, "Stress Test")
@@ -824,8 +778,8 @@ if __name__ == "__main__":
     elif args.stress:
         print_header()
         print("\n[STRESS TEST]")
-        for handlers in [10, 50, 100, 200]:
-            result = stress_test(duration_seconds=2.0, handlers=handlers)
+        for handler_count in [10, 50, 100, 200]:
+            result = stress_test(duration_seconds=2.0, handlers=handler_count)
             print(f"\n{result}")
     elif args.memory:
         run_memory_tests()

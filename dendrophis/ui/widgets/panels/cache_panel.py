@@ -30,6 +30,7 @@ class CachePanel(TextPanel):
         stats = self._session.stats
         self._cached_tokens = stats.cached_tokens
         self._prompt_tokens = stats.prompt_tokens
+        super().on_mount()
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""

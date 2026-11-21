@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
+from rich.markup import escape
 from rich.syntax import Syntax
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -66,8 +68,6 @@ class ToolConfirmationScreen(ModalScreen[bool]):
     }
     """
 
-    from typing import ClassVar
-
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("escape", "dismiss_reject", "Reject"),
     ]
@@ -81,38 +81,36 @@ class ToolConfirmationScreen(ModalScreen[bool]):
         self.reason = reason
 
     def compose(self) -> ComposeResult:
-        MAX_DISPLAY_LEN = 2000  # Limit displayed args to prevent UI lockup
+        max_display_length = 2000
 
         display_args = self.arguments
+        parsed_args: dict | None = None
         try:
-            args_dict = json.loads(self.arguments)
-            display_args = json.dumps(args_dict, indent=2)
+            loaded_args = json.loads(self.arguments)
+            if isinstance(loaded_args, dict):
+                parsed_args = loaded_args
+            display_args = json.dumps(loaded_args, indent=2)
         except Exception:
             pass
-
-        # Truncate if too large
-        if len(display_args) > MAX_DISPLAY_LEN:
-            display_args = display_args[:MAX_DISPLAY_LEN] + "\n\n[...truncated for display...]"
 
         display_text = display_args
         language = "json"
 
-        if self.tool_name == "bash":
-            try:
-                args_dict = json.loads(self.arguments)
-                command = args_dict.get("command", "")
-                if command:
-                    display_text = command
-                    language = "bash"
-            except Exception:
-                pass
+        if self.tool_name == "bash" and parsed_args is not None:
+            command = parsed_args.get("command", "")
+            if isinstance(command, str) and command:
+                display_text = command
+                language = "bash"
+
+        if len(display_text) > max_display_length:
+            display_text = display_text[:max_display_length] + "\n\n[...truncated for display...]"
 
         with Vertical(id="dialog"):
             yield Label("[bold]Tool Execution Approval[/bold]")
             if self.reason:
-                yield Label(f"Why: {self.reason}", id="reason")
+                yield Label(f"Why: {escape(self.reason)}", id="reason")
             yield Label("The agent wants to run:", id="tool-name")
-            yield Label(f"[bold cyan]{self.tool_name}[/bold cyan]")
+            yield Label(f"[bold cyan]{escape(self.tool_name)}[/bold cyan]")
             with Vertical(id="args-container"):
                 yield Static(Syntax(display_text, lexer=language, theme="monokai", word_wrap=True))
             with Horizontal(id="buttons"):

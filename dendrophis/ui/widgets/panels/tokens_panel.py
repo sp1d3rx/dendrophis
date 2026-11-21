@@ -27,6 +27,7 @@ class TokensPanel(TextPanel):
         # Initialize from current session state
         self._prompt_tokens = self._session.stats.prompt_tokens
         self._completion_tokens = self._session.stats.completion_tokens
+        super().on_mount()
 
     def on_unmount(self) -> None:
         """Unsubscribe to prevent memory leaks."""

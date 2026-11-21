@@ -57,6 +57,10 @@ class SysInfoPanel(EventPanel):
         yield self._mem_label
         yield self._mem_sparkline
 
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._on_refresh_tick()
+
     def _on_refresh_tick(self) -> None:
         """Update metrics and sparklines."""
         try:

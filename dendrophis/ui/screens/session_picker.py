@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import lzma
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.box import ROUNDED
+from rich.console import Group
+from rich.markup import escape
+from rich.panel import Panel
 from rich.table import Table
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -17,6 +22,57 @@ from textual.widgets.option_list import Option
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
+
+
+def _scan_session_files(sessions_directory: Path) -> list[dict]:
+    """Read and parse up to 50 recent session files off the UI thread."""
+    session_files = sorted(
+        sessions_directory.glob("session-*.json*"),
+        key=lambda session_file: session_file.stat().st_mtime,
+        reverse=True,
+    )
+    recent_files = session_files[:50]
+    loaded_sessions: list[dict] = []
+
+    for session_file in recent_files:
+        try:
+            if session_file.suffix == ".xz":
+                with lzma.open(session_file, "rb") as file_handle:
+                    session_data = json.loads(file_handle.read().decode("utf-8"))
+            else:
+                session_data = json.loads(session_file.read_text(encoding="utf-8"))
+
+            session_id = session_data.get("session_id", "unknown")
+            fork_name = session_data.get("fork_name")
+            timestamp = session_data.get("timestamp", "")
+            model = session_data.get("model", "unknown")
+            messages = session_data.get("messages", [])
+
+            first_user_prompt = ""
+            for message in messages:
+                if message.get("role") == "user":
+                    content = message.get("content", "")
+                    if isinstance(content, list):
+                        content = " ".join(part.get("text", "") for part in content if isinstance(part, dict))
+                    first_user_prompt = content.strip().replace("\n", " ")
+                    break
+
+            message_count = sum(1 for message in messages if message.get("role") != "system")
+            loaded_sessions.append(
+                {
+                    "path": str(session_file),
+                    "session_id": session_id,
+                    "fork_name": fork_name,
+                    "timestamp": timestamp,
+                    "model": model,
+                    "message_count": message_count,
+                    "preview": first_user_prompt,
+                }
+            )
+        except Exception:
+            continue
+
+    return loaded_sessions
 
 
 class SessionPickerScreen(ModalScreen[tuple[str, str] | str]):
@@ -93,56 +149,7 @@ class SessionPickerScreen(ModalScreen[tuple[str, str] | str]):
                 status_label.update("No saved sessions directory found.")
                 return
 
-            session_files = sorted(
-                sessions_directory.glob("session-*.json*"),
-                key=lambda session_file: session_file.stat().st_mtime,
-                reverse=True,
-            )
-
-            # Limit to the last 50 sessions for performance
-            recent_files = session_files[:50]
-            loaded_sessions: list[dict] = []
-
-            for session_file in recent_files:
-                try:
-                    if session_file.suffix == ".xz":
-                        with lzma.open(session_file, "rb") as file_handle:
-                            session_data = json.loads(file_handle.read().decode())
-                    else:
-                        session_data = json.loads(session_file.read_text())
-
-                    session_id = session_data.get("session_id", "unknown")
-                    fork_name = session_data.get("fork_name")
-                    timestamp = session_data.get("timestamp", "")
-                    model = session_data.get("model", "unknown")
-                    messages = session_data.get("messages", [])
-
-                    # Find first user message preview
-                    first_user_prompt = ""
-                    for message in messages:
-                        if message.get("role") == "user":
-                            content = message.get("content", "")
-                            if isinstance(content, list):
-                                content = " ".join(part.get("text", "") for part in content if isinstance(part, dict))
-                            first_user_prompt = content.strip().replace("\n", " ")
-                            break
-
-                    message_count = len([message for message in messages if message.get("role") != "system"])
-
-                    loaded_sessions.append(
-                        {
-                            "path": str(session_file),
-                            "session_id": session_id,
-                            "fork_name": fork_name,
-                            "timestamp": timestamp,
-                            "model": model,
-                            "message_count": message_count,
-                            "preview": first_user_prompt,
-                        }
-                    )
-                except Exception:
-                    # Skip corrupt files silently
-                    continue
+            loaded_sessions = await asyncio.to_thread(_scan_session_files, sessions_directory)
 
             self._all_sessions = loaded_sessions
             if self._all_sessions:
@@ -184,10 +191,6 @@ class SessionPickerScreen(ModalScreen[tuple[str, str] | str]):
             match_text = f"{short_id} {fork_name} {model} {preview} {readable_time}".lower()
 
             if not filter_text or filter_text in match_text:
-                from rich.box import ROUNDED
-                from rich.console import Group
-                from rich.panel import Panel
-
                 card_elements = []
 
                 # Header: short ID, message count (left) and Date/Time (right)
@@ -197,26 +200,27 @@ class SessionPickerScreen(ModalScreen[tuple[str, str] | str]):
 
                 is_current = session_id == self._session.session_id
                 current_badge = " [green bold](Current)[/]" if is_current else ""
-                fork_badge = f" [magenta bold](Fork: {fork_name})[/]" if fork_name else ""
+                fork_badge = f" [magenta bold](Fork: {escape(fork_name)})[/]" if fork_name else ""
 
                 plural_suffix = "s" if message_count != 1 else ""
                 messages_count_text = f"{message_count} message{plural_suffix}"
 
                 id_text = (
-                    f"[bold cyan]Session {short_id}[/]{current_badge}{fork_badge}  •  [yellow]{messages_count_text}[/]"
+                    f"[bold cyan]Session {escape(short_id)}[/]{current_badge}{fork_badge}"
+                    f"  •  [yellow]{messages_count_text}[/]"
                 )
-                date_text = f"[cyan]{readable_time}[/]"
+                date_text = f"[cyan]{escape(readable_time)}[/]"
                 header_table.add_row(id_text, date_text)
                 card_elements.append(header_table)
 
                 # Line 2: Model
                 model_display = model.split("/")[-1]
-                card_elements.append(f"[dim]Model:[/] [bold white]{model_display}[/]")
+                card_elements.append(f"[dim]Model:[/] [bold white]{escape(model_display)}[/]")
 
                 # Line 3: Prompt preview
                 if preview:
                     preview_text = preview[:100] + "..." if len(preview) > 100 else preview
-                    card_elements.append(f"[dim]Prompt:[/] [italic]{preview_text}[/]")
+                    card_elements.append(f"[dim]Prompt:[/] [italic]{escape(preview_text)}[/]")
                 else:
                     card_elements.append("[dim italic](No messages)[/]")
 

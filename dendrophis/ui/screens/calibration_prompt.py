@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label
-
-if TYPE_CHECKING:
-    pass
 
 
 class CalibrationPromptScreen(ModalScreen[bool]):
@@ -49,7 +45,7 @@ class CalibrationPromptScreen(ModalScreen[bool]):
         with Vertical():
             yield Label("[bold]Model Calibration Recommended[/bold]")
             yield Label(
-                f"The model [accent]{self._model_id}[/accent] has not been calibrated.\n\n"
+                f"The model [accent]{escape(self._model_id)}[/accent] has not been calibrated.\n\n"
                 "Calibration detects capability quirks (such as streaming, tool support, "
                 "and prompt caching keys) and configures optimal defaults."
             )

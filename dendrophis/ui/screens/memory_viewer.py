@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, TextArea
+
+from dendrophis.memory.search import MemorySearcher
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
@@ -146,85 +149,110 @@ class MemoryViewerScreen(ModalScreen[None]):
         self.query_one("#memory-search", Input).focus()
         self._update_list("")
 
-    def _update_list(self, filter_text: str) -> None:
-        """Rebuild the memory list based on search/filter criteria."""
+    @staticmethod
+    def _query_memories_sync(memory_store: Any, cleaned_query: str) -> tuple[str, list[tuple[float, Any, str]]]:
+        """Query or search memories synchronously (safe to run in worker thread)."""
+        if not cleaned_query:
+            memories = memory_store.list_memories(limit=50)
+            return (
+                f"Loaded {len(memories)} recent memories.",
+                [(1.0, memory_item, "saved") for memory_item in memories],
+            )
+        searcher = MemorySearcher(memory_store)
+        results = searcher.search(query=cleaned_query, limit=50)
+        return (
+            f"Found {len(results)} matching memories for query.",
+            [(result_item.score, result_item.memory, result_item.method) for result_item in results],
+        )
+
+    def _render_scored_memories(
+        self,
+        list_container: Vertical,
+        status_label: Label,
+        status_message: str,
+        scored_memories: list[tuple[float, Any, str]],
+        has_query: bool,
+    ) -> None:
+        list_container.remove_children(Button)
+        status_label.update(status_message)
+        for score, memory_item, _method in scored_memories:
+            memory_id = memory_item.id
+            short_id = memory_id[:8]
+            content = memory_item.content
+            tags = memory_item.tags
+            created_at = memory_item.created_at
+            source = memory_item.source
+
+            readable_time = ""
+            if created_at:
+                try:
+                    parsed_time = datetime.fromisoformat(created_at)
+                    readable_time = parsed_time.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    readable_time = created_at[:19].replace("T", " ")
+
+            card_parts = []
+            header = f"[bold cyan]Memory {escape(short_id)}[/] [dim]•[/] [cyan]{escape(source)}[/]"
+            if has_query:
+                header += f" [dim]•[/] [yellow]score:{score:.4f}[/]"
+            if readable_time:
+                header += f" [dim]•[/] [dim]{escape(readable_time)}[/]"
+            card_parts.append(header)
+
+            preview_length = 180
+            preview_text = content[:preview_length] + "..." if len(content) > preview_length else content
+            card_parts.append(f"[white]{escape(preview_text)}[/white]")
+
+            if tags:
+                tags_str = ", ".join(f"#{escape(tag_item)}" for tag_item in tags)
+                card_parts.append(f"[dim]Tags:[/] [italic green]{tags_str}[/]")
+
+            card_button = Button("\n".join(card_parts))
+            card_button._memory_id = memory_id
+            card_button.add_class("memory-card")
+            if self._selected_memory_id == memory_id:
+                card_button.add_class("selected")
+            list_container.mount(card_button)
+
+    async def _update_list_async(self, cleaned_query: str) -> None:
         memory_store = self._session.memory_store
         status_label = self.query_one("#memory-picker-status", Label)
         list_container = self.query_one("#memory-list-container", Vertical)
-
-        # Remove old card buttons only, keep title label
-        list_container.remove_children(Button)
-
         if not memory_store:
+            list_container.remove_children(Button)
             status_label.update("[red]Memory store is not available.[/red]")
             return
-
-        filter_text = filter_text.strip()
         try:
-            if not filter_text:
-                # Load recent memories
-                memories = memory_store.list_memories(limit=50)
-                status_label.update(f"Loaded {len(memories)} recent memories.")
-                scored_memories = [(1.0, memory_item, "saved") for memory_item in memories]
-            else:
-                from dendrophis.memory.search import MemorySearcher
-
-                searcher = MemorySearcher(memory_store)
-                results = searcher.search(query=filter_text, limit=50)
-                status_label.update(f"Found {len(results)} matching memories for query.")
-                scored_memories = [
-                    (result_item.score, result_item.memory, result_item.method) for result_item in results
-                ]
-
-            for score, memory_item, _method in scored_memories:
-                memory_id = memory_item.id
-                short_id = memory_id[:8]
-                content = memory_item.content
-                tags = memory_item.tags
-                created_at = memory_item.created_at
-                source = memory_item.source
-
-                readable_time = ""
-                if created_at:
-                    try:
-                        parsed_time = datetime.fromisoformat(created_at)
-                        readable_time = parsed_time.strftime("%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        readable_time = created_at[:19].replace("T", " ")
-
-                # Build compact card content
-                card_parts = []
-
-                # Header line: ID/Source | Time
-                header = f"[bold cyan]Memory {short_id}[/] [dim]•[/] [cyan]{escape(source)}[/]"
-                if filter_text:
-                    header += f" [dim]•[/] [yellow]score:{score:.4f}[/]"
-                if readable_time:
-                    header += f" [dim]•[/] [dim]{readable_time}[/]"
-                card_parts.append(header)
-
-                # Content preview (truncated)
-                preview_length = 180
-                preview_text = content[:preview_length] + "..." if len(content) > preview_length else content
-                card_parts.append(f"[white]{escape(preview_text)}[/white]")
-
-                # Tags line
-                if tags:
-                    tags_str = ", ".join(f"#{escape(tag_item)}" for tag_item in tags)
-                    card_parts.append(f"[dim]Tags:[/] [italic green]{tags_str}[/]")
-
-                card_text = "\n".join(card_parts)
-
-                # Create button as a card (no ID - store memory_id as attribute)
-                card_button = Button(card_text)
-                card_button._memory_id = memory_id
-                card_button.add_class("memory-card")
-                if self._selected_memory_id == memory_id:
-                    card_button.add_class("selected")
-                list_container.mount(card_button)
-
+            status_message, scored_memories = await asyncio.to_thread(
+                self._query_memories_sync, memory_store, cleaned_query
+            )
+            self._render_scored_memories(
+                list_container, status_label, status_message, scored_memories, bool(cleaned_query)
+            )
         except Exception as error:
-            status_label.update(f"[red]Error searching memories: {error}[/red]")
+            status_label.update(f"[red]Error searching memories: {escape(str(error))}[/red]")
+
+    def _update_list(self, filter_text: str) -> None:
+        """Rebuild the memory list based on search/filter criteria."""
+        cleaned_query = filter_text.strip()
+        if self.is_running:
+            self.run_worker(self._update_list_async(cleaned_query), group="memory_search", exclusive=True)
+            return
+
+        memory_store = self._session.memory_store
+        status_label = self.query_one("#memory-picker-status", Label)
+        list_container = self.query_one("#memory-list-container", Vertical)
+        if not memory_store:
+            list_container.remove_children(Button)
+            status_label.update("[red]Memory store is not available.[/red]")
+            return
+        try:
+            status_message, scored_memories = self._query_memories_sync(memory_store, cleaned_query)
+            self._render_scored_memories(
+                list_container, status_label, status_message, scored_memories, bool(cleaned_query)
+            )
+        except Exception as error:
+            status_label.update(f"[red]Error searching memories: {escape(str(error))}[/red]")
 
     def _show_detail(self, memory_item) -> None:
         """Display the full detail panel for a memory."""
@@ -245,16 +273,16 @@ class MemoryViewerScreen(ModalScreen[None]):
         detail_parts = []
 
         # Header info
-        detail_parts.append(f"[bold cyan]Memory ID:[/bold cyan] {memory_item.id}")
-        detail_parts.append(f"[bold cyan]Source:[/bold cyan] {memory_item.source}")
+        detail_parts.append(f"[bold cyan]Memory ID:[/bold cyan] {escape(str(memory_item.id))}")
+        detail_parts.append(f"[bold cyan]Source:[/bold cyan] {escape(str(memory_item.source))}")
         if memory_item.project_id:
-            detail_parts.append(f"[bold cyan]Project:[/bold cyan] {memory_item.project_id}")
+            detail_parts.append(f"[bold cyan]Project:[/bold cyan] {escape(str(memory_item.project_id))}")
         if memory_item.session_id:
-            detail_parts.append(f"[bold cyan]Session:[/bold cyan] {memory_item.session_id}")
+            detail_parts.append(f"[bold cyan]Session:[/bold cyan] {escape(str(memory_item.session_id))}")
         if memory_item.created_at:
-            detail_parts.append(f"[bold cyan]Created:[/bold cyan] {memory_item.created_at}")
+            detail_parts.append(f"[bold cyan]Created:[/bold cyan] {escape(str(memory_item.created_at))}")
         if memory_item.updated_at:
-            detail_parts.append(f"[bold cyan]Updated:[/bold cyan] {memory_item.updated_at}")
+            detail_parts.append(f"[bold cyan]Updated:[/bold cyan] {escape(str(memory_item.updated_at))}")
         if memory_item.score:
             detail_parts.append(f"[bold cyan]Score:[/bold cyan] {memory_item.score}")
 

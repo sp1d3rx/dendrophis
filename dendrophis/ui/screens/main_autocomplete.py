@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import glob
+import asyncio
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,56 @@ from dendrophis.ui.widgets.input_bar import FileAutocomplete, InputBar
 
 if TYPE_CHECKING:
     from dendrophis.session.session import Session
+
+_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+    }
+)
+_ARGUMENT_COMMANDS = frozenset({"/track", "/untrack", "/set", "/fork"})
+
+
+def _find_matching_files(prefix: str, limit: int = 15) -> list[str]:
+    """Walk the workspace pruning ignored directories and return matching relative paths."""
+    normalized_prefix = prefix.lstrip("./")
+    lower_prefix = normalized_prefix.lower()
+    has_path_sep = "/" in normalized_prefix or os.sep in normalized_prefix
+
+    candidates: list[str] = []
+    max_candidates = limit * 6
+    try:
+        for root_dir, dir_names, file_names in os.walk("."):
+            dir_names[:] = [
+                directory_name
+                for directory_name in dir_names
+                if directory_name not in _EXCLUDED_DIRS and not directory_name.startswith(".git")
+            ]
+            rel_root = "" if root_dir == "." else root_dir.removeprefix("./").removeprefix(".\\")
+            for file_name in file_names:
+                rel_path = f"{rel_root}/{file_name}" if rel_root else file_name
+                target_to_match = rel_path.lower() if has_path_sep else file_name.lower()
+                if target_to_match.startswith(lower_prefix) or (lower_prefix and lower_prefix in rel_path.lower()):
+                    candidates.append(rel_path)
+                    if len(candidates) >= max_candidates:
+                        break
+            if len(candidates) >= max_candidates:
+                break
+    except OSError:
+        return []
+
+    candidates.sort(
+        key=lambda candidate_path: (not candidate_path.lower().startswith(lower_prefix), len(candidate_path))
+    )
+    return candidates[:limit]
 
 
 class MainScreenAutocomplete:
@@ -79,15 +130,22 @@ class MainScreenAutocomplete:
         autocomplete_widget.set_suggestions(suggestions, kind="command")
 
     def _complete_files(self, autocomplete_widget: FileAutocomplete, prefix: str) -> None:
-        """Find matching files recursively."""
-        search_pattern = f"**/{prefix}*"
-        try:
-            matches = glob.glob(search_pattern, recursive=True)
-            matches.sort(key=len)
-            files = matches[:15]
-            autocomplete_widget.set_suggestions(files, kind="file")
-        except Exception:
-            pass
+        """Find matching files asynchronously off the UI thread."""
+        if not getattr(self, "is_running", False):
+            autocomplete_widget.set_suggestions(_find_matching_files(prefix, 15), kind="file")
+            return
+        self.run_worker(
+            self._complete_files_async(autocomplete_widget, prefix),
+            group="file_autocomplete",
+            exclusive=True,
+        )
+
+    async def _complete_files_async(self, autocomplete_widget: FileAutocomplete, prefix: str) -> None:
+        """Run workspace file walk in a worker thread and apply suggestions."""
+        matched_files = await asyncio.to_thread(_find_matching_files, prefix, 15)
+        input_bar = self.query_one(InputBar)
+        if input_bar._completing:
+            autocomplete_widget.set_suggestions(matched_files, kind="file")
 
     def on_input_bar_navigate_autocomplete(self, event: InputBar.NavigateAutocomplete) -> None:
         """Navigate up/down in the suggestion list."""
@@ -116,18 +174,14 @@ class MainScreenAutocomplete:
 
             # Check if this is a command selection (contains em dash)
             if " — " in selected_item:
-                # Extract just the command name before the description
                 command_name = selected_item.split(" — ")[0].strip()
 
-                # Check if this is a slash command (starts with /)
-                if command_name.startswith("/"):
-                    # Execute slash command immediately
+                # Commands that take arguments are inserted with a trailing space
+                if command_name.startswith("/") and command_name not in _ARGUMENT_COMMANDS:
                     self._execute_slash_command(command_name)
-                    # Clear the input bar completely since command was executed
                     input_bar.text = ""
                     input_bar._draft = ""
                     input_bar._history_index = -1
-                    # Keep focus on input bar for next command
                     input_bar.focus()
                     return
 

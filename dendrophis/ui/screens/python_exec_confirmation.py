@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
+from rich.syntax import Syntax
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
 from dendrophis.events import EventBus, PythonExecApprovalEvent, PythonExecProposalEvent
+from dendrophis.ui.screens.write_confirmation import truncate_preview
 
 
 class PythonExecConfirmationScreen(ModalScreen[bool]):
@@ -58,8 +62,6 @@ class PythonExecConfirmationScreen(ModalScreen[bool]):
     }
     """
 
-    from typing import ClassVar
-
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("escape", "dismiss_reject", "Reject"),
     ]
@@ -71,13 +73,14 @@ class PythonExecConfirmationScreen(ModalScreen[bool]):
         self.event_bus = event_bus
 
     def compose(self) -> ComposeResult:
+        preview_code = truncate_preview(self.code)
         with Vertical(id="dialog"):
             yield Label("[bold]Python Execution Approval Required[/bold]")
             yield Label("The agent wants to execute:", id="code-info")
 
             with Vertical(id="code-container"):
                 yield Static(
-                    self.code,
+                    Syntax(preview_code, lexer="python", theme="monokai", word_wrap=True, line_numbers=True),
                     id="code-display",
                 )
 

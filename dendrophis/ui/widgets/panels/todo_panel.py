@@ -112,7 +112,7 @@ class TodoPanel(EventPanel):
         done_checkbox = Checkbox(value=done, id=f"cb-{todo_id}")
 
         # Text label
-        text_label = Label(text, classes="todo-text")
+        text_label = Label(text, markup=False, classes="todo-text")
         if done:
             text_label.styles.text_style = "strike"
 
