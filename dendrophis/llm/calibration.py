@@ -12,20 +12,28 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import httpx
 from ruamel.yaml import YAML
 
-_yaml = YAML()
-_yaml.preserve_quotes = True
-
+from dendrophis.config.loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
-# Default override file location
 OVERRIDE_FILE = Path.home() / ".config" / "dendrophis" / "model_overrides.yaml"
+
+# Process-level mtime cache for OVERRIDE_FILE so hot paths (e.g. LLMClient._build_payload)
+# do not re-parse YAML from disk multiple times per turn.
+_OVERRIDE_FILE_CACHE: tuple[float | None, dict[str, ModelCapabilities]] | None = None
+
+
+def _new_yaml() -> YAML:
+    yaml_instance = YAML()
+    yaml_instance.preserve_quotes = True
+    return yaml_instance
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +50,6 @@ class ModelCapabilities:
     context_window: int = 0
     max_tokens: int | None = None
 
-    # Feature support
     supports_streaming: bool = True
     supports_tools: bool = True
     supports_reasoning_effort: bool = True
@@ -51,15 +58,12 @@ class ModelCapabilities:
     supports_prompt_cache_key: bool = False
     supports_vlm: bool = False
 
-    # Parameter quirks (provider-specific)
     rejected_params: list[str] = field(default_factory=list)
     requires_params: list[str] = field(default_factory=list)
 
-    # Test results
     test_results: dict[str, bool | str] = field(default_factory=dict)
     test_errors: dict[str, str] = field(default_factory=dict)
 
-    # Metadata from provider
     raw_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -67,12 +71,12 @@ class ModelCapabilities:
         """Extract provider from base_url or model_id."""
         if self.provider:
             return self.provider
-        # Infer from model_id
-        if "deepinfra" in (self.model_id.lower() if self.model_id else ""):
+        low_id = self.model_id.lower() if self.model_id else ""
+        if "deepinfra" in low_id:
             return "deepinfra"
-        if "openrouter" in (self.model_id.lower() if self.model_id else ""):
+        if "openrouter" in low_id:
             return "openrouter"
-        if "mistral" in (self.model_id.lower() if self.model_id else ""):
+        if "mistral" in low_id:
             return "mistral"
         return "unknown"
 
@@ -132,13 +136,9 @@ class ModelCapabilities:
         if not self.supports_tools:
             config["enable_tools"] = False
 
-        # Add prompt_cache_key recommendation for models that support it
         if self.supports_prompt_cache_key:
-            # Suggest a session-scoped key format
-            # Format: userid-chatsessionid (e.g., "user123-chat456") or "dendrophis-{session_id}"
             config["prompt_cache_key"] = "# Set to a session-scoped key like 'dendrophis-{session_id}'"
 
-        # Add rejected params that should be stripped
         if self.rejected_params:
             config["_strip_params"] = self.rejected_params
 
@@ -170,8 +170,8 @@ class ModelCapabilities:
 
         if self.test_errors:
             lines.append("  Test errors:")
-            for test, error in self.test_errors.items():
-                lines.append(f"    - {test}: {error[:60]}...")
+            for test_name, error_text in self.test_errors.items():
+                lines.append(f"    - {test_name}: {error_text[:60]}...")
 
         return "\n".join(lines)
 
@@ -184,50 +184,73 @@ class ModelCapabilities:
 class ModelOverrideStore:
     """Manage cached model calibration results."""
 
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None) -> None:
         self.path = path or OVERRIDE_FILE
         self._overrides: dict[str, ModelCapabilities] = {}
         self._loaded = False
 
     def _ensure_dir(self) -> None:
-        """Ensure the config directory exists."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> dict[str, ModelCapabilities]:
-        """Load overrides from YAML file."""
+        """Load overrides from YAML file, using an mtime cache for OVERRIDE_FILE."""
+        global _OVERRIDE_FILE_CACHE
         if self._loaded:
             return self._overrides
 
-        if not self.path.exists():
-            self._overrides = {}
+        is_default_path = self.path == OVERRIDE_FILE
+        current_mtime: float | None = None
+        try:
+            current_mtime = self.path.stat().st_mtime
+        except OSError:
+            current_mtime = None
+
+        if is_default_path and _OVERRIDE_FILE_CACHE is not None and _OVERRIDE_FILE_CACHE[0] == current_mtime:
+            self._overrides = dict(_OVERRIDE_FILE_CACHE[1])
             self._loaded = True
             return self._overrides
 
+        if current_mtime is None:
+            self._overrides = {}
+            self._loaded = True
+            if is_default_path:
+                _OVERRIDE_FILE_CACHE = (None, {})
+            return self._overrides
+
         try:
-            with open(self.path) as file_handle:
-                data = _yaml.load(file_handle) or {}
+            yaml_parser = _new_yaml()
+            with open(self.path, encoding="utf-8") as file_handle:
+                data = yaml_parser.load(file_handle) or {}
             self._overrides = {
                 model_id: ModelCapabilities.from_dict(cap_data) for model_id, cap_data in data.get("models", {}).items()
             }
         except Exception as load_error:
-            logger.warning(f"Failed to load model overrides: {load_error}")
+            logger.warning("Failed to load model overrides: %s", load_error)
             self._overrides = {}
 
+        if is_default_path:
+            _OVERRIDE_FILE_CACHE = (current_mtime, dict(self._overrides))
         self._loaded = True
         return self._overrides
 
     def save(self) -> None:
         """Save overrides to YAML file."""
-        from io import StringIO
-
+        global _OVERRIDE_FILE_CACHE
         self._ensure_dir()
         data = {"models": {model_id: cap.to_dict() for model_id, cap in self._overrides.items()}}
         try:
+            yaml_parser = _new_yaml()
             buf = StringIO()
-            _yaml.dump(data, buf)
-            self.path.write_text(buf.getvalue())
+            yaml_parser.dump(data, buf)
+            self.path.write_text(buf.getvalue(), encoding="utf-8")
+            if self.path == OVERRIDE_FILE:
+                try:
+                    new_mtime = self.path.stat().st_mtime
+                except OSError:
+                    new_mtime = None
+                _OVERRIDE_FILE_CACHE = (new_mtime, dict(self._overrides))
         except Exception as save_error:
-            logger.error(f"Failed to save model overrides: {save_error}")
+            logger.error("Failed to save model overrides: %s", save_error)
 
     def get(self, model_id: str) -> ModelCapabilities | None:
         """Get capabilities for a model."""
@@ -257,16 +280,16 @@ class ModelOverrideStore:
 
 def detect_provider(base_url: str) -> str:
     """Detect provider from base URL."""
-    base_url = base_url.lower()
-    if "deepinfra" in base_url:
+    base_url_lower = base_url.lower()
+    if "deepinfra" in base_url_lower:
         return "deepinfra"
-    if "openrouter" in base_url:
+    if "openrouter" in base_url_lower:
         return "openrouter"
-    if "mistral" in base_url:
+    if "mistral" in base_url_lower:
         return "mistral"
-    if "anthropic" in base_url:
+    if "anthropic" in base_url_lower:
         return "anthropic"
-    if "localhost" in base_url or "127.0.0.1" in base_url:
+    if "localhost" in base_url_lower or "127.0.0.1" in base_url_lower:
         return "local"
     return "unknown"
 
@@ -274,52 +297,69 @@ def detect_provider(base_url: str) -> str:
 def _get_models_endpoint(base_url: str, provider: str) -> str:
     """Get the models endpoint for a provider."""
     base_url_stripped = base_url.rstrip("/")
-    # DeepInfra uses /models
-    if provider == "deepinfra":
+    if provider == "deepinfra" or base_url_stripped.endswith("/v1"):
         return f"{base_url_stripped}/models"
-    if base_url_stripped.endswith("/v1"):
-        return f"{base_url_stripped}/models"
-    # Most OpenAI-compatible providers use /v1/models
     return f"{base_url_stripped}/v1/models"
 
 
 def _get_chat_completions_endpoint(base_url: str, provider: str) -> str:
     """Get the chat completions endpoint for a provider."""
     base_url_stripped = base_url.rstrip("/")
-    # DeepInfra uses /chat/completions (not /v1/chat/completions)
-    if provider == "deepinfra":
+    if provider == "deepinfra" or base_url_stripped.endswith("/v1"):
         return f"{base_url_stripped}/chat/completions"
-    if base_url_stripped.endswith("/v1"):
-        return f"{base_url_stripped}/chat/completions"
-    # Most OpenAI-compatible providers use /v1/chat/completions
     return f"{base_url_stripped}/v1/chat/completions"
 
 
 def fetch_model_metadata(base_url: str, api_key: str, model_id: str) -> dict[str, Any] | None:
-    """Fetch model metadata from provider's models endpoint."""
+    """Synchronous helper to fetch model metadata from a provider's models endpoint."""
     provider = detect_provider(base_url)
     url = _get_models_endpoint(base_url, provider)
-
     headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
         response = httpx.get(url, headers=headers, timeout=10.0)
         if response.status_code != 200:
-            logger.debug(f"Failed to fetch models from {url}: {response.status_code}")
+            logger.debug("Failed to fetch models from %s: %s", url, response.status_code)
             return None
 
         data = response.json()
-        models = data.get("data", [])
-
-        for model_info in models:
+        for model_info in data.get("data", []):
             if model_info.get("id") == model_id:
                 return model_info
 
-        logger.debug(f"Model {model_id} not found in {url}")
+        logger.debug("Model %s not found in %s", model_id, url)
+        return None
+    except Exception as metadata_error:
+        logger.debug("Error fetching model metadata: %s", metadata_error)
         return None
 
+
+async def _fetch_model_metadata_async(
+    client: httpx.AsyncClient,
+    base_url: str,
+    api_key: str,
+    model_id: str,
+) -> dict[str, Any] | None:
+    """Async helper to fetch model metadata without blocking the event loop."""
+    provider = detect_provider(base_url)
+    url = _get_models_endpoint(base_url, provider)
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        response = await client.get(url, headers=headers, timeout=10.0)
+        if response.status_code != 200:
+            logger.debug("Failed to fetch models from %s: %s", url, response.status_code)
+            return None
+
+        data = response.json()
+        for model_info in data.get("data", []):
+            if model_info.get("id") == model_id:
+                return model_info
+
+        logger.debug("Model %s not found in %s", model_id, url)
+        return None
     except Exception as metadata_error:
-        logger.debug(f"Error fetching model metadata: {metadata_error}")
+        logger.debug("Error fetching model metadata: %s", metadata_error)
         return None
 
 
@@ -327,14 +367,12 @@ def extract_capabilities_from_metadata(metadata: dict[str, Any]) -> ModelCapabil
     """Extract capabilities from provider metadata."""
     model_id = metadata.get("id", "")
 
-    # Extract context window - check both top-level and nested metadata
     context_window = 0
     if "context_length" in metadata:
         context_window = int(metadata["context_length"])
     elif "max_input_tokens" in metadata:
         context_window = int(metadata["max_input_tokens"])
     else:
-        # Check nested metadata dict (DeepInfra, OpenRouter)
         nested_meta = metadata.get("metadata", {})
         if isinstance(nested_meta, dict):
             if "context_length" in nested_meta:
@@ -342,7 +380,6 @@ def extract_capabilities_from_metadata(metadata: dict[str, Any]) -> ModelCapabil
             elif "max_input_tokens" in nested_meta:
                 context_window = int(nested_meta["max_input_tokens"])
 
-    # Extract max_tokens
     max_tokens = None
     if "max_tokens" in metadata:
         max_tokens = int(metadata["max_tokens"])
@@ -351,8 +388,6 @@ def extract_capabilities_from_metadata(metadata: dict[str, Any]) -> ModelCapabil
         if isinstance(nested_meta, dict) and "max_tokens" in nested_meta:
             max_tokens = int(nested_meta["max_tokens"])
 
-    # Check for supported features based on metadata
-    # This varies by provider - some include supported parameters in metadata
     return ModelCapabilities(
         model_id=model_id,
         context_window=context_window,
@@ -375,22 +410,32 @@ async def check_parameter_support(
     api_key: str,
     provider: str | None = None,
 ) -> tuple[bool, str | None]:
-    """Check if a specific parameter is supported by sending a minimal request.
-
-    Returns (supported, error_message).
-    """
+    """Check if a specific parameter is supported by sending a minimal request."""
     if provider is None:
         provider = detect_provider(base_url)
     url = _get_chat_completions_endpoint(base_url, provider)
 
-    # Build minimal payload with the parameter
-    payload = {
-        "model": model_id,
-        "messages": [{"role": "user", "content": "test"}],
-        "max_tokens": 1,
-        "stream": False,  # Non-streaming for simpler testing
-    }
-    payload[param_name] = param_value
+    if param_name == "cache_control":
+        messages_payload: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "test", "cache_control": param_value}],
+            }
+        ]
+        payload: dict[str, Any] = {
+            "model": model_id,
+            "messages": messages_payload,
+            "max_tokens": 1,
+            "stream": False,
+        }
+    else:
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "test"}],
+            "max_tokens": 1,
+            "stream": False,
+            param_name: param_value,
+        }
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -399,10 +444,56 @@ async def check_parameter_support(
         if response.status_code in (200, 201):
             return True, None
         error_data = response.json() if response.text else {}
-        error_msg = error_data.get("error", {}).get("message", response.text[:200])
+        error_msg = (
+            error_data.get("error", {}).get("message", response.text[:200])
+            if isinstance(error_data, dict) and isinstance(error_data.get("error"), dict)
+            else response.text[:200]
+        )
         return False, error_msg
     except Exception as test_error:
         return False, str(test_error)
+
+
+async def _probe_param_status(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model_id: str,
+    param_name: str,
+    param_value: Any,
+    api_key: str,
+    provider: str,
+) -> tuple[bool, int | None, str | None]:
+    """Probe parameter support and include HTTP status so only 400/422 mark rejected_params."""
+    url = _get_chat_completions_endpoint(base_url, provider)
+    if param_name == "cache_control":
+        payload: dict[str, Any] = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "test", "cache_control": {"type": "ephemeral"}}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+    else:
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "test"}],
+            "max_tokens": 1,
+            "stream": False,
+            param_name: param_value,
+        }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        response = await client.post(url, json=payload, headers=headers, timeout=15.0)
+        if response.status_code in (200, 201):
+            return True, response.status_code, None
+        error_data = response.json() if response.text else {}
+        error_msg = (
+            error_data.get("error", {}).get("message", response.text[:200])
+            if isinstance(error_data, dict) and isinstance(error_data.get("error"), dict)
+            else response.text[:200]
+        )
+        return False, response.status_code, error_msg
+    except Exception as probe_error:
+        return False, None, str(probe_error)
 
 
 async def calibrate_model(
@@ -412,46 +503,31 @@ async def calibrate_model(
     force: bool = False,
     store: ModelOverrideStore | None = None,
 ) -> ModelCapabilities:
-    """Calibrate a model: detect metadata, run validation tests, return capabilities.
-
-    Args:
-        model_id: The model identifier
-        base_url: Provider base URL (optional, will try to detect)
-        api_key: API key for authentication
-        force: Force re-calibration even if cached
-        store: Override store for caching results
-
-    Returns:
-        ModelCapabilities with detected and tested capabilities
-    """
+    """Calibrate a model: detect metadata, run validation tests, return capabilities."""
     if store is None:
         store = ModelOverrideStore()
 
-    # Check cache first
     if not force:
         cached = store.get(model_id)
         if cached:
             return cached
 
-    # Try to load from config first if not provided
-    if not api_key or not base_url:
+    if not api_key:
         api_key = os.environ.get("DENDROPHIS_API_KEY", "")
-        if not api_key or not base_url:
-            # Try to load from config
-            try:
-                from dendrophis.config.loader import ConfigLoader
-
-                loader = ConfigLoader.load()
-                if not api_key:
-                    api_key = loader.config.llm.api_key
-                if not base_url:
-                    base_url = loader.config.llm.base_url
-            except Exception:
-                pass
-
-    # Detect provider if base_url still not provided, infer from model_id
     if not base_url:
-        # Try to infer from model_id
+        base_url = os.environ.get("DENDROPHIS_BASE_URL", "")
+
+    if not api_key or not base_url:
+        try:
+            loader = ConfigLoader.load()
+            if not api_key:
+                api_key = loader.config.llm.api_key
+            if not base_url:
+                base_url = loader.config.llm.base_url
+        except Exception as cfg_error:
+            logger.debug("Calibration config fallback failed: %s", cfg_error)
+
+    if not base_url:
         model_lower = model_id.lower()
         if "deepinfra" in model_lower:
             base_url = "https://api.deepinfra.com/v1/openai"
@@ -466,77 +542,66 @@ async def calibrate_model(
     provider = detect_provider(base_url)
     capabilities = ModelCapabilities(model_id=model_id, provider=provider)
 
-    # Step 1: Fetch metadata
-    metadata = fetch_model_metadata(base_url, api_key, model_id)
-    if metadata:
-        capabilities = extract_capabilities_from_metadata(metadata)
-        capabilities.provider = provider
-
-    # Step 2: Run validation tests
     async with httpx.AsyncClient() as client:
-        # Test reasoning_effort
+        metadata = await _fetch_model_metadata_async(client, base_url, api_key, model_id)
+        if metadata:
+            capabilities = extract_capabilities_from_metadata(metadata)
+            capabilities.provider = provider
+
         if capabilities.supports_reasoning_effort:
-            supported, error = await check_parameter_support(
+            supported, status_code, error = await _probe_param_status(
                 client, base_url, model_id, "reasoning_effort", "low", api_key, provider
             )
             capabilities.supports_reasoning_effort = supported
             if not supported:
-                capabilities.rejected_params.append("reasoning_effort")
+                if status_code in (400, 422):
+                    capabilities.rejected_params.append("reasoning_effort")
                 capabilities.test_errors["reasoning_effort"] = error or "Unknown error"
 
-        # Test cache_control (known to cause issues with some Mistral deployments)
-        supported, error = await check_parameter_support(
-            client, base_url, model_id, "cache_control", {"value": "ephemeral"}, api_key, provider
+        supported, status_code, error = await _probe_param_status(
+            client, base_url, model_id, "cache_control", {"type": "ephemeral"}, api_key, provider
         )
         if not supported:
-            capabilities.rejected_params.append("cache_control")
+            if status_code in (400, 422):
+                capabilities.rejected_params.append("cache_control")
             capabilities.test_errors["cache_control"] = error or "Unknown error"
 
-        # Test prompt_cache_key (Mistral/Kimi parameter for prompt caching)
-        supported, error = await check_parameter_support(
+        supported, status_code, error = await _probe_param_status(
             client, base_url, model_id, "prompt_cache_key", "test-cache-key", api_key, provider
         )
         capabilities.supports_prompt_cache_key = supported
         if not supported:
-            capabilities.rejected_params.append("prompt_cache_key")
+            if status_code in (400, 422):
+                capabilities.rejected_params.append("prompt_cache_key")
             capabilities.test_errors["prompt_cache_key"] = error or "Unknown error"
 
-    # Step 3: Apply heuristic fallbacks for common patterns
     model_lower = model_id.lower()
 
-    # Mistral models generally support tools
-    if any(x in model_lower for x in ["mistral", "mixtral", "codestral"]):
+    if any(mistral_family in model_lower for mistral_family in ("mistral", "mixtral", "codestral")):
         capabilities.supports_tools = True
 
-    # Detect VLM capability from model identifier patterns
-    vlm_keywords = [
+    vlm_keywords = (
         "gemma-4",
         "claude-3-5",
         "claude-3",
+        "claude-",
         "gpt-4o",
+        "gpt-5",
         "gemini-1.5",
         "gemini-2.0",
+        "gemini-2.5",
         "qwen2.5-vl",
         "llava",
         "vision",
         "vlm",
         "pixtral",
-    ]
+    )
     if any(keyword in model_lower for keyword in vlm_keywords):
         capabilities.supports_vlm = True
 
-    # Only legacy MLC models reject tool_calls in history (omlx, LM Studio, etc. support native tool_calls)
     if provider == "local" and "mlc" in model_lower:
         capabilities.rejected_params.append("tool_calls")
 
-    # DeepInfra Mistral models may have issues
-    if provider == "deepinfra" and "mistral" in model_lower and capabilities.supports_reasoning_effort:
-        # We already tested reasoning_effort, but add note about potential issues
-        # Some DeepInfra Mistral models reject reasoning_effort
-        # Keep as True if test passed, otherwise it's already False
-        pass
-
-    # Step 4: Cache results
     store.set(capabilities)
     store.save()
 
@@ -547,20 +612,24 @@ async def list_available_models(
     base_url: str = "",
     api_key: str = "",
 ) -> list[dict[str, Any]]:
-    """List all available models from a provider."""
+    """List all available models from a provider asynchronously."""
     if not base_url:
-        base_url = os.environ.get("DENDROPHIS_BASE_URL", "https://api.openai.com/v1")
+        base_url = os.environ.get("DENDROPHIS_BASE_URL", "")
     if not api_key:
         api_key = os.environ.get("DENDROPHIS_API_KEY", "")
-        if not api_key:
-            try:
-                from dendrophis.config.loader import ConfigLoader
 
-                loader = ConfigLoader.load()
+    if not api_key or not base_url:
+        try:
+            loader = ConfigLoader.load()
+            if not api_key:
                 api_key = loader.config.llm.api_key
+            if not base_url:
                 base_url = loader.config.llm.base_url
-            except Exception:
-                pass
+        except Exception as cfg_error:
+            logger.debug("list_available_models config fallback failed: %s", cfg_error)
+
+    if not base_url:
+        base_url = "https://api.openai.com/v1"
 
     if not api_key:
         raise ValueError("API key required. Set DENDROPHIS_API_KEY or provide api_key.")
@@ -570,13 +639,14 @@ async def list_available_models(
     headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
-        response = httpx.get(url, headers=headers, timeout=10.0)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
         if response.status_code == 200:
             data = response.json()
             return data.get("data", [])
-        raise Exception(f"Failed to fetch models: {response.status_code} - {response.text}") from None
+        raise RuntimeError(f"Failed to fetch models: {response.status_code} - {response.text}")
     except Exception as fetch_error:
-        raise Exception(f"Error fetching models: {fetch_error}") from fetch_error
+        raise RuntimeError(f"Error fetching models: {fetch_error}") from fetch_error
 
 
 # ---------------------------------------------------------------------------
@@ -603,14 +673,11 @@ def format_model_list(models: list[dict[str, Any]], store: ModelOverrideStore | 
 
     lines = ["Available Models:", "-" * 60]
 
-    for m in models:
-        model_id = m.get("id", "unknown")
-        context = m.get("context_length", m.get("max_input_tokens", 0))
-
-        # Check if calibrated
+    for model_entry in models:
+        model_id = model_entry.get("id", "unknown")
+        context = model_entry.get("context_length", model_entry.get("max_input_tokens", 0))
         cached = store.get(model_id)
         calibrated_marker = " ✓" if cached else " "
-
         lines.append(f"  {calibrated_marker} {model_id} (context: {context})")
 
     return "\n".join(lines)
@@ -635,7 +702,7 @@ def format_recommended_config(model_id: str, store: ModelOverrideStore | None = 
 
     for key, value in config.items():
         if key.startswith("_"):
-            continue  # Skip internal keys
+            continue
         lines.append(f"  {key}: {value}")
 
     return "\n".join(lines)
@@ -647,16 +714,7 @@ def format_recommended_config(model_id: str, store: ModelOverrideStore | None = 
 
 
 def is_param_rejected(model_id: str, param_name: str, store: ModelOverrideStore | None = None) -> bool:
-    """Check if a parameter is rejected for a specific model based on calibration results.
-
-    Args:
-        model_id: The model identifier
-        param_name: The parameter name to check (e.g., "reasoning_effort", "prompt_cache_key")
-        store: Optional override store (defaults to loading from disk)
-
-    Returns:
-        True if the parameter is in the model's rejected_params list, False otherwise
-    """
+    """Check if a parameter is rejected for a specific model based on calibration results."""
     if store is None:
         store = ModelOverrideStore()
 

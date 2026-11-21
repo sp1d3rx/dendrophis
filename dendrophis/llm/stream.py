@@ -3,25 +3,19 @@
 This module owns the *SSE-chunk* side of LLM output interpretation. It turns
 raw :class:`httpx_sse.ServerSentEvent` chunks into stream events (text,
 reasoning, tool-call, usage, done, error). The *text-side* work — recognising
-provider ```` `` tags, thinking blocks, and decoding the XML/JSON tool-call
-payloads embedded in the text stream — lives in
+provider ``<think>`` / ``<tool_call>`` tags, thinking blocks, and decoding the
+XML/JSON tool-call payloads embedded in the text stream — lives in
 :mod:`dendrophis.llm.tag_parser`, which this module drives as text deltas
 arrive and re-exports for callers that parse finished text directly.
-
-Public entry points:
-
-* :func:`parse_sse_event` — parse one SSE chunk into events + updated state.
-* :func:`iter_sse_events` — generator wrapping an httpx-sse EventSource.
-* :func:`parse_text_tool_calls` — re-exported from
-  :mod:`dendrophis.llm.tag_parser` (batch tool-call parsing of finished text).
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any
 
-from httpx_sse import ServerSentEvent
+from httpx_sse import EventSource, ServerSentEvent
 
 from dendrophis.events import (
     DoneEvent,
@@ -39,7 +33,7 @@ from dendrophis.events import (
 from dendrophis.llm.tag_parser import (
     _emit_tool_call_events,
     _run_tag_state_machine,
-    parse_text_tool_calls,  # re-exported for callers that import it from here
+    parse_text_tool_calls,
 )
 
 __all__ = [
@@ -51,355 +45,348 @@ __all__ = [
 
 def _extract_delta_text(delta: dict[str, Any]) -> str | None:
     """Return text content from a delta dict, or None if absent."""
-    # Edge case: Handle None or non-dict delta
     if not isinstance(delta, dict):
         return None
 
-    textContent = delta.get("content")
-    if isinstance(textContent, str):
-        # Edge case: Handle empty strings
-        return textContent if textContent else None
+    text_content = delta.get("content")
+    if isinstance(text_content, str):
+        return text_content if text_content else None
 
-    if isinstance(textContent, (int, float)):
-        # Edge case: Convert numbers to strings
-        return str(textContent)
+    if isinstance(text_content, (int, float)):
+        return str(text_content)
 
-    if isinstance(textContent, list):
-        # Edge case: Handle list content by joining text elements
-        textParts = []
-        for contentElement in textContent:
-            if isinstance(contentElement, dict):
-                text = contentElement.get("text")
+    if isinstance(text_content, list):
+        text_parts = []
+        for content_element in text_content:
+            if isinstance(content_element, dict):
+                text = content_element.get("text")
                 if isinstance(text, str):
-                    textParts.append(text)
-            elif isinstance(contentElement, str):
-                textParts.append(contentElement)
-        return " ".join(textParts) if textParts else None
+                    text_parts.append(text)
+            elif isinstance(content_element, str):
+                text_parts.append(content_element)
+        return " ".join(text_parts) if text_parts else None
 
     return None
 
 
 def _extract_delta_reasoning(delta: dict[str, Any]) -> str | None:
     """Return reasoning content from a delta dict, checking provider-specific keys."""
-    # Edge case: Handle None or non-dict delta
     if not isinstance(delta, dict):
         return None
 
-    # DeepSeek / OpenRouter / O1 / Groq reasoning keys
-    reasoningKeys = ("reasoning_content", "reasoning", "thought", "thought_content")
-    for reasoningKey in reasoningKeys:
-        reasoningContent = delta.get(reasoningKey)
-        if isinstance(reasoningContent, str):
-            # Kimi K2.5 (via DeepInfra) serializes Python None as the string "None" — discard it
-            return reasoningContent if (reasoningContent and reasoningContent != "None") else None
+    reasoning_keys = ("reasoning_content", "reasoning", "thought", "thought_content")
+    for reasoning_key in reasoning_keys:
+        reasoning_content = delta.get(reasoning_key)
+        if isinstance(reasoning_content, str):
+            return reasoning_content if (reasoning_content and reasoning_content != "None") else None
 
-        if isinstance(reasoningContent, (int, float)):
-            # Edge case: Convert numbers to strings
-            return str(reasoningContent)
+        if isinstance(reasoning_content, (int, float)):
+            return str(reasoning_content)
 
-        if isinstance(reasoningContent, list):
-            # Edge case: Handle list content by joining elements
-            textParts = []
-            for contentElement in reasoningContent:
-                if isinstance(contentElement, str):
-                    textParts.append(contentElement)
-                elif isinstance(contentElement, dict):
-                    text = contentElement.get("text")
+        if isinstance(reasoning_content, list):
+            text_parts = []
+            for content_element in reasoning_content:
+                if isinstance(content_element, str):
+                    text_parts.append(content_element)
+                elif isinstance(content_element, dict):
+                    text = content_element.get("text")
                     if isinstance(text, str):
-                        textParts.append(text)
-            return " ".join(textParts) if textParts else None
+                        text_parts.append(text)
+            return " ".join(text_parts) if text_parts else None
     return None
 
 
 def _extract_cached_tokens(usage: dict[str, Any], tokens_details: dict[str, Any]) -> int:
-    """Return cached-token count from a usage dict across provider formats.
-
-    OpenAI (and OpenRouter routing to OpenAI) report prompt_tokens_details.cached_tokens
-    (or input_tokens_details.cached_tokens on the responses API). OpenRouter routing to
-    Anthropic reports cache_read_input_tokens at the top level of usage.
-    """
+    """Return discounted cache-read token count from a usage dict across provider formats."""
     cached = tokens_details.get("cached_tokens")
     if isinstance(cached, int):
         return cached
     cache_read = usage.get("cache_read_input_tokens")
     if isinstance(cache_read, int):
         return cache_read
-    # Anthropic also reports tokens written to cache on first use.
-    cache_creation = usage.get("cache_creation_input_tokens")
-    if isinstance(cache_creation, int):
-        return cache_creation
     return 0
 
 
 def _extract_tool_call_chunk(
-    toolCallChunk: dict[str, Any],
+    tool_call_chunk: dict[str, Any],
 ) -> tuple[int, str | None, str | None, str]:
     """Extract (index, id, name, args_delta) from a raw tool-call chunk dict."""
-    # Edge case: Handle None or non-dict tool call
-    if not isinstance(toolCallChunk, dict):
+    if not isinstance(tool_call_chunk, dict):
         return 0, None, None, ""
 
-    # Edge case: Handle missing or invalid index
     try:
-        toolCallIndex = int(toolCallChunk.get("index", 0))
+        tool_call_index = int(tool_call_chunk.get("index", 0))
     except (ValueError, TypeError):
-        toolCallIndex = 0
+        tool_call_index = 0
 
-    toolCallId = toolCallChunk.get("id")
-    # Sanitize tool call ID to meet provider requirements (alphanumeric, 9 chars)
-    # Always sanitize, even if None - this ensures we never pass invalid IDs
-    toolCallId = toolCallId  # No hashing - use original ID
+    tool_call_id = tool_call_chunk.get("id")
 
-    # Edge case: Handle missing or invalid function
-    functionDetails = toolCallChunk.get("function", {})
-    if not isinstance(functionDetails, dict):
-        functionDetails = {}
+    function_details = tool_call_chunk.get("function", {})
+    if not isinstance(function_details, dict):
+        function_details = {}
 
-    toolName = functionDetails.get("name")
-    # Don't sanitize tool names for LLM context - they should remain unchanged
-    # toolName = _sanitize_tool_name(toolName) if toolName is not None else None
-
-    argumentsDelta = functionDetails.get("arguments", "")
-    # Edge case: Handle non-string arguments
-    if not isinstance(argumentsDelta, str):
-        argumentsDelta = json.dumps(argumentsDelta) if isinstance(argumentsDelta, (dict, list)) else str(argumentsDelta)
+    tool_name = function_details.get("name")
+    arguments_delta = function_details.get("arguments", "")
+    if not isinstance(arguments_delta, str):
+        arguments_delta = (
+            json.dumps(arguments_delta) if isinstance(arguments_delta, (dict, list)) else str(arguments_delta)
+        )
 
     # LMStudio/Qwen3 bug: sometimes puts the full JSON payload into function.name
-    # and leaves arguments empty. Detect by looking for embedded JSON in the raw name.
-    if toolName and not argumentsDelta and "{" in toolName:
-        jsonStart = toolName.find("{")
-        candidateName = toolName[:jsonStart].strip()
-        candidateArgs = toolName[jsonStart:]
+    if tool_name and not arguments_delta and "{" in tool_name:
+        json_start = tool_name.find("{")
+        candidate_name = tool_name[:json_start].strip()
+        candidate_args = tool_name[json_start:]
         try:
-            parsedArguments = json.loads(candidateArgs)
-            # Recover arguments from the embedded JSON
-            arguments = parsedArguments.get("arguments") or {
-                key: value for key, value in parsedArguments.items() if key != "name"
-            }
-            argumentsDelta = json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
-            toolName = parsedArguments.get("name") or candidateName or toolName
+            parsed_arguments = json.loads(candidate_args)
+            if isinstance(parsed_arguments, dict):
+                arguments = parsed_arguments.get("arguments") or {
+                    key: value for key, value in parsed_arguments.items() if key != "name"
+                }
+                arguments_delta = json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
+                tool_name = parsed_arguments.get("name") or candidate_name or tool_name
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Don't sanitize tool names for LLM context - they should remain unchanged
-    # toolName = _sanitize_tool_name(toolName)
-    return toolCallIndex, toolCallId, toolName, argumentsDelta
+    return tool_call_index, tool_call_id, tool_name, arguments_delta
 
 
 def _extract_stream_error(chunk: dict[str, Any]) -> list[StreamEvent] | None:
     """Return [ErrorEvent] if chunk is a provider error payload, else None."""
     if "choices" not in chunk and ("error" in chunk or "error_type" in chunk):
-        errorDetails = chunk.get("error") or {}
-        errorMessage = errorDetails.get("message") or chunk.get("error_message") or str(chunk)
-        return [ErrorEvent(message=errorMessage)]
+        raw_error = chunk.get("error")
+        if isinstance(raw_error, str) and raw_error:
+            error_message = raw_error
+        elif isinstance(raw_error, dict):
+            error_message = raw_error.get("message") or chunk.get("error_message") or str(chunk)
+        else:
+            error_message = chunk.get("error_message") or str(chunk)
+        return [ErrorEvent(message=str(error_message))]
     return None
 
 
 def _parse_responses_api_chunk(
     chunk: dict[str, Any],
-    inProgressCalls: dict[int, ToolCall],
+    in_progress_calls: dict[int, ToolCall],
     events: list[StreamEvent],
-    parsingState: dict[str, Any],
+    parsing_state: dict[str, Any],
 ) -> tuple[list[StreamEvent], dict[int, ToolCall], dict[str, Any]]:
     """Handle OpenRouter Responses API SSE events (type starts with 'response.')."""
-    if not chunk.get("type", "").startswith("response."):
-        return events, inProgressCalls, parsingState
+    event_type = chunk.get("type", "")
+    if not isinstance(event_type, str) or not event_type.startswith("response."):
+        return events, in_progress_calls, parsing_state
 
-    eventType = chunk.get("type", "")
-    updatedCalls = dict(inProgressCalls)
+    updated_calls = dict(in_progress_calls)
 
-    if eventType == "response.output_text.delta":
-        textDelta = chunk.get("delta", "")
-        if textDelta:
-            events.append(TextDeltaEvent(delta=textDelta))
-    elif eventType in (
-        "response.reasoning_text.delta",
-        "response.reasoning_summary_text.delta",
-        "response.refusal.delta",
-    ):
-        reasoningDelta = chunk.get("delta", "")
-        if reasoningDelta:
-            events.append(ReasoningDeltaEvent(delta=reasoningDelta))
-    elif eventType == "response.output_item.added":
-        outputItem = chunk.get("item", {})
-        if outputItem.get("type") == "function_call":
-            outputIndex = chunk.get("output_index", 0)
-            callId = outputItem.get("call_id") or outputItem.get("id", f"call_{outputIndex}")
-            toolName = outputItem.get("name", "")
-            updatedCalls[outputIndex] = ToolCall(index=outputIndex, id=callId, name=toolName, arguments="")
+    if event_type in ("response.output_text.delta", "response.refusal.delta"):
+        text_delta = chunk.get("delta", "")
+        if text_delta:
+            events.append(TextDeltaEvent(delta=text_delta))
+    elif event_type in ("response.reasoning_text.delta", "response.reasoning_summary_text.delta"):
+        reasoning_delta = chunk.get("delta", "")
+        if reasoning_delta:
+            events.append(ReasoningDeltaEvent(delta=reasoning_delta))
+    elif event_type == "response.output_item.added":
+        output_item = chunk.get("item", {})
+        if output_item.get("type") == "function_call":
+            output_index = chunk.get("output_index", 0)
+            call_id = output_item.get("call_id") or output_item.get("id", f"call_{output_index}")
+            tool_name = output_item.get("name", "")
+            updated_calls[output_index] = ToolCall(index=output_index, id=call_id, name=tool_name, arguments="")
             events.append(ToolCallStreamingEvent())
-            events.append(ToolCallStartEvent(index=outputIndex, id=callId, name=toolName))
-    elif eventType == "response.function_call_arguments.delta":
-        outputIndex = chunk.get("output_index", 0)
-        textDelta = chunk.get("delta", "")
-        if outputIndex in updatedCalls:
-            updatedCalls[outputIndex].arguments += textDelta
-        if textDelta:
-            events.append(ToolCallDeltaEvent(index=outputIndex, arguments_delta=textDelta))
-    elif eventType == "response.output_item.done":
-        outputItem = chunk.get("item", {})
-        if outputItem.get("type") == "function_call":
-            outputIndex = chunk.get("output_index", 0)
-            if outputIndex in updatedCalls:
-                toolCall = updatedCalls.pop(outputIndex)
-                toolCall.arguments = outputItem.get("arguments", toolCall.arguments)
-                events.append(ToolCallDoneEvent(tool_call=toolCall))
-    elif eventType == "response.completed":
-        responseDetails = chunk.get("response", {})
-        events.extend(ToolCallDoneEvent(tool_call=toolCall) for toolCall in updatedCalls.values())
-        updatedCalls = {}
-        usageDetails = responseDetails.get("usage", {})
-        if usageDetails:
+            events.append(ToolCallStartEvent(index=output_index, id=call_id, name=tool_name))
+    elif event_type == "response.function_call_arguments.delta":
+        output_index = chunk.get("output_index", 0)
+        text_delta = chunk.get("delta", "")
+        if output_index in updated_calls:
+            updated_calls[output_index].arguments += text_delta
+        if text_delta:
+            events.append(ToolCallDeltaEvent(index=output_index, arguments_delta=text_delta))
+    elif event_type == "response.output_item.done":
+        output_item = chunk.get("item", {})
+        if output_item.get("type") == "function_call":
+            output_index = chunk.get("output_index", 0)
+            if output_index in updated_calls:
+                tool_call = updated_calls.pop(output_index)
+                tool_call.arguments = output_item.get("arguments", tool_call.arguments)
+                events.append(ToolCallDoneEvent(tool_call=tool_call))
+    elif event_type == "response.completed":
+        response_details = chunk.get("response", {})
+        events.extend(ToolCallDoneEvent(tool_call=tool_call) for tool_call in updated_calls.values())
+        updated_calls = {}
+        usage_details = response_details.get("usage", {})
+        if usage_details:
             events.append(
                 UsageEvent(
-                    prompt_tokens=usageDetails.get("input_tokens", 0),
-                    completion_tokens=usageDetails.get("output_tokens", 0),
-                    cached_tokens=_extract_cached_tokens(usageDetails, usageDetails.get("input_tokens_details") or {}),
+                    prompt_tokens=usage_details.get("input_tokens", 0),
+                    completion_tokens=usage_details.get("output_tokens", 0),
+                    cached_tokens=_extract_cached_tokens(
+                        usage_details, usage_details.get("input_tokens_details") or {}
+                    ),
                 )
             )
-        outputs = responseDetails.get("output", [])
-        hasToolCalls = any(outputItem.get("type") == "function_call" for outputItem in outputs)
-        events.append(DoneEvent(finish_reason="tool_calls" if hasToolCalls else "stop"))
-    return events, updatedCalls, parsingState
+        outputs = response_details.get("output", [])
+        has_tool_calls = any(output_item.get("type") == "function_call" for output_item in outputs)
+        events.append(DoneEvent(finish_reason="tool_calls" if has_tool_calls else "stop"))
+    return events, updated_calls, parsing_state
+
+
+_FINISH_REASON_MAP: dict[str, str] = {
+    "stop": "stop",
+    "eos": "stop",
+    "end_turn": "stop",
+    "tool_calls": "tool_calls",
+    "function_call": "tool_calls",
+    "length": "length",
+    "max_tokens": "length",
+}
+
+
+def _flush_parsing_buffers(
+    parsing_state: dict[str, Any],
+    updated_calls: dict[int, ToolCall],
+    events: list[StreamEvent],
+) -> dict[int, ToolCall]:
+    """Flush any pending tag fragments or in-progress tool calls at stream end."""
+    if parsing_state["mode"] == "tool_calling" and parsing_state["buffer"]:
+        events.extend(_emit_tool_call_events(parsing_state["buffer"]))
+        parsing_state["buffer"] = ""
+        parsing_state["mode"] = "text"
+
+    if parsing_state["pending"]:
+        if parsing_state["mode"] == "thinking":
+            events.append(ReasoningDeltaEvent(delta=parsing_state["pending"]))
+        else:
+            events.append(TextDeltaEvent(delta=parsing_state["pending"]))
+        parsing_state["pending"] = ""
+
+    if updated_calls:
+        events.extend(ToolCallDoneEvent(tool_call=tool_call) for tool_call in updated_calls.values())
+        updated_calls = {}
+
+    return updated_calls
 
 
 def _handle_finish_reason(
-    finishReason: str | None,
-    parsingState: dict[str, Any],
-    inProgressCalls: dict[int, ToolCall],
+    finish_reason: str | None,
+    parsing_state: dict[str, Any],
+    in_progress_calls: dict[int, ToolCall],
     events: list[StreamEvent],
 ) -> tuple[list[StreamEvent], dict[int, ToolCall], dict[str, Any]]:
     """Handle stream completion: flush buffers, emit DoneEvent."""
-    if finishReason not in ("tool_calls", "stop", "length", "eos"):
-        return events, inProgressCalls, parsingState
+    if finish_reason not in _FINISH_REASON_MAP:
+        return events, in_progress_calls, parsing_state
 
-    updatedCalls = dict(inProgressCalls)
-
-    # Flush pending tool call if the model stopped without a closing tag
-    if parsingState["mode"] == "tool_calling" and parsingState["buffer"]:
-        events.extend(_emit_tool_call_events(parsingState["buffer"]))
-        parsingState["buffer"] = ""
-        parsingState["mode"] = "text"
-
-    # If we had a pending fragment, emit it as text/reasoning now
-    if parsingState["pending"]:
-        if parsingState["mode"] == "thinking":
-            events.append(ReasoningDeltaEvent(delta=parsingState["pending"]))
-        else:
-            events.append(TextDeltaEvent(delta=parsingState["pending"]))
-        parsingState["pending"] = ""
-
-    normalizedReason = "stop" if finishReason == "eos" else finishReason
-    events.extend(ToolCallDoneEvent(tool_call=tc) for tc in updatedCalls.values())
-    updatedCalls = {}
-    events.append(DoneEvent(finish_reason=normalizedReason))
-
-    return events, updatedCalls, parsingState
+    normalized_reason = _FINISH_REASON_MAP[finish_reason]
+    updated_calls = _flush_parsing_buffers(parsing_state, dict(in_progress_calls), events)
+    events.append(DoneEvent(finish_reason=normalized_reason))
+    return events, updated_calls, parsing_state
 
 
 def _extract_usage(chunk: dict[str, Any]) -> list[StreamEvent]:
     """Return [UsageEvent] if chunk contains usage data, else []."""
     usage = chunk.get("usage")
     if usage:
-        promptTokensDetails = usage.get("prompt_tokens_details") or {}
+        prompt_tokens_details = usage.get("prompt_tokens_details") or {}
         return [
             UsageEvent(
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),
-                cached_tokens=_extract_cached_tokens(usage, promptTokensDetails),
+                cached_tokens=_extract_cached_tokens(usage, prompt_tokens_details),
             )
         ]
     return []
 
 
 def parse_sse_event(
-    sseEvent: ServerSentEvent,
-    inProgressCalls: dict[int, ToolCall],
-    parsingState: dict[str, Any] | None = None,
+    sse_event: ServerSentEvent,
+    in_progress_calls: dict[int, ToolCall],
+    parsing_state: dict[str, Any] | None = None,
 ) -> tuple[list[StreamEvent], dict[int, ToolCall], dict[str, Any]]:
-    """Parse an httpx-sse ServerSentEvent, return events and updated in-progress map.
+    """Parse an httpx-sse ServerSentEvent, return events and updated in-progress map."""
+    if parsing_state is None:
+        parsing_state = {"mode": "text", "buffer": "", "pending": ""}
 
-    parsingState: keeps track of  and  blocks across chunks
-    (see :mod:`dendrophis.llm.tag_parser` for the tag state machine).
-    """
-    if parsingState is None:
-        parsingState = {"mode": "text", "buffer": "", "pending": ""}
+    if sse_event.event == "ping":
+        return [], in_progress_calls, parsing_state
 
-    if sseEvent.event == "ping":
-        return [], inProgressCalls, parsingState
-
-    rawPayload = sseEvent.data
-    if rawPayload == "[DONE]":
-        return [], inProgressCalls, parsingState
+    raw_payload = sse_event.data
+    if raw_payload == "[DONE]":
+        if in_progress_calls or parsing_state.get("buffer") or parsing_state.get("pending"):
+            done_events: list[StreamEvent] = []
+            had_calls = bool(in_progress_calls or parsing_state.get("mode") == "tool_calling")
+            remaining_calls = _flush_parsing_buffers(parsing_state, dict(in_progress_calls), done_events)
+            done_events.append(DoneEvent(finish_reason="tool_calls" if had_calls else "stop"))
+            return done_events, remaining_calls, parsing_state
+        return [], in_progress_calls, parsing_state
 
     try:
-        chunk = json.loads(rawPayload)
+        chunk = json.loads(raw_payload)
     except json.JSONDecodeError:
-        return [], inProgressCalls, parsingState
+        return [], in_progress_calls, parsing_state
 
-    # Surface provider error events (e.g. DeepInfra validation errors returned mid-stream)
-    events = _extract_stream_error(chunk)
-    if events is not None:
-        return events, inProgressCalls, parsingState
+    if not isinstance(chunk, dict):
+        return [], in_progress_calls, parsing_state
+
+    error_events = _extract_stream_error(chunk)
+    if error_events is not None:
+        return error_events, in_progress_calls, parsing_state
 
     events: list[StreamEvent] = []
-    updatedCalls = dict(inProgressCalls)
+    updated_calls = dict(in_progress_calls)
 
-    # OpenRouter Responses API SSE events — type is in the JSON payload, not the SSE event field
-    events, updatedCalls, parsingState = _parse_responses_api_chunk(chunk, inProgressCalls, events, parsingState)
+    events, updated_calls, parsing_state = _parse_responses_api_chunk(chunk, in_progress_calls, events, parsing_state)
     if events:
-        return events, updatedCalls, parsingState
+        return events, updated_calls, parsing_state
 
-    # Choices handling
     choices = chunk.get("choices", [])
     for choice in choices:
         delta = choice.get("delta", {})
-        finishReason = choice.get("finish_reason")
+        finish_reason = choice.get("finish_reason")
 
-        # 1. Direct Reasoning (from providers like DeepSeek/Groq)
-        reasoningDelta = _extract_delta_reasoning(delta)
-        if reasoningDelta:
-            events.append(ReasoningDeltaEvent(delta=reasoningDelta))
+        reasoning_delta = _extract_delta_reasoning(delta)
+        if reasoning_delta:
+            events.append(ReasoningDeltaEvent(delta=reasoning_delta))
 
-        # 2. Text Content (may contain  or  tags)
-        textDelta = _extract_delta_text(delta)
-        if textDelta:
-            # Add new content to any pending fragment from previous chunk
-            remainingContent = parsingState.get("pending", "") + textDelta
-            parsingState["pending"] = ""
-            _run_tag_state_machine(remainingContent, parsingState, events)
+        text_delta = _extract_delta_text(delta)
+        if text_delta:
+            remaining_content = parsing_state.get("pending", "") + text_delta
+            parsing_state["pending"] = ""
+            _run_tag_state_machine(remaining_content, parsing_state, events)
 
-        # 3. Standard Tool Calls (if provider supports them natively)
-        for toolCall in delta.get("tool_calls") or []:
-            toolCallIndex, toolCallId, toolName, argumentsDelta = _extract_tool_call_chunk(toolCall)
-            if toolCallIndex not in updatedCalls:
-                # If toolCallId is None, generate a valid sanitized ID for this index
-                finalToolCallId = toolCallId if toolCallId else f"call_{toolCallIndex}"  # No hashing
-                updatedCalls[toolCallIndex] = ToolCall(index=toolCallIndex, id=finalToolCallId, name=toolName or "")
+        for tool_call_item in delta.get("tool_calls") or []:
+            tool_call_index, tool_call_id, tool_name, arguments_delta = _extract_tool_call_chunk(tool_call_item)
+            if tool_call_index not in updated_calls:
+                final_tool_call_id = tool_call_id if tool_call_id else f"call_{tool_call_index}"
+                updated_calls[tool_call_index] = ToolCall(
+                    index=tool_call_index, id=final_tool_call_id, name=tool_name or ""
+                )
                 events.append(ToolCallStreamingEvent())
-                events.append(ToolCallStartEvent(index=toolCallIndex, id=finalToolCallId, name=toolName or ""))
-            # If we already have this index, use the existing ID
-            updatedCalls[toolCallIndex].arguments += argumentsDelta
-            if argumentsDelta:
-                events.append(ToolCallDeltaEvent(index=toolCallIndex, arguments_delta=argumentsDelta))
+                events.append(ToolCallStartEvent(index=tool_call_index, id=final_tool_call_id, name=tool_name or ""))
+            else:
+                existing_call = updated_calls[tool_call_index]
+                if tool_name and not existing_call.name:
+                    existing_call.name = tool_name
+                if tool_call_id and existing_call.id == f"call_{tool_call_index}":
+                    existing_call.id = tool_call_id
 
-        # Finish handling
-        events, updatedCalls, parsingState = _handle_finish_reason(finishReason, parsingState, updatedCalls, events)
+            updated_calls[tool_call_index].arguments += arguments_delta
+            if arguments_delta:
+                events.append(ToolCallDeltaEvent(index=tool_call_index, arguments_delta=arguments_delta))
 
-    # Usage
+        events, updated_calls, parsing_state = _handle_finish_reason(
+            finish_reason, parsing_state, updated_calls, events
+        )
+
     events.extend(_extract_usage(chunk))
 
-    return events, updatedCalls, parsingState
+    return events, updated_calls, parsing_state
 
 
-def iter_sse_events(
-    eventSource: Any,
-) -> Any:
-    """Generator wrapping httpx_sse EventSource for streaming use."""
-    from httpx_sse import EventSource
-
-    inProgressCalls: dict[int, ToolCall] = {}
-    parsingState = {"mode": "text", "buffer": "", "pending": ""}
-    for sseEvent in EventSource(eventSource):
-        events, inProgressCalls, parsingState = parse_sse_event(sseEvent, inProgressCalls, parsingState)
+def iter_sse_events(event_source: Any) -> Iterator[StreamEvent]:
+    """Generator wrapping an httpx response via httpx_sse EventSource for synchronous streaming."""
+    in_progress_calls: dict[int, ToolCall] = {}
+    parsing_state = {"mode": "text", "buffer": "", "pending": ""}
+    for sse_event in EventSource(event_source).iter_sse():
+        events, in_progress_calls, parsing_state = parse_sse_event(sse_event, in_progress_calls, parsing_state)
         yield from events

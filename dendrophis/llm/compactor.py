@@ -5,6 +5,15 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from dendrophis.events import (
+    CompactionCompletedEvent,
+    CompactionFailedEvent,
+    CompactionStartedEvent,
+    ErrorEvent,
+    TextDeltaEvent,
+    get_event_bus,
+)
+
 if TYPE_CHECKING:
     from dendrophis.context.manager import ContextManager
     from dendrophis.llm.client import LLMClient
@@ -120,33 +129,23 @@ def _format_tool_message(message_dict: dict[str, Any], raw_content: str) -> str 
 
 
 def _messages_to_text(messages: list[dict[str, Any]]) -> str:
-    """Serialise a list of OpenAI-format messages to a plain-text transcript.
-
-    Drops system messages (preserved separately) and raw file-read bodies, while
-    retaining compact tool calls and verifiable tool outcomes (metrics, test
-    results, return codes, and errors) for iterative self-improvement.
-    """
+    """Serialise a list of OpenAI-format messages to a plain-text transcript."""
     transcript_lines: list[str] = []
     for message_item in messages:
-        # Edge case: Handle None or non-dict messages
         if not isinstance(message_item, dict):
             continue
 
-        # Edge case: Handle missing role field
         role_name = message_item.get("role", "unknown")
         if not isinstance(role_name, str):
             role_name = "unknown"
 
-        # Skip system role; the system prompt is preserved separately.
         if role_name == "system":
             continue
 
-        # Edge case: Handle various content formats
         raw_content = message_item.get("content")
         if raw_content is None:
             content_text = ""
         elif isinstance(raw_content, list):
-            # Handle list content with robust error handling
             content_parts = []
             for block in raw_content:
                 if isinstance(block, dict):
@@ -167,8 +166,7 @@ def _messages_to_text(messages: list[dict[str, Any]]) -> str:
                 transcript_lines.append(formatted_tool)
             continue
 
-        # Edge case: Truncate very long content to prevent memory issues
-        if len(content_text) > 10000:  # 10k characters
+        if len(content_text) > 10000:
             content_text = content_text[:10000] + "... [truncated]"
 
         if role_name == "assistant":
@@ -180,62 +178,57 @@ def _messages_to_text(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(transcript_lines)
 
 
-async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool = False) -> dict[str, Any]:
-    """Summarize the compactable window in-place.
+def _find_safe_compaction_end(messages: list[dict[str, Any]], start: int, target_end: int) -> int:
+    """Snap `target_end` back to a clean turn boundary (`user` preferred, `assistant` fallback).
 
-    Keeps the system prompt and the last TAIL_TURNS * 2 messages verbatim.
-    Replaces everything in between with a single summary message.
-
-    Returns a dict with details about what was compacted.
+    Never cuts between an `assistant` tool-call message and its `tool` result messages.
     """
+    end = min(target_end, len(messages))
+    # 1. Prefer snapping to a `user` message boundary
+    user_boundary = end
+    while user_boundary > start:
+        if user_boundary < len(messages):
+            msg = messages[user_boundary]
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                return user_boundary
+        user_boundary -= 1
+
+    # 2. Single-turn agentic loop fallback: snap to an `assistant` message boundary (> start + 1)
+    # so the initial `user` prompt stays in `compactable` (summarized) or at `start`, and the
+    # kept tail begins cleanly on an `assistant` step rather than mid-tool-results.
+    assistant_boundary = end
+    while assistant_boundary > start + 1:
+        if assistant_boundary < len(messages):
+            msg = messages[assistant_boundary]
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                return assistant_boundary
+        assistant_boundary -= 1
+
+    return start
+
+
+async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool = False) -> dict[str, Any]:
+    """Summarize the compactable window in-place."""
     messages = context.messages
-    # Find first non-system message with edge case handling
-    try:
-        start = next(
-            (
-                index
-                for index, message in enumerate(messages)
-                if isinstance(message, dict) and message.get("role") != "system"
-            ),
-            0,
-        )
-    except StopIteration:
-        start = 0
+    start = next(
+        (
+            index
+            for index, message in enumerate(messages)
+            if isinstance(message, dict) and message.get("role") != "system"
+        ),
+        0,
+    )
 
     tail_count = TAIL_TURNS * 2
     if len(messages) - start <= tail_count:
         tail_count = max(2, len(messages) - start - 2)
-    end = max(start, len(messages) - tail_count)
-
-    # Snap end back to the nearest user-message boundary so we never leave
-    # orphaned tool-result messages at the head of the kept tail.  Cutting
-    # between an assistant+tool_calls message and its tool results produces an
-    # invalid "tool after user" sequence that most providers reject.
-    # Edge case: Handle malformed messages during boundary detection
-    while end > start:
-        if end >= len(messages):
-            break
-        message = messages[end]
-        if not isinstance(message, dict):
-            end -= 1
-            continue
-        if message.get("role") == "user":
-            break
-        end -= 1
+    raw_end = max(start, len(messages) - tail_count)
+    end = _find_safe_compaction_end(messages, start, raw_end)
 
     compactable = messages[start:end]
-    from dendrophis.events import (
-        CompactionCompletedEvent,
-        CompactionFailedEvent,
-        CompactionStartedEvent,
-        ErrorEvent,
-        TextDeltaEvent,
-        get_event_bus,
-    )
-
     event_bus = get_event_bus()
     original_token_count = context.token_count
-    threshold = getattr(context._config, "compact_threshold", 0)
+    threshold = int(context._config.llm.compaction_threshold * context.context_limit)
 
     if not compactable:
         reason = "No messages to compact"
@@ -243,8 +236,7 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
             event_bus.publish(CompactionFailedEvent(reason=reason))
         return {"compacted": False, "reason": reason}
 
-    # Edge case: Check for excessively large compaction operations
-    if len(compactable) > 1000:  # Safety limit
+    if len(compactable) > 1000:
         reason = "Too many messages to compact at once"
         if event_bus:
             event_bus.publish(CompactionFailedEvent(reason=reason))
@@ -286,7 +278,6 @@ async def compact(context: ContextManager, llm: LLMClient, enable_caching: bool 
         "content": f"[Context summary — earlier conversation compacted]\n\n{summary}",
     }
 
-    # Add cache control if Tier 3 caching is enabled
     if enable_caching and context._config.caching.tier3_on_compaction:
         summary_message["cache_control"] = {"type": "ephemeral"}
 

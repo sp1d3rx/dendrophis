@@ -5,14 +5,19 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
+import os
 from io import BytesIO
 from pathlib import Path
 
-# Debug scratch dir for rendered prompt images. Derived from CWD so it's portable
-# across machines (was previously a hardcoded absolute path).
-SCRATCH_DIR = Path.cwd() / "scratch"
+from dendrophis.llm.calibration import ModelOverrideStore
 
-# Global in-memory cache to prevent re-rendering identical prompt images across chat turns
+logger = logging.getLogger(__name__)
+
+# Debug scratch dir stored under ~/.config/dendrophis/scratch and written only when DENDROPHIS_DEBUG is set.
+SCRATCH_DIR = Path.home() / ".config" / "dendrophis" / "scratch"
+
+_MAX_RENDER_CACHE_ENTRIES = 128
 _VISUAL_RENDER_CACHE: dict[str, str] = {}
 
 
@@ -23,33 +28,30 @@ def is_vlm_model(model_name: str) -> bool:
 
     model_lower = model_name.lower()
 
-    # 1. Heuristic matching on model ID
-    vlm_keywords = [
+    vlm_keywords = (
         "gemma-4",
         "claude-3-5",
         "claude-3",
         "gpt-4o",
         "gemini-1.5",
         "gemini-2.0",
+        "gemini-2.5",
         "qwen2.5-vl",
         "llava",
         "vision",
         "vlm",
         "pixtral",
-    ]
+    )
     if any(keyword in model_lower for keyword in vlm_keywords):
         return True
 
-    # 2. Check calibration store override
     try:
-        from dendrophis.llm.calibration import ModelOverrideStore
-
         store = ModelOverrideStore()
         capabilities = store.get(model_name)
         if capabilities and capabilities.supports_vlm:
             return True
-    except Exception:
-        pass
+    except Exception as store_error:
+        logger.debug("VLM calibration lookup failed for %s: %s", model_name, store_error)
 
     return False
 
@@ -65,7 +67,6 @@ def format_tool_output_for_visual_rendering(text_content: str) -> str:
         if not isinstance(parsed_json, dict):
             return text_content
 
-        # Case 1: glob output {"files": [...], "count": N}
         if "files" in parsed_json and isinstance(parsed_json["files"], list):
             files_list = parsed_json["files"]
             formatted_lines = [f"=== GLOB SEARCH RESULTS ({len(files_list)} files) ==="]
@@ -73,7 +74,6 @@ def format_tool_output_for_visual_rendering(text_content: str) -> str:
                 formatted_lines.append(f"{index_num:2d}. {file_path}")
             return "\n".join(formatted_lines)
 
-        # Case 2: list_dir output {"path": "...", "entries": [...]}
         if "path" in parsed_json and "entries" in parsed_json:
             directory_path = parsed_json.get("path", "")
             entries_list = parsed_json.get("entries", [])
@@ -82,7 +82,6 @@ def format_tool_output_for_visual_rendering(text_content: str) -> str:
                 formatted_lines.append(f"{index_num:2d}. {item_name}")
             return "\n".join(formatted_lines)
 
-        # Case 3: search_memory or ripgrep results {"results": [...]}
         if "results" in parsed_json and isinstance(parsed_json["results"], list):
             results_list = parsed_json["results"]
             formatted_lines = [f"=== SEARCH RESULTS ({len(results_list)} items) ==="]
@@ -96,8 +95,8 @@ def format_tool_output_for_visual_rendering(text_content: str) -> str:
                     formatted_lines.append(f"[{index_num}] {result_item}")
             return "\n".join(formatted_lines)
 
-    except Exception:
-        pass
+    except Exception as format_error:
+        logger.debug("Visual JSON formatting skipped: %s", format_error)
 
     return text_content
 
@@ -110,21 +109,15 @@ def render_text_to_1bit_data_uri(
     max_target_width: int = 900,
     save_prefix: str = "visual_render",
 ) -> str | None:
-    """Render text_content into an 8-bit Grayscale PNG image and return as a Base64 Data URI.
-
-    Uses deterministic SHA256 content hashing to cache results in memory and disk,
-    preventing duplicate file creation or re-rendering on subsequent turns.
-    """
+    """Render text_content into an 8-bit Grayscale PNG image and return as a Base64 Data URI."""
     if not text_content.strip():
         return None
 
     text_to_render = format_tool_output_for_visual_rendering(text_content)
 
-    # Compute deterministic content hash key for caching
     cache_signature = f"{font_name}:{font_size}:{padding}:{max_target_width}:{text_to_render}"
     hash_key_digest = hashlib.sha256(cache_signature.encode("utf-8")).hexdigest()[:16]
 
-    # Return cached Data URI if rendered previously in this process
     if hash_key_digest in _VISUAL_RENDER_CACHE:
         return _VISUAL_RENDER_CACHE[hash_key_digest]
 
@@ -183,7 +176,6 @@ def render_text_to_1bit_data_uri(
         image_width = max_measured_width + padding * 2
         image_height = len(wrapped_lines) * line_height + padding * 2
 
-        # 8-bit Grayscale Canvas: 0 = Black background, 255 = White text with FreeType anti-aliasing
         canvas_image = Image.new("L", (image_width, image_height), color=0)
         draw_context = ImageDraw.Draw(canvas_image)
 
@@ -192,14 +184,14 @@ def render_text_to_1bit_data_uri(
             draw_context.text((padding, current_y), line_text, font=font_object, fill=255)
             current_y += line_height
 
-        # Save debug copy using deterministic hash name to avoid duplicate file creation
-        try:
-            SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
-            scratch_file_path = SCRATCH_DIR / f"{save_prefix}_{hash_key_digest}.png"
-            if not scratch_file_path.exists():
-                canvas_image.save(scratch_file_path, format="PNG")
-        except Exception:
-            pass
+        if os.environ.get("DENDROPHIS_DEBUG"):
+            try:
+                SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+                scratch_file_path = SCRATCH_DIR / f"{save_prefix}_{hash_key_digest}.png"
+                if not scratch_file_path.exists():
+                    canvas_image.save(scratch_file_path, format="PNG")
+            except OSError as scratch_error:
+                logger.debug("Could not write debug visual prompt PNG: %s", scratch_error)
 
         image_buffer = BytesIO()
         canvas_image.save(image_buffer, format="PNG")
@@ -207,9 +199,12 @@ def render_text_to_1bit_data_uri(
         encoded_base64 = base64.b64encode(raw_bytes).decode("utf-8")
         data_uri = f"data:image/png;base64,{encoded_base64}"
 
-        # Store in global in-memory cache
+        if len(_VISUAL_RENDER_CACHE) >= _MAX_RENDER_CACHE_ENTRIES:
+            oldest_key = next(iter(_VISUAL_RENDER_CACHE))
+            _VISUAL_RENDER_CACHE.pop(oldest_key, None)
         _VISUAL_RENDER_CACHE[hash_key_digest] = data_uri
         return data_uri
 
-    except Exception:
+    except Exception as render_error:
+        logger.debug("Visual prompt rendering failed: %s", render_error)
         return None

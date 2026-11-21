@@ -7,8 +7,8 @@ module has a single job:
 * :mod:`~dendrophis.llm.stream` turns raw SSE chunks into stream events and
   drives this module's state machine as text deltas arrive.
 * This module turns the accumulated text into structured tool calls, handling
-  the provider-specific ```` `` tags, thinking blocks, and the XML/JSON payload
-  formats that local/MLC servers embed in the text stream.
+  the provider-specific ``<think>`` / ``<tool_call>`` tags, thinking blocks, and
+  the XML/JSON payload formats that local/MLC servers embed in the text stream.
 
 Two entry points are used by the rest of the codebase:
 
@@ -18,10 +18,6 @@ Two entry points are used by the rest of the codebase:
 * :func:`parse_text_tool_calls` — batch, called on the finished text of a
   completion that reported ``finish_reason='tool_calls'`` but populated the text
   stream instead of the structured ``delta.tool_calls`` field.
-
-Both paths decode tool-call payloads through the same helpers
-(:func:`_decode_tool_call_payload` / :func:`_tool_arguments_from_payload`), so
-the XML and JSON formats are handled in exactly one place.
 """
 
 from __future__ import annotations
@@ -48,7 +44,9 @@ from dendrophis.events import (
 _THINKING_BLOCK = re.compile(
     r"<think>.*?(?:</think>|$)"
     r"|<thought>.*?(?:</thought>|$)"
-    r"|<\|channel>thought\n.*?(?:<channel\|>|$)",
+    r"|<reflection>.*?(?:</reflection>|$)"
+    r"|<reasoning>.*?(?:</reasoning>|$)"
+    r"|<\|channel>thought\n?.*?(?:<channel\|>|$)",
     re.DOTALL,
 )
 
@@ -59,18 +57,7 @@ _JSON_FENCE = re.compile(r"```(?:json)?\s*")
 # ---------------------------------------------------------------------------
 # Tag tables
 # ---------------------------------------------------------------------------
-#
-# The state machine scans for these literal tags. A tag that appears in both a
-# START and a CLOSE table is a *boundary marker*: some models emit the same
-# token both before and after the payload (e.g. ``<tool_call>...json...<tool_call|>``),
-# so the first occurrence opens the call and the next one closes it.
-#
-# Resolution order matters: in ``tool_calling`` mode the close tags are searched
-# before the start tags, so a boundary marker that is both (``<tool_call|>``)
-# is treated as a *close* while a call is open. That is what lets the same token
-# both open and close.
 
-# Thinking / reasoning blocks.
 THINK_START_TAGS = (
     "<think>",
     "<thought>",
@@ -88,8 +75,6 @@ THOUGHT_CLOSE_TAGS = (
     "</reasoning>",
 )
 
-# Tool-call openers. ``<tool_call>`` is a dual start/close boundary marker (see note
-# above): it opens a call in text mode and closes one in tool_calling mode.
 TOOL_START_TAGS = (
     "<tool_call>",
     "<tool_call|>",
@@ -98,8 +83,6 @@ TOOL_START_TAGS = (
     "[TOOL_CALLS]",
 )
 
-# Tool-call closers. ``<tool_call|>`` also appears in TOOL_START_TAGS on
-# purpose — it is the boundary marker that both opens and closes a call.
 TOOL_CLOSE_TAGS = (
     "</tool_call>",
     "</tool_call|>",
@@ -108,95 +91,78 @@ TOOL_CLOSE_TAGS = (
     "[/TOOL_CALLS]",
 )
 
+_ALL_START_TAGS = THINK_START_TAGS + TOOL_START_TAGS
+_MAX_START_TAG_LEN = max(len(tag_item) for tag_item in _ALL_START_TAGS)
+_MAX_THOUGHT_CLOSE_LEN = max(len(tag_item) for tag_item in THOUGHT_CLOSE_TAGS)
+_ALL_TOOL_TRANSITION_TAGS = TOOL_CLOSE_TAGS + TOOL_START_TAGS + THINK_START_TAGS
+_MAX_TOOL_TRANSITION_LEN = max(len(tag_item) for tag_item in _ALL_TOOL_TRANSITION_TAGS)
+
 
 # ---------------------------------------------------------------------------
 # Payload decoding (shared by the streaming and batch paths)
 # ---------------------------------------------------------------------------
 
 
-def _parse_function_xml(rawText: str) -> tuple[str, dict] | None:
-    """Parse <function=name><parameter=p>v</parameter>...</function> into (name, args).
-
-    Returns None if the text doesn't match this format.
-    """
-    functionMatch = re.match(r"<function=([^>]+)>(.*)</function>", rawText.strip(), re.DOTALL)
-    if not functionMatch:
+def _parse_function_xml(raw_text: str) -> tuple[str, dict[str, Any]] | None:
+    """Parse <function=name><parameter=p>v</parameter>...</function> into (name, args)."""
+    function_match = re.match(r"<function=([^>]+)>(.*)</function>", raw_text.strip(), re.DOTALL)
+    if not function_match:
         return None
-    functionName = functionMatch.group(1).strip()
-    toolArguments: dict = {}
-    for parameterMatch in re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", functionMatch.group(2), re.DOTALL):
-        argumentKey = parameterMatch.group(1).strip()
-        argumentValue = parameterMatch.group(2).strip()
+    function_name = function_match.group(1).strip()
+    tool_arguments: dict[str, Any] = {}
+    for parameter_match in re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", function_match.group(2), re.DOTALL):
+        argument_key = parameter_match.group(1).strip()
+        argument_value = parameter_match.group(2).strip()
         try:
-            toolArguments[argumentKey] = json.loads(argumentValue)
+            tool_arguments[argument_key] = json.loads(argument_value)
         except json.JSONDecodeError:
-            toolArguments[argumentKey] = argumentValue
-    return functionName, toolArguments
+            tool_arguments[argument_key] = argument_value
+    return function_name, tool_arguments
 
 
-def _tool_arguments_from_payload(decodedPayload: dict) -> str:
-    """Serialize the arguments from a decoded JSON tool-call payload.
-
-    Uses the explicit ``"arguments"`` key when present; otherwise treats every
-    other top-level key as an argument. Returns a JSON string for dict
-    arguments and ``str()`` for anything else, so the result is always a str.
-    """
-    arguments = decodedPayload.get("arguments")
+def _tool_arguments_from_payload(decoded_payload: dict[str, Any]) -> str:
+    """Serialize the arguments from a decoded JSON tool-call payload."""
+    arguments = decoded_payload.get("arguments")
     if arguments is None:
-        arguments = {key: value for key, value in decodedPayload.items() if key != "name"}
+        arguments = {key: value for key, value in decoded_payload.items() if key != "name"}
     return json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
 
 
 def _decode_tool_call_payload(payload: str) -> tuple[str | None, str] | None:
-    """Decode a raw tool-call payload into ``(name, serialized_arguments)``.
+    """Decode a raw tool-call payload into ``(name, serialized_arguments)``."""
+    parsed_function = _parse_function_xml(payload)
+    if parsed_function:
+        tool_name, tool_arguments = parsed_function
+        return tool_name, json.dumps(tool_arguments)
 
-    Tries the Sushi-Coder / Hermes XML format first, then a JSON object.
-    Returns ``None`` when the payload is neither an XML function block nor a
-    JSON object.
-
-    For a JSON object the name is the value of its ``"name"`` key, or ``None``
-    when that key is absent or null. Callers apply their own policy for a
-    missing name: the streaming path (``_emit_tool_call_events``) defaults it to
-    ``"unknown"`` so a malformed call still surfaces, while the batch path
-    (``parse_text_tool_calls``) skips nameless payloads rather than executing a
-    call that has no tool to dispatch to.
-    """
-    # Format 1: Sushi-Coder / Hermes XML.
-    parsedFunction = _parse_function_xml(payload)
-    if parsedFunction:
-        toolName, toolArguments = parsedFunction
-        return toolName, json.dumps(toolArguments)
-
-    # Format 2: JSON object {"name": ..., "arguments": ...}.
     try:
-        decodedPayload = json.loads(payload)
+        decoded_payload = json.loads(payload)
     except json.JSONDecodeError:
         return None
-    if not isinstance(decodedPayload, dict):
+    if not isinstance(decoded_payload, dict):
         return None
-    return decodedPayload.get("name"), _tool_arguments_from_payload(decodedPayload)
+    return decoded_payload.get("name"), _tool_arguments_from_payload(decoded_payload)
 
 
-def _emit_tool_call_events(callContent: str) -> list[StreamEvent]:
+def _emit_tool_call_events(call_content: str) -> list[StreamEvent]:
     """Parse tool call content (XML or JSON) and return the sequence of events."""
     events: list[StreamEvent] = []
-    toolCallIndex = 999
-    toolCallId = f"call_{uuid.uuid4().hex[:8]}"
+    tool_call_index = 999
+    tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
 
-    decoded = _decode_tool_call_payload(callContent)
+    decoded = _decode_tool_call_payload(call_content)
     if decoded is None:
-        # Neither XML nor JSON — surface the raw content as text.
-        events.append(TextDeltaEvent(delta=f"<tool_call>{callContent}"))
+        events.append(TextDeltaEvent(delta=f"<tool_call>{call_content}"))
         return events
 
-    toolName, serializedArguments = decoded
-    if toolName is None:
-        toolName = "unknown"
-    events.append(ToolCallStartEvent(index=toolCallIndex, id=toolCallId, name=toolName))
-    events.append(ToolCallDeltaEvent(index=toolCallIndex, arguments_delta=serializedArguments))
+    tool_name, serialized_arguments = decoded
+    if tool_name is None:
+        tool_name = "unknown"
+    events.append(ToolCallStartEvent(index=tool_call_index, id=tool_call_id, name=tool_name))
+    events.append(ToolCallDeltaEvent(index=tool_call_index, arguments_delta=serialized_arguments))
     events.append(
         ToolCallDoneEvent(
-            tool_call=ToolCall(index=toolCallIndex, id=toolCallId, name=toolName, arguments=serializedArguments)
+            tool_call=ToolCall(index=tool_call_index, id=tool_call_id, name=tool_name, arguments=serialized_arguments)
         )
     )
     return events
@@ -208,162 +174,144 @@ def _emit_tool_call_events(callContent: str) -> list[StreamEvent]:
 
 
 def _scan_text_mode(
-    remainingContent: str,
-    parsingState: dict[str, Any],
+    remaining_content: str,
+    parsing_state: dict[str, Any],
     events: list[StreamEvent],
 ) -> str:
     """Scan text mode for tag starts. Returns unconsumed content."""
-    modeIndices: list[tuple[int, str, int]] = []
-    for thinkTag in THINK_START_TAGS:
-        thinkIndex = remainingContent.find(thinkTag)
-        if thinkIndex != -1:
-            modeIndices.append((thinkIndex, "thinking", len(thinkTag)))
+    mode_indices: list[tuple[int, str, int]] = []
+    for think_tag in THINK_START_TAGS:
+        think_index = remaining_content.find(think_tag)
+        if think_index != -1:
+            mode_indices.append((think_index, "thinking", len(think_tag)))
 
-    for toolTag in TOOL_START_TAGS:
-        toolIndex = remainingContent.find(toolTag)
-        if toolIndex != -1:
-            modeIndices.append((toolIndex, "tool_calling", len(toolTag)))
+    for tool_tag in TOOL_START_TAGS:
+        tool_index = remaining_content.find(tool_tag)
+        if tool_index != -1:
+            mode_indices.append((tool_index, "tool_calling", len(tool_tag)))
 
-    # Check for partial tags at the very end of the string
-    potentialTagIndex = remainingContent.rfind("<")
-    potentialBracketIndex = remainingContent.rfind("[")
-    candidateIndex = max(potentialTagIndex, potentialBracketIndex)
-    if candidateIndex != -1:
-        foundTagIndex = min(modeIndices, key=lambda modePair: modePair[0])[0] if modeIndices else -1
-        if foundTagIndex == -1 or candidateIndex > foundTagIndex:
-            fragment = remainingContent[candidateIndex:]
-            allStartTags = THINK_START_TAGS + TOOL_START_TAGS
-            if any(startTag.startswith(fragment) for startTag in allStartTags):
-                if candidateIndex > 0:
-                    events.append(TextDeltaEvent(delta=remainingContent[:candidateIndex]))
-                parsingState["pending"] = fragment
-                return ""
+    if mode_indices:
+        # Select earliest opening tag; break ties in favor of longer match (e.g. "<|channel>thought\n")
+        first_index, next_mode, tag_length = min(
+            mode_indices,
+            key=lambda mode_pair: (mode_pair[0], -mode_pair[2]),
+        )
+        if first_index > 0:
+            events.append(TextDeltaEvent(delta=remaining_content[:first_index]))
 
-    if not modeIndices:
-        events.append(TextDeltaEvent(delta=remainingContent))
-        return ""
+        if next_mode == "tool_calling":
+            events.append(ToolCallStreamingEvent())
 
-    firstIndex, nextMode, tagLength = min(modeIndices, key=lambda modePair: modePair[0])
-    if firstIndex > 0:
-        events.append(TextDeltaEvent(delta=remainingContent[:firstIndex]))
+        parsing_state["mode"] = next_mode
+        return remaining_content[first_index + tag_length :]
 
-    if nextMode == "tool_calling":
-        # Fire as soon as the opening tag is confirmed, so UI can surface a
-        # "tool in progress" state while the (possibly long) arguments build,
-        # rather than only when the closing tag completes the call.
-        events.append(ToolCallStreamingEvent())
+    # No complete opening tag found; check for a partial opening tag suffix at the end of remaining_content.
+    for candidate_length in range(min(len(remaining_content), _MAX_START_TAG_LEN - 1), 0, -1):
+        candidate_suffix = remaining_content[-candidate_length:]
+        if any(start_tag.startswith(candidate_suffix) for start_tag in _ALL_START_TAGS):
+            prefix_index = len(remaining_content) - candidate_length
+            if prefix_index > 0:
+                events.append(TextDeltaEvent(delta=remaining_content[:prefix_index]))
+            parsing_state["pending"] = candidate_suffix
+            return ""
 
-    parsingState["mode"] = nextMode
-    return remainingContent[firstIndex + tagLength :]
+    events.append(TextDeltaEvent(delta=remaining_content))
+    return ""
 
 
 def _scan_thinking_mode(
-    remainingContent: str,
-    parsingState: dict[str, Any],
+    remaining_content: str,
+    parsing_state: dict[str, Any],
     events: list[StreamEvent],
 ) -> str:
-    """Scan thinking mode for tag ends. Returns unconsumed content.
+    """Scan thinking mode for tag ends. Returns unconsumed content."""
+    found_end_indices: list[tuple[int, int]] = []
+    for close_tag in THOUGHT_CLOSE_TAGS:
+        tag_index = remaining_content.find(close_tag)
+        if tag_index != -1:
+            found_end_indices.append((tag_index, len(close_tag)))
 
-    Tool calls and special tags are disabled in thoughts. We only detect
-    the end of thoughts (e.g. </think>).
-    """
-    foundEndIndices: list[tuple[int, int]] = []
-    for closeTag in THOUGHT_CLOSE_TAGS:
-        tagIndex = remainingContent.find(closeTag)
-        if tagIndex != -1:
-            foundEndIndices.append((tagIndex, len(closeTag)))
+    if found_end_indices:
+        first_index, tag_length = min(found_end_indices, key=lambda tag_pair: tag_pair[0])
+        if first_index > 0:
+            events.append(ReasoningDeltaEvent(delta=remaining_content[:first_index]))
+        parsing_state["mode"] = "text"
+        return remaining_content[first_index + tag_length :]
 
-    if foundEndIndices:
-        firstIndex, tagLength = min(foundEndIndices, key=lambda tagPair: tagPair[0])
-        if firstIndex > 0:
-            events.append(ReasoningDeltaEvent(delta=remainingContent[:firstIndex]))
-        parsingState["mode"] = "text"
-        return remainingContent[firstIndex + tagLength :]
-
-    # Check for partial close tag at the very end of remainingContent
-    for candidateLength in range(min(len(remainingContent), 15), 0, -1):
-        candidateSuffix = remainingContent[-candidateLength:]
-        if any(closeTag.startswith(candidateSuffix) for closeTag in THOUGHT_CLOSE_TAGS):
-            prefixIndex = len(remainingContent) - candidateLength
-            if prefixIndex > 0:
-                events.append(ReasoningDeltaEvent(delta=remainingContent[:prefixIndex]))
-            parsingState["pending"] = candidateSuffix
+    for candidate_length in range(min(len(remaining_content), _MAX_THOUGHT_CLOSE_LEN - 1), 0, -1):
+        candidate_suffix = remaining_content[-candidate_length:]
+        if any(close_tag.startswith(candidate_suffix) for close_tag in THOUGHT_CLOSE_TAGS):
+            prefix_index = len(remaining_content) - candidate_length
+            if prefix_index > 0:
+                events.append(ReasoningDeltaEvent(delta=remaining_content[:prefix_index]))
+            parsing_state["pending"] = candidate_suffix
             return ""
 
-    events.append(ReasoningDeltaEvent(delta=remainingContent))
+    events.append(ReasoningDeltaEvent(delta=remaining_content))
     return ""
 
 
 def _scan_tool_calling_mode(
-    remainingContent: str,
-    parsingState: dict[str, Any],
+    remaining_content: str,
+    parsing_state: dict[str, Any],
     events: list[StreamEvent],
 ) -> str:
-    """Scan tool_calling mode for tag ends. Returns unconsumed content.
+    """Scan tool_calling mode for tag ends. Returns unconsumed content."""
+    interesting_indices: list[tuple[int, str, int]] = []
+    for close_tag in TOOL_CLOSE_TAGS:
+        close_index = remaining_content.find(close_tag)
+        if close_index != -1:
+            interesting_indices.append((close_index, "end", len(close_tag)))
 
-    Close tags are searched before start tags, so a dual boundary marker
-    (``<tool_call|>``) that is both a start and a close resolves as a *close*
-    while a call is open — the next call is only opened once we are back in
-    text mode.
-    """
-    interestingIndices: list[tuple[int, str, int]] = []
-    for closeTag in TOOL_CLOSE_TAGS:
-        closeIndex = remainingContent.find(closeTag)
-        if closeIndex != -1:
-            interestingIndices.append((closeIndex, "end", len(closeTag)))
+    for next_tool_tag in TOOL_START_TAGS:
+        next_tool_index = remaining_content.find(next_tool_tag)
+        if next_tool_index != -1:
+            interesting_indices.append((next_tool_index, "transition", 0))
 
-    for nextToolTag in TOOL_START_TAGS:
-        nextToolIndex = remainingContent.find(nextToolTag)
-        if nextToolIndex != -1:
-            interestingIndices.append((nextToolIndex, "transition", 0))
+    for next_think_tag in THINK_START_TAGS:
+        next_think_index = remaining_content.find(next_think_tag)
+        if next_think_index != -1:
+            interesting_indices.append((next_think_index, "transition", 0))
 
-    for nextThinkTag in THINK_START_TAGS:
-        nextThinkIndex = remainingContent.find(nextThinkTag)
-        if nextThinkIndex != -1:
-            interestingIndices.append((nextThinkIndex, "transition", 0))
-
-    if not interestingIndices:
-        allPotentialTags = TOOL_CLOSE_TAGS + TOOL_START_TAGS + THINK_START_TAGS
-        for candidateLength in range(min(len(remainingContent), 20), 0, -1):
-            candidateSuffix = remainingContent[-candidateLength:]
-            if any(targetTag.startswith(candidateSuffix) for targetTag in allPotentialTags):
-                prefixIndex = len(remainingContent) - candidateLength
-                parsingState["buffer"] += remainingContent[:prefixIndex]
-                parsingState["pending"] = candidateSuffix
+    if not interesting_indices:
+        for candidate_length in range(min(len(remaining_content), _MAX_TOOL_TRANSITION_LEN - 1), 0, -1):
+            candidate_suffix = remaining_content[-candidate_length:]
+            if any(target_tag.startswith(candidate_suffix) for target_tag in _ALL_TOOL_TRANSITION_TAGS):
+                prefix_index = len(remaining_content) - candidate_length
+                parsing_state["buffer"] += remaining_content[:prefix_index]
+                parsing_state["pending"] = candidate_suffix
                 return ""
 
-        parsingState["buffer"] += remainingContent
+        parsing_state["buffer"] += remaining_content
         return ""
 
-    firstIndex, typeName, tagLength = min(interestingIndices, key=lambda itemPair: itemPair[0])
-    callPayload = parsingState["buffer"] + remainingContent[:firstIndex]
-    events.extend(_emit_tool_call_events(callPayload))
-    parsingState["buffer"] = ""
-    parsingState["mode"] = "text"
+    first_index, transition_kind, tag_length = min(interesting_indices, key=lambda item_pair: item_pair[0])
+    call_payload = parsing_state["buffer"] + remaining_content[:first_index]
+    events.extend(_emit_tool_call_events(call_payload))
+    parsing_state["buffer"] = ""
+    parsing_state["mode"] = "text"
 
-    if typeName == "end":
-        return remainingContent[firstIndex + tagLength :]
-    return remainingContent[firstIndex:]
+    if transition_kind == "end":
+        return remaining_content[first_index + tag_length :]
+    return remaining_content[first_index:]
 
 
 def _run_tag_state_machine(
-    remainingContent: str,
-    parsingState: dict[str, Any],
+    remaining_content: str,
+    parsing_state: dict[str, Any],
     events: list[StreamEvent],
 ) -> str:
-    """Run the tag state machine until all content is consumed.
-
-    Dispatches to the appropriate scanner based on parsingState["mode"].
-    Each scanner returns unconsumed content for the next iteration.
-    """
-    while remainingContent:
-        if parsingState["mode"] == "text":
-            remainingContent = _scan_text_mode(remainingContent, parsingState, events)
-        elif parsingState["mode"] == "thinking":
-            remainingContent = _scan_thinking_mode(remainingContent, parsingState, events)
-        elif parsingState["mode"] == "tool_calling":
-            remainingContent = _scan_tool_calling_mode(remainingContent, parsingState, events)
-    return remainingContent
+    """Run the tag state machine until all content is consumed."""
+    while remaining_content:
+        if parsing_state["mode"] == "text":
+            remaining_content = _scan_text_mode(remaining_content, parsing_state, events)
+        elif parsing_state["mode"] == "thinking":
+            remaining_content = _scan_thinking_mode(remaining_content, parsing_state, events)
+        elif parsing_state["mode"] == "tool_calling":
+            remaining_content = _scan_tool_calling_mode(remaining_content, parsing_state, events)
+        else:
+            parsing_state["mode"] = "text"
+    return remaining_content
 
 
 # ---------------------------------------------------------------------------
@@ -372,16 +320,12 @@ def _run_tag_state_machine(
 
 
 def _extract_balanced_json(text: str, start: int) -> str | None:
-    """Return the balanced JSON object starting at text[start] (which must be '{').
-
-    Tracks string state so braces inside string values do not affect depth.
-    Returns None if the object is not closed within text.
-    """
+    """Return the balanced JSON object starting at text[start] (which must be '{')."""
     depth = 0
     in_string = False
     escaped = False
-    for i in range(start, len(text)):
-        char = text[i]
+    for char_index in range(start, len(text)):
+        char = text[char_index]
         if in_string:
             if escaped:
                 escaped = False
@@ -396,91 +340,69 @@ def _extract_balanced_json(text: str, start: int) -> str | None:
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return text[start : i + 1]
+                return text[start : char_index + 1]
     return None
 
 
-def parse_text_tool_calls(rawText: str) -> list[ToolCall]:
-    """Parse tool calls embedded in LLM text output (local/MLC servers).
-
-    Handles three formats:
-    1. <tool_call><function=name><parameter=p>v</parameter></function></tool_call> (Sushi-Coder/Hermes XML)
-    2. <tool_call>{"name": ..., "arguments": ...}</tool_call> tags (Qwen3.5 native)
-    3. ```json {"name": ..., "arguments": ...} ``` fenced blocks (fallback)
-
-    MLC returns finish_reason='tool_calls' but populates the text stream rather
-    than the structured delta.tool_calls field.
-    """
-    # Strip thoughts so tool calls mentioned inside thoughts are never executed
-    cleanedText = _THINKING_BLOCK.sub("", rawText)
-
+def parse_text_tool_calls(raw_text: str) -> list[ToolCall]:
+    """Parse tool calls embedded in LLM text output (local/MLC servers)."""
+    cleaned_text = _THINKING_BLOCK.sub("", raw_text)
     results: list[ToolCall] = []
 
-    if not results:
-        for regexMatch in re.finditer(
-            r"(?:<\|?tool_call\|?>|<\|tool_call_start\|>)(.*?)(?:<\|?/?tool_call\|?>|<\|tool_call_end\|>|$)",
-            cleanedText,
-            re.DOTALL,
-        ):
-            matchedContent = regexMatch.group(1).strip()
-            rawToolCallId = f"call_{uuid.uuid4().hex[:8]}"
+    tag_pattern = (
+        r"(?:<\|?tool_call\|?>|<\|tool_call_start\|>|\[TOOL_CALLS\])"
+        r"(.*?)"
+        r"(?:<\|?/?tool_call\|?>|<\|tool_call_end\|>|\[/TOOL_CALLS\]|$)"
+    )
+    for regex_match in re.finditer(tag_pattern, cleaned_text, re.DOTALL):
+        matched_content = regex_match.group(1).strip()
+        raw_tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
 
-            # Formats 1 & 2 (XML, then JSON) share the streaming path's decoder.
-            decoded = _decode_tool_call_payload(matchedContent)
-            if decoded is None:
-                continue
-            toolName, serializedArguments = decoded
-            # A nameless payload has no tool to dispatch to — skip it rather
-            # than executing a call with a null/missing name.
-            if toolName is None:
-                continue
-            results.append(
-                ToolCall(
-                    index=len(results),
-                    id=rawToolCallId,
-                    name=toolName,
-                    arguments=serializedArguments,
-                )
+        decoded = _decode_tool_call_payload(matched_content)
+        if decoded is None:
+            continue
+        tool_name, serialized_arguments = decoded
+        if tool_name is None:
+            continue
+        results.append(
+            ToolCall(
+                index=len(results),
+                id=raw_tool_call_id,
+                name=tool_name,
+                arguments=serialized_arguments,
             )
+        )
 
     if not results:
-        # Fenced JSON blocks: locate a fence, then extract the first balanced
-        # JSON object after it (string-aware, so braces inside string values
-        # cannot truncate the match). A missing closing fence is tolerated.
-        # After a successful parse the scan resumes past the consumed object so
-        # fences inside it (or the block's closing fence) are not re-matched.
-        searchFrom = 0
+        search_from = 0
         while True:
-            fenceMatch = _JSON_FENCE.search(cleanedText, searchFrom)
-            if fenceMatch is None:
+            fence_match = _JSON_FENCE.search(cleaned_text, search_from)
+            if fence_match is None:
                 break
-            braceStart = cleanedText.find("{", fenceMatch.end())
-            if braceStart == -1:
+            brace_start = cleaned_text.find("{", fence_match.end())
+            if brace_start == -1:
                 break
-            candidate = _extract_balanced_json(cleanedText, braceStart)
+            candidate = _extract_balanced_json(cleaned_text, brace_start)
             if candidate is not None:
                 try:
-                    decodedPayload = json.loads(candidate)
+                    decoded_payload = json.loads(candidate)
                 except json.JSONDecodeError:
-                    decodedPayload = None
-                if isinstance(decodedPayload, dict):
-                    toolName = decodedPayload.get("name")
-                    arguments = decodedPayload.get("arguments")
-                    if toolName and arguments is not None:
-                        # Don't sanitize tool names for LLM context - they should remain unchanged
-                        # toolName = _sanitize_tool_name(toolName)
-                        # Sanitize tool call ID to meet provider requirements (alphanumeric, 9 chars)
-                        rawToolCallId = f"call_{uuid.uuid4().hex[:8]}"
+                    decoded_payload = None
+                if isinstance(decoded_payload, dict):
+                    tool_name = decoded_payload.get("name")
+                    arguments = decoded_payload.get("arguments")
+                    if tool_name and arguments is not None:
+                        raw_tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
                         results.append(
                             ToolCall(
                                 index=len(results),
-                                id=rawToolCallId,  # No hashing - use original ID
-                                name=toolName,
+                                id=raw_tool_call_id,
+                                name=tool_name,
                                 arguments=json.dumps(arguments) if isinstance(arguments, dict) else str(arguments),
                             )
                         )
-                        searchFrom = braceStart + len(candidate)
+                        search_from = brace_start + len(candidate)
                         continue
-            searchFrom = fenceMatch.end()
+            search_from = fence_match.end()
 
     return results

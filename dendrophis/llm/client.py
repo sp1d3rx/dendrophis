@@ -30,6 +30,7 @@ from dendrophis.events import (
     TurnResult,
     UsageEvent,
 )
+from dendrophis.llm.calibration import ModelOverrideStore, is_param_rejected
 from dendrophis.llm.models import (
     supports_caching_by_id,
     supports_prompt_cache_key_by_id,
@@ -37,21 +38,58 @@ from dendrophis.llm.models import (
     supports_tools_by_id,
 )
 from dendrophis.llm.stream import parse_sse_event, parse_text_tool_calls
-
-# from dendrophis.utils import _sanitize_tool_id  # REMOVED - no tool ID hashing
+from dendrophis.llm.visual_prompt import is_vlm_model, render_text_to_1bit_data_uri
 
 _LOG_PATH = os.environ.get("DENDROPHIS_CHAT_LOG", "")
-
+_MAX_ANTHROPIC_CACHE_BLOCKS = 4
 
 logger = logging.getLogger(__name__)
 
 
-def _chat_log(direction: str, data: str) -> None:
+def _chat_log(direction: str, payload_text: str) -> None:
     if not _LOG_PATH:
         return
-    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    with open(_LOG_PATH, "a") as f:
-        f.write(f"[{ts}] {direction}\n{data}\n{'─' * 80}\n")
+    timestamp_str = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    with open(_LOG_PATH, "a", encoding="utf-8") as log_file:
+        log_file.write(f"[{timestamp_str}] {direction}\n{payload_text}\n{'─' * 80}\n")
+
+
+def _has_non_text_blocks(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(block, dict) and block.get("type") != "text" for block in content)
+
+
+def _content_to_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, list):
+        blocks: list[dict[str, Any]] = []
+        for item_block in content:
+            if isinstance(item_block, dict):
+                blocks.append(item_block)
+            elif item_block:
+                blocks.append({"type": "text", "text": str(item_block)})
+        return blocks
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}]
+    if content is not None and str(content):
+        return [{"type": "text", "text": str(content)}]
+    return []
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        content_parts = []
+        for block_item in content:
+            if isinstance(block_item, dict):
+                content_parts.append(block_item.get("text", ""))
+            else:
+                content_parts.append(str(block_item))
+        return "\n".join(filter(None, content_parts))
+    if content is not None:
+        return str(content)
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +106,9 @@ class _ProviderContext:
     is_openrouter: bool
     is_deepinfra: bool
     use_responses_api: bool
-    use_xml_tools: bool  # inject tools as XML instead of using the OpenAI tools API
+    use_xml_tools: bool
     url: str
-    sse_start_mode: str  # "thinking" for Qwen3.5/MLC, else "text"
+    sse_start_mode: str
 
 
 # ---------------------------------------------------------------------------
@@ -98,23 +136,18 @@ class _TurnAccumulator:
             self.finish_reason = event.finish_reason
 
     def resolve_tool_calls(self) -> list[ToolCall]:
-        """Return structured tool calls, falling back to text-parsed ones.
-
-        Backends like omlx send both structured delta.tool_calls (real indices)
-        and raw <tool_call> tags in content (parsed as index 999). Prefer
-        structured; if all are text-parsed, deduplicate by (name, arguments).
-        """
+        """Return structured tool calls, falling back to text-parsed ones."""
         if self.tool_calls:
-            structured = [tc for tc in self.tool_calls if tc.index != 999]
+            structured = [tool_call for tool_call in self.tool_calls if tool_call.index != 999]
             if structured:
                 return structured
             seen: set[tuple[str, str]] = set()
             deduped = []
-            for tc in self.tool_calls:
-                key = (tc.name, tc.arguments)
+            for tool_call in self.tool_calls:
+                key = (tool_call.name, tool_call.arguments)
                 if key not in seen:
                     seen.add(key)
-                    deduped.append(tc)
+                    deduped.append(tool_call)
             return deduped
         text = "".join(self.text)
         return parse_text_tool_calls(text) if text else []
@@ -269,9 +302,9 @@ class ModelInfo:
         metadata = self.extra.get("metadata") or {}
         supported_features = metadata.get("supported_features", [])
         supported_params = self.extra.get("supported_parameters", [])
-        if any(f in supported_features for f in ("tools", "tool_use", "function_calling")):
+        if any(feature in supported_features for feature in ("tools", "tool_use", "function_calling")):
             return True
-        return any(p in supported_params for p in ("tools", "tool_choice"))
+        return any(param_name in supported_params for param_name in ("tools", "tool_choice"))
 
     @property
     def supports_caching(self) -> bool:
@@ -328,9 +361,6 @@ class LLMClient:
 
     def __init__(self, config: LLMConfig, http_client: httpx.AsyncClient | None = None) -> None:
         self._config = config
-        # Savings counted by the most recent visual transform pass (unique
-        # content only; see _count_visual_savings). Client-internal: the value
-        # is attached to the UsageEvent in stream_chat.
         self.last_visual_tokens_saved: int = 0
         self._visual_counted: set[str] = set()
         self._http = http_client or self._new_http_client()
@@ -355,11 +385,7 @@ class LLMClient:
         return client
 
     def _release_http(self, client: httpx.AsyncClient) -> list[httpx.AsyncClient]:
-        """Mark one in-flight use as done.
-
-        Returns retired clients whose in-flight uses have all drained and
-        which are therefore safe to close now.
-        """
+        """Mark one in-flight use as done and return retired clients ready for close."""
         key = id(client)
         remaining = self._http_inflight.get(key, 1) - 1
         if remaining > 0:
@@ -377,13 +403,7 @@ class LLMClient:
                 await client.aclose()
 
     def _retire_http(self, old: httpx.AsyncClient) -> None:
-        """Swap in a fresh client and retire ``old`` for deferred close.
-
-        The replacement is created before the swap so ``self._http`` never
-        points at a dead client. If other requests are still in flight on
-        ``old``, closing it now would tear down their live streams, so it is
-        only closed once the last in-flight use releases it (or in aclose).
-        """
+        """Swap in a fresh client and retire ``old`` for deferred close."""
         self._http = self._new_http_client()
         self._retired_http.append(old)
 
@@ -408,7 +428,6 @@ class LLMClient:
                     return [ModelInfo.from_api(model_data) for model_data in models_data.get("data", [])]
             except Exception as exc:
                 logger.debug("Failed to fetch models from %s, using built-in list: %s", url, exc)
-            # Return a copy so callers (e.g. session.models) can't mutate the shared constant.
             return list(WELL_KNOWN_MODELS)
         finally:
             await self._close_retired_http(self._release_http(client))
@@ -423,29 +442,26 @@ class LLMClient:
         is_openrouter = "openrouter.ai" in base
         is_deepinfra = "deepinfra.com" in base
 
-        use_responses_api = False
-        if is_openrouter:
-            target_families = ("o1", "o3", "gpt-4o", "kimi")
-            if any(family in self._config.model.lower() for family in target_families):
-                use_responses_api = True
+        if self._config.use_responses_api is not None:
+            use_responses_api = bool(self._config.use_responses_api) and is_openrouter
+        elif is_openrouter:
+            target_families = ("o1", "o3", "o4", "gpt-4o", "gpt-5", "kimi")
+            use_responses_api = any(family in self._config.model.lower() for family in target_families)
+        else:
+            use_responses_api = False
 
         url = base + ("/responses" if is_openrouter and use_responses_api else "/chat/completions")
 
         if self._config.thinking_start_mode is not None:
             sse_start_mode = self._config.thinking_start_mode
         else:
-            # Fallback to auto-detect based on model name
             model_name_lower = self._config.model.lower()
             is_thinking_model = "thinking" in model_name_lower or "reasoning" in model_name_lower
             sse_start_mode = "thinking" if is_thinking_model else "text"
+
         tool_mode = self._config.tool_mode
         if tool_mode == "auto":
-            if is_local:
-                from dendrophis.llm.models import supports_tools_by_id
-
-                use_xml_tools = not supports_tools_by_id(self._config.model)
-            else:
-                use_xml_tools = False
+            use_xml_tools = not supports_tools_by_id(self._config.model) if is_local else False
         else:
             use_xml_tools = tool_mode == "xml"
 
@@ -470,41 +486,19 @@ class LLMClient:
                 continue
             role = message_dict.get("role")
             content = message_dict.get("content")
-
-            text_content = ""
-            if isinstance(content, str):
-                text_content = content
-            elif isinstance(content, list):
-                content_parts = []
-                for item in content:
-                    if isinstance(item, dict):
-                        content_parts.append(item.get("text", ""))
-                    else:
-                        content_parts.append(str(item))
-                text_content = "\n".join(filter(None, content_parts))
-            elif content is not None:
-                text_content = str(content)
+            current_has_media = _has_non_text_blocks(content)
 
             if role != "tool" and coalesced_messages and coalesced_messages[-1].get("role") == role:
                 previous_message = coalesced_messages[-1]
                 previous_content = previous_message.get("content")
+                previous_has_media = _has_non_text_blocks(previous_content)
 
-                previous_text = ""
-                if isinstance(previous_content, str):
-                    previous_text = previous_content
-                elif isinstance(previous_content, list):
-                    content_parts = []
-                    for item in previous_content:
-                        if isinstance(item, dict):
-                            content_parts.append(item.get("text", ""))
-                        else:
-                            content_parts.append(str(item))
-                    previous_text = "\n".join(filter(None, content_parts))
-                elif previous_content is not None:
-                    previous_text = str(previous_content)
-
-                merged_text = (previous_text + "\n\n" + text_content).strip()
-                previous_message["content"] = merged_text
+                if current_has_media or previous_has_media:
+                    previous_message["content"] = _content_to_blocks(previous_content) + _content_to_blocks(content)
+                else:
+                    previous_text = _content_to_text(previous_content)
+                    current_text = _content_to_text(content)
+                    previous_message["content"] = (previous_text + "\n\n" + current_text).strip()
 
                 if "tool_calls" in message_dict and isinstance(message_dict["tool_calls"], list):
                     existing_calls = previous_message.setdefault("tool_calls", [])
@@ -541,7 +535,7 @@ class LLMClient:
                         existing_signatures.add(signature_tuple)
             else:
                 new_message = {key: value for key, value in message_dict.items() if key != "content"}
-                new_message["content"] = text_content
+                new_message["content"] = list(content) if current_has_media else _content_to_text(content)
                 coalesced_messages.append(new_message)
 
         return coalesced_messages
@@ -558,13 +552,11 @@ class LLMClient:
         use_xml_tools: bool = False,
     ) -> list[dict[str, Any]]:
         """Strip provider-incompatible fields and filter tool messages as needed."""
-        # Find the index of the last user message
         last_user_index = -1
         for index, msg in enumerate(messages):
             if msg.get("role") == "user":
                 last_user_index = index
 
-        # Pre-sanitize to conditionally strip reasoning_content
         pre_sanitized: list[dict[str, Any]] = []
         mode = self._config.preserve_reasoning
         for index, msg in enumerate(messages):
@@ -579,23 +571,13 @@ class LLMClient:
 
         strip_keys: set[str] = set()
         if use_xml_tools:
-            # MLC returns 422/400 if tool_calls appear in history; tool intent
-            # is encoded in <tool_call> tags in the content string instead.
             strip_keys.add("tool_calls")
-        from dendrophis.llm.calibration import is_param_rejected
 
-        # cache_control breakpoints are honored by direct Anthropic and forwarded by
-        # OpenRouter to cache-capable upstreams (Anthropic, OpenAI). Strip them for
-        # other providers, or when calibration has recorded a rejection for this model.
         keeps_cache_control = is_direct_anthropic or is_openrouter
         if not keeps_cache_control or is_param_rejected(self._config.model, "cache_control"):
             strip_keys.add("cache_control")
 
         if is_deepinfra:
-            # DeepInfra rejects conversations where tool result count != tool call count.
-            # Validate each tool-call sequence: keep only complete pairs where the number
-            # of following tool results exactly matches the number of tool_calls in the
-            # assistant message. Drop orphaned tool results and incomplete sequences.
             validated: list[dict[str, Any]] = []
             msg_idx = 0
             while msg_idx < len(pre_sanitized):
@@ -603,26 +585,35 @@ class LLMClient:
                 role = msg.get("role")
 
                 if role == "tool":
-                    # Orphaned tool result (no preceding assistant with tool_calls) — drop.
                     msg_idx += 1
                     continue
 
-                if role == "assistant" and (msg.get("tool_calls") or "<tool_call>" in (msg.get("content") or "")):
+                raw_text = msg.get("content") if isinstance(msg.get("content"), str) else ""
+                has_structured_calls = bool(msg.get("tool_calls"))
+                has_embedded_tag = "<tool_call>" in raw_text
+                if role == "assistant" and (has_structured_calls or has_embedded_tag):
                     expected = len(msg.get("tool_calls", []))
                     result_end = msg_idx + 1
                     while result_end < len(pre_sanitized) and pre_sanitized[result_end].get("role") == "tool":
                         result_end += 1
                     actual = result_end - (msg_idx + 1)
-                    if expected > 0 and actual == expected:
+
+                    if has_structured_calls and expected > 0 and actual == expected:
                         validated.append({key: value for key, value in msg.items() if key not in strip_keys})
                         validated.extend(
                             {key: value for key, value in pre_sanitized[tool_idx].items() if key not in strip_keys}
                             for tool_idx in range(msg_idx + 1, result_end)
                         )
                         msg_idx = result_end
-                    else:
-                        msg_idx = result_end
                         continue
+                    if not has_structured_calls and actual == 0 and not raw_text.lstrip().startswith("<tool_call>"):
+                        # Plain prose mentioning `<tool_call>` without any tool execution — preserve it.
+                        validated.append({key: value for key, value in msg.items() if key not in strip_keys})
+                        msg_idx += 1
+                        continue
+                    msg_idx = result_end
+                    continue
+
                 validated.append({key: value for key, value in msg.items() if key not in strip_keys})
                 msg_idx += 1
             return self._coalesce_consecutive_messages(validated)
@@ -652,7 +643,6 @@ class LLMClient:
             role_name = current_message.get("role")
 
             if role_name == "tool":
-                # Stray tool result with no preceding assistant tool_calls — drop.
                 message_index += 1
                 continue
 
@@ -710,16 +700,12 @@ class LLMClient:
         return repaired_messages
 
     def _count_visual_savings(self, content: str) -> int:
-        """Estimate the tokens saved by rendering content as a 1-bit image.
-
-        Each unique piece of content is counted only once for the lifetime of
-        this client: the visual transform re-runs over the full message list on
-        every tool-loop iteration, so counting unconditionally would re-add the
-        same savings on every step of a multi-tool turn.
-        """
+        """Estimate the tokens saved by rendering content as a 1-bit image."""
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         if digest in self._visual_counted:
             return 0
+        if len(self._visual_counted) > 2048:
+            self._visual_counted.clear()
         self._visual_counted.add(digest)
         estimated_text_tokens = int(len(content) / 3.5)
         return max(0, estimated_text_tokens - 310)
@@ -728,23 +714,27 @@ class LLMClient:
         self,
         messages_list: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Transform text system prompt, compaction, or large tool outputs to 1-bit images for VLMs.
-
-        ``last_visual_tokens_saved`` reports the savings newly counted in this
-        pass (unique content only, see _count_visual_savings).
-        """
-        from dendrophis.llm.visual_prompt import is_vlm_model, render_text_to_1bit_data_uri
-
+        """Transform text system prompt, compaction, or large tool outputs to 1-bit images for VLMs."""
         self.last_visual_tokens_saved = 0
 
         if not is_vlm_model(self._config.model):
             return messages_list
 
         transformed_messages: list[dict[str, Any]] = []
+        pending_tool_images: list[dict[str, Any]] = []
+
+        def _flush_pending_tool_images() -> None:
+            if not pending_tool_images:
+                return
+            transformed_messages.extend(pending_tool_images)
+            pending_tool_images.clear()
 
         for message_item in messages_list:
             role_name = message_item.get("role", "")
             content_data = message_item.get("content", "")
+
+            if role_name != "tool":
+                _flush_pending_tool_images()
 
             # 1. Visual System Prompt
             if role_name == "system" and self._config.visual_system_prompt and isinstance(content_data, str):
@@ -770,7 +760,8 @@ class LLMClient:
                     )
                     continue
 
-            # 2. Visual Tool Results
+            # 2. Visual Tool Results — emit all `role: tool` stubs first, then attach `role: user` images
+            # after the contiguous tool-result batch so parallel tool calls stay syntactically valid.
             if (
                 role_name == "tool"
                 and self._config.visual_tool_results
@@ -793,9 +784,11 @@ class LLMClient:
                     }
                     if tool_call_id:
                         tool_msg["tool_call_id"] = tool_call_id
+                    if message_item.get("name"):
+                        tool_msg["name"] = message_item["name"]
 
                     transformed_messages.append(tool_msg)
-                    transformed_messages.append(
+                    pending_tool_images.append(
                         {
                             "role": "user",
                             "content": [
@@ -816,7 +809,7 @@ class LLMClient:
             if (
                 self._config.visual_compaction
                 and isinstance(content_data, str)
-                and (content_data.startswith("[Compacted Memory") or content_data.startswith("[Summary of earlier"))
+                and content_data.startswith(("[Context summary", "[Compacted Memory", "[Summary of earlier"))
             ):
                 data_uri = render_text_to_1bit_data_uri(
                     content_data, font_name="Menlo.ttc", font_size=16, save_prefix="visual_compaction"
@@ -825,7 +818,7 @@ class LLMClient:
                     self.last_visual_tokens_saved += self._count_visual_savings(content_data)
                     transformed_messages.append(
                         {
-                            "role": role_name,
+                            "role": "user",
                             "content": [
                                 {
                                     "type": "text",
@@ -871,7 +864,28 @@ class LLMClient:
 
             transformed_messages.append(message_item)
 
+        _flush_pending_tool_images()
         return transformed_messages
+
+    @staticmethod
+    def _cap_cache_control_markers(
+        messages: list[dict[str, Any]],
+        max_blocks: int,
+    ) -> list[dict[str, Any]]:
+        """Keep at most `max_blocks` `cache_control` markers on messages (preserving earliest + latest)."""
+        if max_blocks <= 0:
+            return [{key: val for key, val in msg.items() if key != "cache_control"} for msg in messages]
+        marked_indices = [idx for idx, msg in enumerate(messages) if "cache_control" in msg]
+        if len(marked_indices) <= max_blocks:
+            return messages
+        keep_set = {marked_indices[0], *marked_indices[-(max_blocks - 1) :]} if max_blocks > 1 else {marked_indices[0]}
+        capped: list[dict[str, Any]] = []
+        for idx, msg in enumerate(messages):
+            if "cache_control" in msg and idx not in keep_set:
+                capped.append({key: val for key, val in msg.items() if key != "cache_control"})
+            else:
+                capped.append(msg)
+        return capped
 
     # -- Payload construction ------------------------------------------------
 
@@ -896,32 +910,43 @@ class LLMClient:
 
         transformed_messages = self._apply_visual_vlm_transformations(sanitized_messages)
 
+        model_is_claude = "claude" in self._config.model.lower()
+        override_store = ModelOverrideStore()
+        cache_control_rejected = is_param_rejected(self._config.model, "cache_control", store=override_store)
+
+        attach_tool_cache_breakpoint = (
+            bool(tools)
+            and enable_cache_control
+            and model_is_claude
+            and provider_context.is_direct_anthropic
+            and not cache_control_rejected
+        )
+        if model_is_claude:
+            max_msg_cache_blocks = _MAX_ANTHROPIC_CACHE_BLOCKS - (1 if attach_tool_cache_breakpoint else 0)
+            transformed_messages = self._cap_cache_control_markers(transformed_messages, max_msg_cache_blocks)
+
         payload: dict[str, Any] = {
             "model": self._config.model,
             "messages": transformed_messages,
             "max_tokens": self._config.max_tokens,
             "temperature": self._config.temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
 
-        payload["stream_options"] = {"include_usage": True}
-
-        # Check if reasoning_effort is supported — heuristic OR calibration positive, not rejected
-        from dendrophis.llm.calibration import ModelOverrideStore, is_param_rejected
-
-        if self._config.reasoning_effort is not None and not is_param_rejected(self._config.model, "reasoning_effort"):
-            _calibrated = ModelOverrideStore().get(self._config.model)
-            _heuristic_ok = supports_reasoning_effort_by_id(self._config.model)
-            _calibrated_ok = _calibrated is not None and _calibrated.supports_reasoning_effort
-            if _heuristic_ok or _calibrated_ok:
+        if self._config.reasoning_effort is not None and not is_param_rejected(
+            self._config.model, "reasoning_effort", store=override_store
+        ):
+            calibrated = override_store.get(self._config.model)
+            heuristic_ok = supports_reasoning_effort_by_id(self._config.model)
+            calibrated_ok = calibrated is not None and calibrated.supports_reasoning_effort
+            if heuristic_ok or calibrated_ok:
                 payload["reasoning_effort"] = self._config.reasoning_effort
 
-        # Mistral/Kimi prompt cache support
-        # Also check calibration to see if parameter is rejected
         if (
             self._config.prompt_cache_key is not None
             and supports_prompt_cache_key_by_id(self._config.model)
-            and not is_param_rejected(self._config.model, "prompt_cache_key")
+            and not is_param_rejected(self._config.model, "prompt_cache_key", store=override_store)
         ):
             payload["prompt_cache_key"] = self._config.prompt_cache_key
 
@@ -939,7 +964,6 @@ class LLMClient:
         if self._config.frequency_penalty != 0.0:
             payload["frequency_penalty"] = self._config.frequency_penalty
 
-        # OpenRouter Responses API: rename keys and enable reasoning
         if provider_context.is_openrouter and provider_context.use_responses_api:
             payload.pop("stream_options", None)
             payload["input"] = self._transform_messages_to_responses_input(payload.pop("messages"))
@@ -948,11 +972,9 @@ class LLMClient:
             if supports_reasoning_effort_by_id(self._config.model):
                 payload["include_reasoning"] = True
 
-        # Tool definitions — format differs by provider
         if tools:
             if provider_context.use_xml_tools:
-                # MLC doesn't accept tools in the API; inject as XML into system message
-                tool_defs = "\n".join(json.dumps(t) for t in tools)
+                tool_defs = "\n".join(json.dumps(tool_schema) for tool_schema in tools)
                 tool_section = (
                     "\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n"
                     "You are provided with function signatures within <tools></tools> XML tags:\n"
@@ -965,7 +987,7 @@ class LLMClient:
                 payload_messages = payload.get("messages", [])
                 injected = False
                 for msg_idx, msg in enumerate(payload_messages):
-                    if msg.get("role") == "system":
+                    if msg.get("role") == "system" and isinstance(msg.get("content"), str):
                         payload_messages[msg_idx] = {**msg, "content": msg["content"] + tool_section}
                         injected = True
                         break
@@ -973,7 +995,6 @@ class LLMClient:
                     payload_messages.insert(0, {"role": "system", "content": tool_section.lstrip()})
                 payload["messages"] = payload_messages
             elif provider_context.is_openrouter and provider_context.use_responses_api:
-                # Responses API expects flattened tool definitions
                 transformed_tools = []
                 for tool in tools:
                     if tool.get("type") == "function":
@@ -992,15 +1013,9 @@ class LLMClient:
                 payload["tools"] = transformed_tools
                 payload["tool_choice"] = tool_choice
             else:
-                # Standard OpenAI format; optionally add cache_control for Anthropic
-                model_is_claude = "claude" in self._config.model.lower()
-                if (
-                    enable_cache_control
-                    and model_is_claude
-                    and provider_context.is_direct_anthropic
-                    and not is_param_rejected(self._config.model, "cache_control")
-                ):
-                    tools = [{**tool, "cache_control": {"type": "ephemeral"}} for tool in tools]
+                if attach_tool_cache_breakpoint:
+                    # Place a single cache breakpoint on the final tool definition (Anthropic max is 4 total).
+                    tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
                 payload["tools"] = tools
                 payload["tool_choice"] = tool_choice
 
@@ -1009,7 +1024,7 @@ class LLMClient:
     def _transform_messages_to_responses_input(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Transform standard messages to OpenRouter Responses API input format."""
         transformed = []
-        for i, msg in enumerate(messages):
+        for msg_index, msg in enumerate(messages):
             role = msg.get("role", "user")
             content = msg.get("content")
             tool_calls = msg.get("tool_calls")
@@ -1019,7 +1034,7 @@ class LLMClient:
                 transformed.append(
                     {
                         "type": "function_call_output",
-                        "id": f"result_{i}",
+                        "id": f"result_{msg_index}",
                         "call_id": tool_call_id if tool_call_id else None,
                         "output": content if isinstance(content, str) else json.dumps(content),
                     }
@@ -1048,11 +1063,10 @@ class LLMClient:
                     )
 
             if tool_calls:
-                for j, tool_call in enumerate(tool_calls):
+                for call_index, tool_call in enumerate(tool_calls):
                     function_data = tool_call.get("function", {})
                     tc_id = tool_call.get("id")
-                    # Tool call IDs now use original provider IDs without modification
-                    sanitized_id = tc_id if tc_id else f"call_{i}_{j}"
+                    sanitized_id = tc_id if tc_id else f"call_{msg_index}_{call_index}"
                     sanitized_call_id = tc_id if tc_id else None
                     transformed.append(
                         {
@@ -1093,27 +1107,31 @@ class LLMClient:
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/sp1d3rx/dendrophis",
             "X-Title": "Dendrophis IDE",
-            "Connection": "close",
         }
+
+        try:
+            serialized_payload = json.dumps(payload)
+        except Exception as serialize_error:
+            yield ErrorEvent(message=f"Failed to serialize request payload: {serialize_error!s}")
+            return
 
         max_retries = 5
         base_delay = 1.0
-        # TODO: Make these configurable via settings
         stream_started = False
 
         for attempt in range(max_retries + 1):
             error_status_code: int | None = None
             error_details_message = ""
             try:
-                _chat_log(
-                    "CLIENT [attempt]",
-                    f"attempt={attempt}, payload_bytes={len(json.dumps(payload))}",
-                )
+                if _LOG_PATH:
+                    _chat_log(
+                        "CLIENT [attempt]",
+                        f"attempt={attempt}, payload_bytes={len(serialized_payload)}",
+                    )
 
-                # EAFP: Try to build and send request, handle potential failures
                 try:
                     req = client.build_request(
-                        "POST", provider_context.url, headers=headers, content=json.dumps(payload)
+                        "POST", provider_context.url, headers=headers, content=serialized_payload
                     )
                 except Exception as exc:
                     yield ErrorEvent(message=f"Failed to build request: {exc!s}")
@@ -1124,9 +1142,6 @@ class LLMClient:
                     http_response = await asyncio.wait_for(client.send(req, stream=True), timeout=self._config.timeout)
                 except TimeoutError:
                     _chat_log("CLIENT [attempt]", f"send() timed out after {self._config.timeout}s")
-                    # A timed-out send can leave stuck connections in this client's pool, so
-                    # swap in a fresh one. Retire (do not close) the old client while other
-                    # in-flight requests may still be streaming on it.
                     self._retire_http(client)
                     yield ErrorEvent(
                         message=f"Server did not respond within {self._config.timeout}s — context may be too large"
@@ -1135,8 +1150,9 @@ class LLMClient:
 
                 _chat_log("CLIENT [attempt]", f"got response status={http_response.status_code}")
                 try:
-                    # EAFP: Handle rate limiting and server errors with retry
                     if http_response.status_code in (429, 503) and attempt < max_retries:
+                        with contextlib.suppress(Exception):
+                            await http_response.aclose()
                         delay = base_delay * (2**attempt) + random.uniform(0, 0.5)
                         yield RetryEvent(
                             message=f"Server busy (HTTP {http_response.status_code})", attempt=attempt + 1, delay=delay
@@ -1149,7 +1165,6 @@ class LLMClient:
                         _chat_log("CLIENT [non-200]", f"status={http_response.status_code}")
                         try:
                             error_response_body = await http_response.aread()
-                            # Parse JSON or raw text
                             error_details_message = ""
                             try:
                                 parsed_error_payload = json.loads(error_response_body)
@@ -1180,16 +1195,15 @@ class LLMClient:
                     else:
                         in_progress: dict[int, ToolCall] = {}
                         parsing_state = {"mode": provider_context.sse_start_mode, "buffer": "", "pending": ""}
-                        max_stop_len = max(len(s) for s in self._config.stop) if self._config.stop else 0
+                        max_stop_len = max(len(stop_seq) for stop_seq in self._config.stop) if self._config.stop else 0
                         stream_buffer = ""
 
-                        # EAFP: Handle SSE streaming with robust error handling
                         try:
                             async for sse in EventSource(http_response).aiter_sse():
                                 stream_started = True
-                                _chat_log("SERVER → CLIENT", f"event={sse.event!r} data={sse.data!r}")
+                                if _LOG_PATH:
+                                    _chat_log("SERVER → CLIENT", f"event={sse.event!r} data={sse.data!r}")
 
-                                # EAFP: Handle potential parsing errors gracefully
                                 try:
                                     events, in_progress, parsing_state = parse_sse_event(
                                         sse, in_progress, parsing_state
@@ -1203,7 +1217,7 @@ class LLMClient:
                                         stream_buffer += event.delta
                                         if len(stream_buffer) > max_stop_len * 3:
                                             stream_buffer = stream_buffer[-(max_stop_len * 3) :]
-                                        if any(s in stream_buffer for s in self._config.stop):
+                                        if any(stop_seq in stream_buffer for stop_seq in self._config.stop):
                                             yield DoneEvent(finish_reason="stop")
                                             return
 
@@ -1216,7 +1230,6 @@ class LLMClient:
                             yield ErrorEvent(message=f"SSE streaming failed: {sse_error!s}")
                             return
                 finally:
-                    # EAFP: Ensure response is always closed, even if closing fails
                     try:
                         await http_response.aclose()
                     except Exception as close_error:
@@ -1251,7 +1264,6 @@ class LLMClient:
                 yield ErrorEvent(message=f"Connection error: {exc}")
                 return
             except Exception as unexpected_error:
-                # EAFP: Catch any unexpected errors and provide meaningful feedback
                 yield ErrorEvent(message=f"Unexpected error during request: {unexpected_error!s}")
                 return
 
@@ -1264,14 +1276,7 @@ class LLMClient:
         enable_cache_control: bool = True,
         tool_choice: str = "auto",
     ) -> AsyncIterator[StreamEvent | RetryEvent | TurnResult]:
-        """Stream a chat turn, yielding UI events then a final TurnResult.
-
-        Handles all provider quirks internally:
-        - Provider-specific payload construction
-        - MLC false-positive finish_reason="tool_calls" retry
-        - Text-based tool call parsing for local servers
-        """
-        # EAFP: Validate inputs before processing
+        """Stream a chat turn, yielding UI events then a final TurnResult."""
         if not messages:
             yield ErrorEvent(message="No messages provided for chat completion")
             return
@@ -1284,18 +1289,16 @@ class LLMClient:
 
         false_positive_retry_done = False
         current_tool_choice = tool_choice
-        max_retries = 3  # Limit retries for the overall chat operation
+        max_retries = 3
         retry_count = 0
 
         while True:
-            # EAFP: Handle potential payload construction errors
             try:
                 payload = self._build_payload(
                     provider_context, messages, tools, enable_cache_control, current_tool_choice
                 )
-                _chat_log("CLIENT → SERVER", json.dumps(payload, indent=2))
-                # Capture the savings counted during payload building so the
-                # UsageEvent below can carry them (no cross-module getattr).
+                if _LOG_PATH:
+                    _chat_log("CLIENT → SERVER", json.dumps(payload, indent=2))
                 visual_tokens_saved = self.last_visual_tokens_saved
             except Exception as payload_error:
                 yield ErrorEvent(message=f"Failed to build request payload: {payload_error!s}")
@@ -1303,7 +1306,6 @@ class LLMClient:
 
             turn_accumulator = _TurnAccumulator()
 
-            # EAFP: Stream events with robust error handling
             try:
                 async for event in self._stream_raw(provider_context, payload):
                     try:
@@ -1328,25 +1330,20 @@ class LLMClient:
                     )
                     await asyncio.sleep(delay)
                     continue
-                else:
-                    yield ErrorEvent(message=f"Chat streaming failed after {max_retries} retries: {stream_error!s}")
-                    return
+                yield ErrorEvent(message=f"Chat streaming failed after {max_retries} retries: {stream_error!s}")
+                return
 
-            # EAFP: Handle tool call resolution robustly
             try:
                 tool_calls = turn_accumulator.resolve_tool_calls()
             except Exception as resolve_error:
                 yield ErrorEvent(message=f"Failed to resolve tool calls: {resolve_error!s}")
                 return
 
-            # MLC false-positive: model was mid-<think> when it fired finish_reason=tool_calls
-            # Retry once with tool_choice="none" to get a direct text response.
             if turn_accumulator.is_false_positive(tool_calls) and not false_positive_retry_done:
                 false_positive_retry_done = True
                 current_tool_choice = "none"
                 continue
 
-            # EAFP: Validate final result before yielding
             try:
                 turn_result = TurnResult(
                     text="".join(turn_accumulator.text) if turn_accumulator.text else "",
@@ -1376,15 +1373,12 @@ class LLMClient:
             elif isinstance(event, ReasoningDeltaEvent):
                 reasoning_parts.append(event.delta)
             elif isinstance(event, ToolCallDoneEvent):
-                # The finalized tool call (with arguments) is delivered here.
-                # ToolCallStartEvent only carries index/id/name and should not be used.
                 tool_calls.append(event.tool_call)
             elif isinstance(event, TurnResult):
                 return event
             elif isinstance(event, ErrorEvent):
                 raise RuntimeError(event.message)
 
-        # If we get here without a TurnResult, construct one from accumulated parts
         return TurnResult(
             text="".join(text_parts),
             reasoning="".join(reasoning_parts),
