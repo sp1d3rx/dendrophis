@@ -23,10 +23,16 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.13
 
       - name: Check dependency vulnerabilities with uv audit
         run: uv audit
 
       - name: Run Ruff Linter
         run: uv run ruff check .
+
+      - name: Run Ruff Format Check
+        run: uv run ruff format --check .
+
+      - name: Run Test Suite
+        run: uv run --extra web pytest tests/ --ignore=tests/test_code_writer_e2e.py

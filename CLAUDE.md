@@ -148,12 +148,9 @@ sidebar:
   width: 28                        # Character width
   panels: [model, tokens, status, speed, context, temperature, cost, sysinfo]
 
-hooks:
-  pre_tool_use: []                # Shell commands to run before tool execution
-  post_tool_use: []               # Shell commands to run after tool execution
-
 tools:
-  extra_paths: []                 # Paths to search for custom tools
+  max_consecutive_failures: 3
+  parallel_tools: true
 ```
 
 ## Key Design Patterns

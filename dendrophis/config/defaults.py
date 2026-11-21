@@ -33,8 +33,6 @@ llm:
   temperature: 0.2
   # Limit sampling to the top K most likely tokens (null = disabled)
   top_k: null
-  # Nucleus sampling threshold (null = disabled)
-  top_p: null
   # Reasoning depth for thinking models (e.g., low, medium, high, or none to disable)
   reasoning_effort: null
   # How the streaming parser starts ("text" for standard models, "thinking" for thinking models, null = auto)
@@ -91,13 +89,9 @@ ui:
       - reasoning
       - mcp_status
 
-hooks:
-  pre_tool_use: []
-  post_tool_use: []
-
 tools:
-  extra_paths: []
   max_consecutive_failures: 3
+  parallel_tools: true
 
 permissions:
   # Tools that require user confirmation before running (empty = none)

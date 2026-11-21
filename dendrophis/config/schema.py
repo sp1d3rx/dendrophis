@@ -11,9 +11,17 @@ from __future__ import annotations
 import dataclasses
 import types
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
-_ConfigT = TypeVar("_ConfigT", bound="ConfigModel")
+
+def _allows_none(target: Any) -> bool:
+    """Return True when None is a valid value for the resolved type annotation."""
+    if target is Any or target is type(None):
+        return True
+    origin = get_origin(target)
+    if origin is Union or origin is types.UnionType:
+        return type(None) in get_args(target)
+    return False
 
 
 def _coerce_value(value: Any, target: Any) -> Any:
@@ -31,11 +39,18 @@ def _coerce_value(value: Any, target: Any) -> Any:
 
     if origin is list:
         (item_hint,) = get_args(target)
-        return [_coerce_value(item, item_hint) for item in value]
+        if isinstance(value, str):
+            raw_items = [part.strip() for part in value.split(",") if part.strip()]
+            return [_coerce_value(element, item_hint) for element in raw_items]
+        if isinstance(value, (list, tuple)):
+            return [_coerce_value(element, item_hint) for element in value]
+        return []
 
     if origin is dict:
+        if not isinstance(value, dict):
+            return {}
         _, value_hint = get_args(target)
-        return {key: _coerce_value(item, value_hint) for key, item in value.items()}
+        return {key: _coerce_value(entry_value, value_hint) for key, entry_value in value.items()}
 
     if dataclasses.is_dataclass(target) and isinstance(target, type) and isinstance(value, dict):
         return from_dict(target, value)
@@ -43,14 +58,20 @@ def _coerce_value(value: Any, target: Any) -> Any:
     return value
 
 
-def from_dict(cls: type, data: dict[str, Any]) -> Any:
+def from_dict(cls: type, mapping: dict[str, Any]) -> Any:
     """Build a ConfigModel subclass from a raw mapping, ignoring unknown keys."""
+    if not isinstance(mapping, dict):
+        return cls()
     hints = get_type_hints(cls)
-    known_kwargs = {
-        entry.name: _coerce_value(data[entry.name], hints[entry.name])
-        for entry in dataclasses.fields(cls)
-        if entry.name in data
-    }
+    known_kwargs: dict[str, Any] = {}
+    for field_entry in dataclasses.fields(cls):
+        if field_entry.name not in mapping:
+            continue
+        raw_field_value = mapping[field_entry.name]
+        field_hint = hints[field_entry.name]
+        if raw_field_value is None and not _allows_none(field_hint):
+            continue
+        known_kwargs[field_entry.name] = _coerce_value(raw_field_value, field_hint)
     return cls(**known_kwargs)
 
 
@@ -58,9 +79,9 @@ class ConfigModel:
     """Mixin giving any dataclass a from_dict() constructor for raw YAML data."""
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Any:
+    def from_dict(cls, mapping: dict[str, Any]) -> Any:
         """Build an instance from a raw mapping, ignoring unknown keys."""
-        return from_dict(cls, data)
+        return from_dict(cls, mapping)
 
 
 @dataclass
@@ -143,22 +164,6 @@ class LLMConfig(ConfigModel):
 
 
 @dataclass
-class HookEntry(ConfigModel):
-    """Single hook definition with an optional tool-name matcher."""
-
-    command: str
-    matcher: str = ""
-
-
-@dataclass
-class HooksConfig(ConfigModel):
-    """Pre/post tool-use hook lists."""
-
-    pre_tool_use: list[HookEntry] = field(default_factory=list)
-    post_tool_use: list[HookEntry] = field(default_factory=list)
-
-
-@dataclass
 class SidebarConfig(ConfigModel):
     """Sidebar layout and panel selection."""
 
@@ -171,17 +176,16 @@ class SidebarConfig(ConfigModel):
 class ToolsConfig(ConfigModel):
     """Tool execution limits."""
 
-    extra_paths: list[str] = field(default_factory=list)
     # Failure breaker: abort the turn after this many consecutive tool errors.
     max_consecutive_failures: int = 3
     parallel_tools: bool = True
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Any:
+    def from_dict(cls, mapping: dict[str, Any]) -> Any:
         # Backward compat: older configs used `max_calls` for the failure breaker.
-        if "max_consecutive_failures" not in data and "max_calls" in data:
-            data = {**data, "max_consecutive_failures": data["max_calls"]}
-        return super().from_dict(data)
+        if isinstance(mapping, dict) and "max_consecutive_failures" not in mapping and "max_calls" in mapping:
+            mapping = {**mapping, "max_consecutive_failures": mapping["max_calls"]}
+        return super().from_dict(mapping)
 
 
 @dataclass
@@ -277,7 +281,6 @@ class DendrophisConfig(ConfigModel):
     llm: LLMConfig = field(default_factory=LLMConfig)
     mcp_servers: dict[str, MCPServerConfig] = field(default_factory=dict)
     ui: UIConfig = field(default_factory=UIConfig)
-    hooks: HooksConfig = field(default_factory=HooksConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
     caching: CachingConfig = field(default_factory=CachingConfig)

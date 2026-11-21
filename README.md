@@ -2,7 +2,7 @@
 
 A Python-native terminal coding agent with a TUI built on [Textual](https://textual.textualize.io/). Works with any OpenAI-compatible API endpoint.
 
-![Python](https://img.shields.io/badge/python-3.11%2B-blue) [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.13%2B-blue) [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
 
 ![Dendrophis TUI Interface](screenshots/main_chat.png)
 
@@ -42,8 +42,7 @@ Step into the canopy. Let Dendrophis help you code with clarity, speed, and a to
 - **Project primer**: remembers your project across sessions — structure, key files, and understanding. Detects file changes on disk and flags stale entries
 - **Model calibration**: `--calibrate MODEL` probes a model's real capabilities (context window, tool calling, reasoning effort, prompt caching) and recommends config
 - **3-tier prompt caching**: system prompt + tool definitions, stable file blocks, project understanding — plus optional cache refresh on compaction
-- **Tool use**: filesystem read/edit/write, sandboxed bash, Python execution, function-level surgical edits for Python files, todo tracking, subagents — all with configurable confirmation. Extend via DI: drop a `.py` following the tool ABC and it shows up next session
-- **Hooks**: run shell commands before/after any tool call
+- **Tool use**: filesystem read/edit/write, sandboxed bash, Python execution, function-level surgical edits for Python files, todo tracking, subagents — all with configurable confirmation
 - **Category-based bash permissions**: deny, require-confirmation, or auto-approve bash by operation category (e.g. always approve read-only filesystem ops)
 - **Configurable sidebar**: live panels for model, status, primer, tokens, speed, context, temperature, cache, cost, sysinfo, reasoning effort, and MCP server state
 - **Reasoning effort**: click the panel to cycle through reasoning levels for supported models; `preserve_reasoning` controls whether thoughts persist in context
