@@ -127,12 +127,17 @@ def render_text_to_1bit_data_uri(
         return None
 
     try:
-        try:
-            font_object = ImageFont.truetype(font_name, font_size)
-        except Exception:
+        font_object = None
+        for candidate_font in (font_name, "DejaVuSansMono.ttf", "LiberationMono-Regular.ttf", "Helvetica.ttc"):
             try:
-                font_object = ImageFont.truetype("Helvetica.ttc", font_size)
+                font_object = ImageFont.truetype(candidate_font, font_size)
+                break
             except Exception:
+                continue
+        if font_object is None:
+            try:
+                font_object = ImageFont.load_default(size=font_size)
+            except TypeError:
                 font_object = ImageFont.load_default()
 
         dummy_image = Image.new("L", (1, 1))

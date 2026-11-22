@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,29 +32,29 @@ class DummyTool(BaseTool):
 
 
 @pytest.mark.anyio
-async def test_session_factory_di() -> None:
-    # Create configuration loader
-    config_loader = ConfigLoader.load(config_path="dendrophis.yaml")
+async def test_session_factory_di(tmp_path: Path) -> None:
+    config_file = tmp_path / "dendrophis.yaml"
+    memory_db_path = tmp_path / "memory.db"
+    config_file.write_text(f'memory_db: "{memory_db_path}"\n', encoding="utf-8")
+    config_loader = ConfigLoader.load(config_path=str(config_file))
 
-    # Create custom registry and add a dummy tool
     custom_registry = ToolRegistry()
     dummy_instance = DummyTool()
     custom_registry.add(dummy_instance)
 
-    # Create session
     session_instance = SessionFactory.create_session(
         config_loader=config_loader,
     )
+    try:
+        from dendrophis.tools import ToolExecutor
 
-    # Inject tool registry via set_tools
-    from dendrophis.tools import ToolExecutor
+        custom_executor = ToolExecutor(custom_registry)
+        session_instance.set_tools(custom_registry, custom_executor)
 
-    custom_executor = ToolExecutor(custom_registry)
-    session_instance.set_tools(custom_registry, custom_executor)
-
-    # Check that session uses the custom registry
-    assert session_instance._tool_registry is custom_registry
-    assert session_instance._tool_registry.get("dummy_tool") is dummy_instance
+        assert session_instance._tool_registry is custom_registry
+        assert session_instance._tool_registry.get("dummy_tool") is dummy_instance
+    finally:
+        await session_instance.aclose()
 
 
 @pytest.mark.anyio

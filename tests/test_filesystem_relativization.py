@@ -16,6 +16,7 @@ def temporary_test_directory():
         shutil.rmtree(directory_path)
 
 
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) is not installed")
 @pytest.mark.anyio
 async def test_ripgrep_tool_returns_relative_paths(temporary_test_directory):
     # Create a subfolder and a file within the temporary directory
@@ -47,6 +48,7 @@ async def test_ripgrep_tool_returns_relative_paths(temporary_test_directory):
         assert "nested_folder" in matched_file_path
 
 
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) is not installed")
 @pytest.mark.anyio
 async def test_ripgrep_tool_default_path_returns_relative_paths(temporary_test_directory):
     # Create a file directly in temporary_test_directory
